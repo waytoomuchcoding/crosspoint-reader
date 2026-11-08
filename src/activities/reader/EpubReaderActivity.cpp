@@ -30,6 +30,7 @@
 #include "ChapterBuildGate.h"
 #include "ClipSelectionActivity.h"
 #include "ZhLookupActivity.h"
+#include "ZhRubyAdjustActivity.h"
 #include "ClippingStore.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
@@ -1288,6 +1289,24 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
     }
     case EpubReaderMenuActivity::MenuAction::DICTIONARY: {
       openDictionaryWordSelect();
+      break;
+    }
+    case EpubReaderMenuActivity::MenuAction::ZH_RUBY: {
+      // A new threshold changes line widths: rebuild the chapter at the same position.
+      startActivityForResult(std::make_unique<ZhRubyAdjustActivity>(renderer, mappedInput),
+                             [this](const ActivityResult& result) {
+                               if (!result.isCancelled) {
+                                 RenderLock lock;
+                                 if (section) {
+                                   rememberCurrentContentOffset();
+                                   cachedSpineIndex = currentSpineIndex;
+                                   cachedChapterTotalPageCount = section->pageCount;
+                                   nextPageNumber = section->currentPage;
+                                 }
+                                 section.reset();
+                               }
+                               requestUpdate();
+                             });
       break;
     }
     case EpubReaderMenuActivity::MenuAction::DISPLAY_QR: {

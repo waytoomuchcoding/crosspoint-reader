@@ -88,8 +88,12 @@ void EpubReaderMenuActivity::buildMenuItems(std::vector<MenuItem>& items, const 
   if (bleturner::status().compiledIn && SETTINGS.ble.peerAddr[0] != '\0') {
     items.push_back({MenuAction::BLUETOOTH, StrId::STR_BT_PAGE_TURNER});
   }
-  if (SETTINGS.dictionaryName[0] != '\0' || Storage.exists("/zh/chars.bin")) {
+  const bool hasZhDict = Storage.exists("/zh/chars.bin");
+  if (SETTINGS.dictionaryName[0] != '\0' || hasZhDict) {
     items.push_back({MenuAction::DICTIONARY, StrId::STR_LOOKUP});
+  }
+  if (hasZhDict) {
+    items.push_back({MenuAction::ZH_RUBY, StrId::STR_ZH_RUBY});
   }
   items.push_back({MenuAction::ROTATE_SCREEN, StrId::STR_ORIENTATION});
   items.push_back({MenuAction::AUTO_PAGE_TURN, StrId::STR_AUTO_TURN_PAGES_PER_MIN});
