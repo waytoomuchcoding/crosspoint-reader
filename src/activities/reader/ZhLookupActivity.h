@@ -20,8 +20,8 @@
 // words, a 3 KB entry buffer and the wrapped card text for one selection.
 class ZhLookupActivity final : public Activity {
  public:
-  ZhLookupActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Page> page,
-                   int marginLeft, int marginTop)
+  ZhLookupActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Page> page, int marginLeft,
+                   int marginTop)
       : Activity("ZhLookup", renderer, mappedInput),
         page(std::move(page)),
         marginLeft(marginLeft),
@@ -81,8 +81,8 @@ class ZhLookupActivity final : public Activity {
   int matchCount = 0;
   int matchIndex = 0;
   std::unique_ptr<uint8_t[]> entryBuf;
-  std::vector<std::string> lines;      // wrapped text of all cards
-  std::vector<uint16_t> cardStart;     // first line of each card
+  std::vector<std::string> lines;   // wrapped text of all cards
+  std::vector<uint16_t> cardStart;  // first line of each card
   int card = 0;
   int linesPerCard = 0;
 

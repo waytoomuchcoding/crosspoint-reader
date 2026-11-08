@@ -100,12 +100,12 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
   emit(SettingInfo::Toggle(StrId::STR_EMBEDDED_STYLE, &CrossPointSettings::embeddedStyle, "embeddedStyle",
                            StrId::STR_CAT_READER)
            .withTextSettings());
-  emit(SettingInfo::Enum(StrId::STR_ZH_RUBY, &CrossPointSettings::zhRuby,
-                         {StrId::STR_ZH_RUBY_OFF, StrId::STR_ZH_RUBY_ALL, StrId::STR_ZH_RUBY_500, StrId::STR_ZH_RUBY_1000,
-                          StrId::STR_ZH_RUBY_2000, StrId::STR_ZH_RUBY_3000, StrId::STR_ZH_RUBY_5000,
-                          StrId::STR_ZH_RUBY_8000, StrId::STR_ZH_RUBY_12000, StrId::STR_ZH_RUBY_20000,
-                          StrId::STR_ZH_RUBY_35000, StrId::STR_ZH_RUBY_60000},
-                         "zhRuby", StrId::STR_CAT_READER));
+  emit(SettingInfo::Enum(
+      StrId::STR_ZH_RUBY, &CrossPointSettings::zhRuby,
+      {StrId::STR_ZH_RUBY_OFF, StrId::STR_ZH_RUBY_ALL, StrId::STR_ZH_RUBY_500, StrId::STR_ZH_RUBY_1000,
+       StrId::STR_ZH_RUBY_2000, StrId::STR_ZH_RUBY_3000, StrId::STR_ZH_RUBY_5000, StrId::STR_ZH_RUBY_8000,
+       StrId::STR_ZH_RUBY_12000, StrId::STR_ZH_RUBY_20000, StrId::STR_ZH_RUBY_35000, StrId::STR_ZH_RUBY_60000},
+      "zhRuby", StrId::STR_CAT_READER));
   emit(SettingInfo::Toggle(StrId::STR_FOCUS_READING, &CrossPointSettings::focusReadingEnabled, "focusReadingEnabled",
                            StrId::STR_CAT_READER)
            .withTextSettings());

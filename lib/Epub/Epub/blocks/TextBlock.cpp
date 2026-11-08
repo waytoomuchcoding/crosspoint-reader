@@ -1,7 +1,5 @@
 #include "TextBlock.h"
 
-#include <ZhDict.h>
-
 #include <BidiUtils.h>
 #include <GfxRenderer.h>
 #include <Logging.h>
@@ -9,6 +7,7 @@
 #include <MemoryManager.h>
 #include <Serialization.h>
 #include <Utf8.h>
+#include <ZhDict.h>
 
 #include <cstring>
 #include <string_view>
@@ -386,8 +385,7 @@ void TextBlock::render(const GfxRenderer& renderer, const int sectionFontId, con
       const int suffixX = drawX + (rtl ? 0 : focusSplitXArr[i]);
       renderer.drawText(wordFont, prefixX, wordY, boldBuf, true, boldStyle, baseDir, tracking);
       renderer.drawText(wordFont, suffixX, wordY, word + boldLen, true, currentStyle, baseDir, tracking);
-    } else if (const uint32_t zhCode =
-                   i < rubyTexts.size() ? zh::decodeRubyCode(rubyTexts[i].c_str()) : 0) {
+    } else if (const uint32_t zhCode = i < rubyTexts.size() ? zh::decodeRubyCode(rubyTexts[i].c_str()) : 0) {
       // Zhuyin: draw the word up to its Han character, the ruby column, then the
       // rest of the word (attached punctuation) after the ruby.
       const size_t split = zhRubySplit(i);

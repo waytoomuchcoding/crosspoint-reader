@@ -11,8 +11,8 @@ namespace detail {
 // A word costs WORD_COST + ln(rank): with Zipf's law (p ~ 1/rank) the cheapest
 // path is the most probable split. Must match scripts/zh/zhdict_ref.py.
 constexpr float WORD_COST = 3.0f;
-constexpr float UNRANKED_LOG = 13.8155f;                    // ln(1e6)
-constexpr float UNKNOWN_CHAR_COST = WORD_COST + 16.0f;      // not in the dictionary
+constexpr float UNRANKED_LOG = 13.8155f;                // ln(1e6)
+constexpr float UNKNOWN_CHAR_COST = WORD_COST + 16.0f;  // not in the dictionary
 
 inline float wordCost(uint32_t rank) { return WORD_COST + (rank == NO_RANK ? UNRANKED_LOG : logf(rank)); }
 

@@ -92,7 +92,8 @@ bool Dict::open(const char* dir) {
       close();
       return false;
     }
-    for (uint32_t j = 0; j < n; ++j) pageIndex[k + j] = static_cast<uint16_t>(std::min<uint32_t>(le32(groupBuf.get() + 4 * j), 0xFFFF));
+    for (uint32_t j = 0; j < n; ++j)
+      pageIndex[k + j] = static_cast<uint16_t>(std::min<uint32_t>(le32(groupBuf.get() + 4 * j), 0xFFFF));
     k += n;
   }
   recordBase = static_cast<uint32_t>((HEADER_BYTES + pageCount * 4 + SECTOR - 1) / SECTOR * SECTOR);
@@ -113,7 +114,8 @@ bool Dict::open(const char* dir) {
   for (auto& c : pairCache) c.valid = 0;
   statsData = Stats{};
   opened = true;
-  LOG_INF("ZH", "dictionary open: %u characters; RAM %u B index + %u B slices + %u B buffer + %u B scratch + %u B caches",
+  LOG_INF("ZH",
+          "dictionary open: %u characters; RAM %u B index + %u B slices + %u B buffer + %u B scratch + %u B caches",
           static_cast<unsigned>(charCount), static_cast<unsigned>(pageCount * 2), static_cast<unsigned>(sliceCount * 4),
           static_cast<unsigned>(bufBytes), static_cast<unsigned>(sizeof(SegmentScratch)),
           static_cast<unsigned>(sizeof(cache) + sizeof(pairCache)));

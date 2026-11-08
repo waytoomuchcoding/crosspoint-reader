@@ -96,14 +96,14 @@ class Dict {
     uint32_t dirOff = 0;
     uint16_t dirCount = 0;
     uint8_t hsk = 0;
-    uint8_t valid = 0;  // 0 = empty slot, 1 = cached miss, 2 = found
+    uint8_t valid = 0;                // 0 = empty slot, 1 = cached miss, 2 = found
     uint32_t selfEntry = 0xFFFFFFFF;  // the character as a one-character word
     uint32_t selfRank = NO_RANK;
     uint32_t selfZhuyin = 0;
     uint8_t selfHsk = 0;
     uint8_t selfFlags = 0;
-    uint32_t sliceOff = 0xFFFFFFFF;   // into slices.bin, for directories over 4 slices
-    uint32_t inlineSlices[4] = {};    // slice starts for directories of 2-4 slices
+    uint32_t sliceOff = 0xFFFFFFFF;  // into slices.bin, for directories over 4 slices
+    uint32_t inlineSlices[4] = {};   // slice starts for directories of 2-4 slices
   };
   // A second-character lookup in a pair directory, cached (absent pairs too).
   struct PairRecord {

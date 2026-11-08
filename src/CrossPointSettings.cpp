@@ -1,11 +1,10 @@
 #include "CrossPointSettings.h"
 
-#include <ZhDict.h>
-
 #include <BlePageTurnerJson.h>
 #include <I18n.h>
 #include <Logging.h>
 #include <ObfuscationUtils.h>
+#include <ZhDict.h>
 
 #include <algorithm>
 #include <cstring>

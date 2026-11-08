@@ -1,10 +1,9 @@
 #include "EpubReaderMenuActivity.h"
 
-#include <HalStorage.h>
-
 #include <BlePageTurner.h>
 #include <GfxRenderer.h>
 #include <HalFrontlight.h>
+#include <HalStorage.h>
 #include <I18n.h>
 
 #include "CrossPointSettings.h"

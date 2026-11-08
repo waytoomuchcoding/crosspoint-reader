@@ -13,6 +13,10 @@ This fork follows its own feature direction and is not bound by upstream's
 
 - Removed upstream's AI-agent scope gate and AI contribution policy from
   `AGENTS.md` and `.agents/`.
+- Chinese reading mode: zhuyin ruby on words rarer than a chosen frequency,
+  CC-CEDICT word lookup, and a pixel-exact Unifont setup. See
+  [docs/chinese-reading.md](docs/chinese-reading.md).
+- Desktop simulator build targets (`simulator`, `simulator_x3`).
 
 Known upstream defaults still in place:
 

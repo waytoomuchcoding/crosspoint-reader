@@ -1,12 +1,11 @@
 #include "ParsedText.h"
 
-#include <ZhDict.h>
-
 #include <BidiUtils.h>
 #include <GfxRenderer.h>
 #include <Logging.h>
 #include <Memory.h>
 #include <Utf8.h>
+#include <ZhDict.h>
 
 #include <algorithm>
 #include <cmath>

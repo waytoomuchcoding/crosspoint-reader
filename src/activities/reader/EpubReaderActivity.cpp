@@ -1,7 +1,5 @@
 #include "EpubReaderActivity.h"
 
-#include <ZhDict.h>
-
 #include <BlePageTurner.h>
 #include <Epub/Page.h>
 #include <Epub/blocks/TextBlock.h>
@@ -17,6 +15,7 @@
 #include <Memory.h>
 #include <TrustedTime.h>
 #include <WiFi.h>
+#include <ZhDict.h>
 #include <esp_system.h>
 
 #include <algorithm>
@@ -29,8 +28,6 @@
 #include "BookmarkEntry.h"
 #include "ChapterBuildGate.h"
 #include "ClipSelectionActivity.h"
-#include "ZhLookupActivity.h"
-#include "ZhRubyAdjustActivity.h"
 #include "ClippingStore.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
@@ -55,6 +52,8 @@
 #include "SdCardFont.h"
 #include "SdCardFontSystem.h"
 #include "SilentRestart.h"
+#include "ZhLookupActivity.h"
+#include "ZhRubyAdjustActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/settings/TextSettingsActivity.h"
 #include "clippings/ClippingText.h"

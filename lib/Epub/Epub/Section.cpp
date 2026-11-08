@@ -1,7 +1,5 @@
 #include "Section.h"
 
-#include <ZhDict.h>
-
 #include <BufferedFile.h>
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
@@ -9,6 +7,7 @@
 #include <Logging.h>
 #include <Memory.h>
 #include <Serialization.h>
+#include <ZhDict.h>
 
 #include <algorithm>
 
@@ -155,9 +154,8 @@ void Section::writeSectionFileHeader(const ReaderRenderSpec& spec) {
                                    sizeof(spec.viewportHeight) + sizeof(pageCount) + sizeof(spec.hyphenationEnabled) +
                                    sizeof(spec.embeddedStyle) + sizeof(spec.imageRendering) +
                                    sizeof(spec.focusReadingEnabled) + sizeof(spec.characterSpacing) +
-                                   sizeof(spec.wordSpacingPercent) + sizeof(spec.zhRubyThreshold) +
-                                   sizeof(uint32_t) + sizeof(uint32_t) +
-                                   sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t),
+                                   sizeof(spec.wordSpacingPercent) + sizeof(spec.zhRubyThreshold) + sizeof(uint32_t) +
+                                   sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t),
                 "Header size mismatch");
   // Written as the incomplete sentinel; finalizeBuild() patches it to
   // SECTION_FILE_VERSION as the last step, committing the file.

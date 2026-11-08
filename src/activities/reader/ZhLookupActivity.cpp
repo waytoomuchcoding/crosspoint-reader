@@ -45,7 +45,8 @@ void ZhLookupActivity::onEnter() {
   fontId = SETTINGS.getReaderFontId();
   lineHeight = renderer.getLineHeight(fontId);
   const int popupHeight = renderer.getScreenHeight() * 2 / 5;
-  linesPerCard = std::clamp((popupHeight - 2 * (POPUP_PAD + POPUP_BORDER)) / std::max(1, lineHeight), 3, MAX_CARD_LINES);
+  linesPerCard =
+      std::clamp((popupHeight - 2 * (POPUP_PAD + POPUP_BORDER)) / std::max(1, lineHeight), 3, MAX_CARD_LINES);
   entryBuf = makeUniqueNoThrow<uint8_t[]>(ENTRY_BUF_BYTES);
   if (!entryBuf || !zh::openSharedDict() || !extractChars()) {
     LOG_ERR("ZH", "lookup unavailable (dictionary %d, chars %u)", zh::sharedDict().isOpen() ? 1 : 0,
@@ -244,9 +245,8 @@ void ZhLookupActivity::wrapText(const char* text, const int maxWidth, const int 
   std::string cur;
   int curW = 0;
   size_t lastSpace = std::string::npos;
-  const int indentW = indent > 0 ? renderer.getTextAdvanceX(fontId, std::string(indent, ' ').c_str(),
-                                                            EpdFontFamily::REGULAR, 0)
-                                 : 0;
+  const int indentW =
+      indent > 0 ? renderer.getTextAdvanceX(fontId, std::string(indent, ' ').c_str(), EpdFontFamily::REGULAR, 0) : 0;
   const auto* p = reinterpret_cast<const unsigned char*>(text);
   while (*p) {
     const unsigned char* before = p;
