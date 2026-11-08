@@ -1,6 +1,6 @@
 ---
 name: review-i18n-docs
-description: Read-only firmware-handoff review of tr(), English source strings, generated-file workflow, and user documentation for visible changes.
+description: Read-only review of tr(), English source strings, generated-file workflow, and user documentation for visible changes.
 ---
 
 # English strings and user documentation review
@@ -11,7 +11,7 @@ the main agent.
 
 Check:
 
-1. Every new user-facing string uses `tr()` and has an English source entry. Other languages may fall back to English and are not required for handoff.
+1. Every new user-facing string uses `tr()` and has an English source entry. Other languages may fall back to English.
 2. Translation source YAML, generated i18n files, and generated HTML follow the repository workflow; ignored generated outputs are not intended for commit.
 3. A new feature or other behavior an end user should know about updates the appropriate user-facing documentation.
 4. Documentation describes the merged behavior in plain English and does not promise unverified hardware behavior.

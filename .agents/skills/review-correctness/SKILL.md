@@ -1,6 +1,6 @@
 ---
 name: review-correctness
-description: Read-only firmware-handoff review for regressions introduced or made reachable by the current diff; require concrete failure paths.
+description: Read-only review for regressions introduced or made reachable by the current diff; require concrete failure paths.
 ---
 
 # Correctness review

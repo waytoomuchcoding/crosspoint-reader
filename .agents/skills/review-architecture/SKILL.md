@@ -1,6 +1,6 @@
 ---
 name: review-architecture
-description: "Read-only architecture audit of the current logical diff at firmware handoff: assess its long-term shape."
+description: "Read-only architecture audit of the current logical diff: assess its long-term shape."
 ---
 
 # Architecture review

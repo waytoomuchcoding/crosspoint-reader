@@ -1,6 +1,6 @@
 ---
 name: review-embedded
-description: "Read-only firmware-handoff review of ESP32 resources and hardware: RAM, fragmentation, stack, flash, timing, HAL, lifecycle, input, display, storage, and orientation."
+description: "Read-only review of ESP32 resources and hardware: RAM, fragmentation, stack, flash, timing, HAL, lifecycle, input, display, storage, and orientation."
 ---
 
 # Embedded constraints review
@@ -9,7 +9,7 @@ Review the pinned logical change. Consult relevant sections of hardware, HAL,
 coding, or lifecycle rules for the contracts it changes; use project skills only
 when their decision procedure is needed. Inspect code and recorded checks only:
 no file writes, tests, builds, or new diagnostics. Request needed checks from
-the main agent; do not run handoff.
+the main agent.
 
 Review the diff for:
 

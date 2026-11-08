@@ -25,12 +25,3 @@ relevant Discussion or issue so reviewers can see the history.**
 * Add any other information that might be helpful for the reviewer (e.g., performance implications, potential risks,
   specific areas to focus on).
 * Memory / flash impact, if known.
-
----
-
-### AI Usage
-
-While CrossPoint doesn't have restrictions on AI tools in contributing, please be transparent about their usage as it
-helps set the right context for reviewers.
-
-Did you use AI tools to help write this code? _**< YES | PARTIALLY | NO >**_
