@@ -12,13 +12,17 @@ Output directory layout (all integers little-endian):
 
   chars.bin    header "ZHC1" u32 count u32 maxDirBytes u32 maxGroupBytes, then a sparse
                index (u32 codepoint of every 32nd record, ceil(count / 32) entries),
-               then count 16-byte records sorted by codepoint:
-                 u32 cp, u32 pairDirOff, u16 pairCount, u8 charHsk, u8 flags, u32 selfOff
-               pairDirOff indexes pairs.bin; selfOff indexes words.bin (0xFFFFFFFF = none).
+               then count 24-byte records sorted by codepoint:
+                 u32 cp, u32 pairDirOff, u16 pairCount, u8 charHsk, u8 selfHsk,
+                 u32 selfEntryOff (0xFFFFFFFF = the character alone is not a word),
+                 u8[3] selfRank, u8 selfFlags, u8[3] selfZhuyin, u8 reserved
+               The self* fields describe the character as a one-character word, so
+               segmentation never reads words.bin for single characters.
                charHsk = lowest HSK 3.0 band (1-7) of any HSK word containing the
                character, 0 = none.
-  pairs.bin    per first character, its second characters sorted by codepoint:
-                 u32 (secondCp | groupCount << 24), u32 groupOff (into words.bin)
+  pairs.bin    per first character, its second characters sorted by codepoint, 12 bytes each:
+                 u32 (secondCp | groupCount << 24), u32 groupOff (into words.bin),
+                 u16 groupBytes, u16 reserved
   words.bin    word records; the words sharing a first-two-character prefix are
                contiguous and sorted by full key:
                  u8 nChars, u8 restLen, restLen bytes UTF-8 (chars after the first two;
@@ -255,10 +259,13 @@ def build(args):
     chars = bytearray(16)
     max_dir = max_group = 0
     for c in first_chars:
-        self_off = 0xFFFFFFFF
+        self_fields = struct.pack("<BI", 0, 0xFFFFFFFF) + u24(NO_RANK) + bytes([0]) + u24(0) + bytes([0])
         if c in singles:
-            self_off = len(words)
-            words += word_record(c)
+            rs = dic[c]
+            hsk = word_level.get(c, 0)
+            flags = (1 if rs[0]["proper"] else 0) | (2 if hsk else 0)
+            z = zhuyin_codes(rs[0]["py"], 1)[0]
+            self_fields = struct.pack("<BI", hsk, entry_off[c]) + u24(ranks[c]) + bytes([flags]) + u24(z) + bytes([0])
         dir_off = len(pairs)
         seconds = sorted(by_first[c].items(), key=lambda kv: ord(kv[0])) if c in by_first else []
         for c2, keys in seconds:
@@ -269,12 +276,12 @@ def build(args):
             max_group = max(max_group, len(words) - group_off)
             if len(keys) > 255:
                 raise SystemExit(f"group {c}{c2} has {len(keys)} words")
-            pairs += struct.pack("<II", ord(c2) | (len(keys) << 24), group_off)
-        max_dir = max(max_dir, len(seconds) * 8)
-        chars += struct.pack("<IIHBBI", ord(c), dir_off, len(seconds), char_level.get(c, 0), 0, self_off)
+            pairs += struct.pack("<IIHH", ord(c2) | (len(keys) << 24), group_off, len(words) - group_off, 0)
+        max_dir = max(max_dir, len(seconds) * 12)
+        chars += struct.pack("<IIHB", ord(c), dir_off, len(seconds), char_level.get(c, 0)) + self_fields
 
     records = chars[16:]
-    sparse = b"".join(records[k * 16:k * 16 + 4] for k in range(0, len(first_chars), SPARSE_STEP))
+    sparse = b"".join(records[k * 24:k * 24 + 4] for k in range(0, len(first_chars), SPARSE_STEP))
     chars = bytearray(b"ZHC1" + struct.pack("<III", len(first_chars), max_dir, max_group)) + sparse + records
     os.makedirs(args.out, exist_ok=True)
     for name, data in (("chars.bin", chars), ("pairs.bin", pairs), ("words.bin", words), ("entries.bin", entries)):

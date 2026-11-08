@@ -1,5 +1,7 @@
 #include "EpubReaderActivity.h"
 
+#include <ZhDict.h>
+
 #include <BlePageTurner.h>
 #include <Epub/Page.h>
 #include <Epub/blocks/TextBlock.h>
@@ -27,6 +29,7 @@
 #include "BookmarkEntry.h"
 #include "ChapterBuildGate.h"
 #include "ClipSelectionActivity.h"
+#include "ZhLookupActivity.h"
 #include "ClippingStore.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
@@ -454,6 +457,7 @@ void EpubReaderActivity::backgroundBuildTick() {
 }
 
 void EpubReaderActivity::openDictionaryWordSelect() {
+  if (openZhLookup()) return;
   if (SETTINGS.dictionaryName[0] == '\0') {
     pendingLookupSelection = {};
     showDictionaryMessage = true;
@@ -462,6 +466,24 @@ void EpubReaderActivity::openDictionaryWordSelect() {
     return;
   }
   startClipSelection(-1, -1, ClipSelectionActivity::Mode::Lookup);
+}
+
+// Chinese books use the /zh dictionary (CC-CEDICT) with word segmentation
+// instead of the StarDict word picker. Returns false when it does not apply.
+bool EpubReaderActivity::openZhLookup() {
+  if (!section || !epub || section->currentPage < 0 || section->currentPage >= section->pageCount) return false;
+  const std::string& lang = epub->getLanguage();
+  if (lang.rfind("ja", 0) == 0 || lang.rfind("ko", 0) == 0) return false;
+  if (!zh::openSharedDict()) return false;
+  auto page = section->loadPage(section->currentPage);
+  if (!page) return false;
+  int top, right, bottom, left;
+  renderer.getOrientedViewableTRBL(&top, &right, &bottom, &left);
+  auto activity = makeUniqueNoThrow<ZhLookupActivity>(renderer, mappedInput, std::move(page),
+                                                      left + SETTINGS.screenMargin, top + SETTINGS.screenMargin);
+  if (!activity) return false;
+  startActivityForResult(std::move(activity), [this](const ActivityResult&) { requestUpdate(); });
+  return true;
 }
 
 void EpubReaderActivity::startClipSelection(const int initialX, const int initialY,

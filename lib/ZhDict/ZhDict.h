@@ -5,8 +5,9 @@
 // see its docstring for the format.
 //
 // RAM while open: a sparse codepoint index (~1.8 KB for CC-CEDICT), a
-// 64-entry character-record cache (1 KB), one word-group buffer sized from
-// the file header (~4 KB) and segmentation scratch (~5 KB). Everything else
+// 128-entry character cache (4.6 KB), a 128-entry pair cache (2 KB), one
+// word-group buffer sized from the file header (~4 KB) and segmentation
+// scratch (~5.5 KB). Everything else
 // is read from SD on demand.
 
 #include <HalStorage.h>
@@ -82,19 +83,42 @@ class Dict {
 
   SegmentScratch* scratch() { return scratchBuf.get(); }
 
+  // SD traffic since open, for measuring layout cost.
+  struct Stats {
+    uint32_t reads = 0;
+    uint32_t bytes = 0;
+    uint32_t lookups = 0;
+  };
+  const Stats& stats() const { return statsData; }
+
  private:
   struct CharRecord {
     uint32_t cp = 0;
     uint32_t dirOff = 0;
     uint16_t dirCount = 0;
     uint8_t hsk = 0;
+    uint8_t valid = 0;  // 0 = empty slot, 1 = cached miss, 2 = found
+    uint32_t selfEntry = 0xFFFFFFFF;  // the character as a one-character word
+    uint32_t selfRank = NO_RANK;
+    uint32_t selfZhuyin = 0;
+    uint8_t selfHsk = 0;
+    uint8_t selfFlags = 0;
+  };
+  // A second-character lookup in a pair directory, cached (absent pairs too).
+  struct PairRecord {
+    uint32_t cp1 = 0, cp2 = 0;
+    uint32_t groupOff = 0;
+    uint16_t groupBytes = 0;
+    uint8_t count = 0;  // 0 = no word starts with this pair
     uint8_t valid = 0;
-    uint32_t selfOff = 0xFFFFFFFF;
   };
   static constexpr int SPARSE_STEP = 32;
-  static constexpr int CACHE_SIZE = 64;
+  static constexpr int CACHE_SIZE = 128;
+  static constexpr int PAIR_CACHE_SIZE = 128;
 
   bool findChar(uint32_t cp, CharRecord& out);
+  bool findPair(const CharRecord& first, uint32_t cp2, PairRecord& out);
+  bool readAt(HalFile& f, uint32_t off, void* buf, size_t len);
 
   HalFile charsFile, pairsFile, wordsFile, entriesFile;
   bool opened = false;
@@ -105,6 +129,8 @@ class Dict {
   std::unique_ptr<uint8_t[]> groupBuf;
   std::unique_ptr<SegmentScratch> scratchBuf;
   CharRecord cache[CACHE_SIZE];
+  PairRecord pairCache[PAIR_CACHE_SIZE];
+  Stats statsData;
 };
 
 // One dictionary instance shared by layout and the lookup screen. Opened on

@@ -11,7 +11,8 @@ namespace zh {
 namespace {
 
 constexpr uint32_t NO_OFFSET = 0xFFFFFFFF;
-constexpr size_t CHAR_RECORD_BYTES = 16;
+constexpr size_t CHAR_RECORD_BYTES = 24;
+constexpr size_t PAIR_RECORD_BYTES = 12;
 constexpr size_t HEADER_BYTES = 16;
 
 uint32_t le32(const uint8_t* p) {
@@ -34,15 +35,17 @@ uint32_t nextCp(const uint8_t*& p, const uint8_t* end) {
   return cp;
 }
 
-bool readAt(HalFile& f, uint32_t off, void* buf, size_t len) {
-  return f.seekSet(off) && f.read(buf, len) == static_cast<int>(len);
-}
-
 }  // namespace
 
 bool isHan(uint32_t cp) {
   return (cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0x3400 && cp <= 0x4DBF) || (cp >= 0xF900 && cp <= 0xFAFF) ||
          (cp >= 0x20000 && cp <= 0x2FFFF) || cp == 0x3007;
+}
+
+bool Dict::readAt(HalFile& f, uint32_t off, void* buf, size_t len) {
+  ++statsData.reads;
+  statsData.bytes += len;
+  return f.seekSet(off) && f.read(buf, len) == static_cast<int>(len);
 }
 
 bool Dict::open(const char* dir) {
@@ -78,6 +81,8 @@ bool Dict::open(const char* dir) {
     return false;
   }
   for (auto& c : cache) c.valid = 0;
+  for (auto& c : pairCache) c.valid = 0;
+  statsData = Stats{};
   opened = true;
   LOG_INF("ZH", "dictionary open: %u first characters, %u B index, %u B buffer, %u B scratch",
           static_cast<unsigned>(charCount), static_cast<unsigned>(sparseCount * 4), static_cast<unsigned>(bufBytes),
@@ -126,7 +131,11 @@ bool Dict::findChar(uint32_t cp, CharRecord& out) {
           rec.dirOff = le32(r + 4);
           rec.dirCount = static_cast<uint16_t>(r[8] | (r[9] << 8));
           rec.hsk = r[10];
-          rec.selfOff = le32(r + 12);
+          rec.selfHsk = r[11];
+          rec.selfEntry = le32(r + 12);
+          rec.selfRank = le24(r + 16);
+          rec.selfFlags = r[19];
+          rec.selfZhuyin = le24(r + 20);
           found = true;
           break;
         }
@@ -139,8 +148,42 @@ bool Dict::findChar(uint32_t cp, CharRecord& out) {
   return found;
 }
 
+bool Dict::findPair(const CharRecord& first, uint32_t cp2, PairRecord& out) {
+  PairRecord& slot = pairCache[(first.cp * 31 + cp2) % PAIR_CACHE_SIZE];
+  if (slot.valid && slot.cp1 == first.cp && slot.cp2 == cp2) {
+    out = slot;
+    return true;
+  }
+  PairRecord rec;
+  rec.cp1 = first.cp;
+  rec.cp2 = cp2;
+  rec.valid = 1;
+  uint32_t lo = 0, hi = first.dirCount;
+  uint8_t e[PAIR_RECORD_BYTES];
+  while (lo < hi) {
+    const uint32_t mid = (lo + hi) / 2;
+    if (!readAt(pairsFile, first.dirOff + mid * PAIR_RECORD_BYTES, e, sizeof(e))) return false;
+    const uint32_t v = le32(e);
+    const uint32_t c2 = v & 0xFFFFFF;
+    if (c2 < cp2) {
+      lo = mid + 1;
+    } else if (c2 > cp2) {
+      hi = mid;
+    } else {
+      rec.count = static_cast<uint8_t>(v >> 24);
+      rec.groupOff = le32(e + 4);
+      rec.groupBytes = static_cast<uint16_t>(e[8] | (e[9] << 8));
+      break;
+    }
+  }
+  slot = rec;
+  out = rec;
+  return true;
+}
+
 int Dict::matchesAt(const uint32_t* cps, size_t n, size_t i, WordMatch* out, int maxOut) {
   if (!opened || i >= n || maxOut <= 0) return 0;
+  ++statsData.lookups;
   CharRecord rec;
   if (!findChar(cps[i], rec)) return 0;
   int count = 0;
@@ -177,39 +220,23 @@ int Dict::matchesAt(const uint32_t* cps, size_t n, size_t i, WordMatch* out, int
     return true;
   };
 
-  // Words of two or more characters: find the second character in the pair directory.
-  if (i + 1 < n && rec.dirCount > 0) {
-    const uint32_t want = cps[i + 1];
-    uint32_t lo = 0, hi = rec.dirCount;
-    uint8_t e[8];
-    while (lo < hi) {
-      const uint32_t mid = (lo + hi) / 2;
-      if (!readAt(pairsFile, rec.dirOff + mid * 8, e, 8)) break;
-      const uint32_t v = le32(e);
-      const uint32_t c2 = v & 0xFFFFFF;
-      if (c2 < want) {
-        lo = mid + 1;
-      } else if (c2 > want) {
-        hi = mid;
-      } else {
-        const uint32_t groupCount = v >> 24;
-        const uint32_t groupOff = le32(e + 4);
-        const size_t avail = std::min<size_t>(maxGroupBytes, wordsFile.fileSize() - groupOff);
-        if (wordsFile.seekSet(groupOff) && wordsFile.read(groupBuf.get(), avail) == static_cast<int>(avail)) {
-          const uint8_t* p = groupBuf.get();
-          const uint8_t* end = p + avail;
-          for (uint32_t k = 0; k < groupCount && p < end; ++k) parseRecord(p, end, i);
-        }
-        break;
-      }
-    }
+  // Words of two or more characters: their group is found by the second character.
+  PairRecord pair;
+  if (i + 1 < n && findPair(rec, cps[i + 1], pair) && pair.count > 0 && pair.groupBytes <= maxGroupBytes &&
+      readAt(wordsFile, pair.groupOff, groupBuf.get(), pair.groupBytes)) {
+    const uint8_t* p = groupBuf.get();
+    const uint8_t* end = p + pair.groupBytes;
+    for (uint32_t k = 0; k < pair.count && p < end; ++k) parseRecord(p, end, i);
   }
-  if (rec.selfOff != NO_OFFSET) {
-    uint8_t buf[2 + 9 + 3];
-    if (readAt(wordsFile, rec.selfOff, buf, sizeof(buf))) {
-      const uint8_t* p = buf;
-      parseRecord(p, buf + sizeof(buf), i);
-    }
+  if (rec.selfEntry != NO_OFFSET && count < maxOut) {
+    WordMatch& m = out[count++];
+    m = WordMatch{};
+    m.len = 1;
+    m.entryOff = rec.selfEntry;
+    m.hsk = rec.selfHsk;
+    m.flags = rec.selfFlags;
+    m.rank = rec.selfRank;
+    m.zhuyin[0] = rec.selfZhuyin;
   }
   // Longest first (insertion sort; count <= MAX_MATCHES).
   for (int a = 1; a < count; ++a) {

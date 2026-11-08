@@ -34,14 +34,20 @@ class ZhDict:
         lo, hi = 0, self.count
         while lo < hi:
             mid = (lo + hi) // 2
-            c, = struct.unpack_from("<I", self.chars, self.base + mid * 16)
+            c, = struct.unpack_from("<I", self.chars, self.base + mid * 24)
             if c < cp:
                 lo = mid + 1
             elif c > cp:
                 hi = mid
             else:
-                c, dir_off, n, hsk, _flags, self_off = struct.unpack_from("<IIHBBI", self.chars, self.base + mid * 16)
-                return dir_off, n, hsk, self_off
+                r = self.chars[self.base + mid * 24:self.base + mid * 24 + 24]
+                c, dir_off, n, hsk, self_hsk, self_entry = struct.unpack_from("<IIHBBI", r)
+                self_word = None
+                if self_entry != 0xFFFFFFFF:
+                    self_word = dict(n=1, rest="", entry=self_entry, hsk=self_hsk, flags=r[19],
+                                     rank=int.from_bytes(r[16:19], "little"),
+                                     zhuyin=[int.from_bytes(r[20:23], "little")])
+                return dir_off, n, hsk, self_word
         return None
 
     def word_at(self, off):
@@ -61,12 +67,12 @@ class ZhDict:
         rec = self.char_record(ord(text[i]))
         if not rec:
             return []
-        dir_off, n, _hsk, self_off = rec
+        dir_off, n, _hsk, self_word = rec
         out = []
         if i + 1 < len(text):
             c2 = ord(text[i + 1])
             for k in range(n):
-                v, group = struct.unpack_from("<II", self.pairs, dir_off + 8 * k)
+                v, group, _size = struct.unpack_from("<IIH", self.pairs, dir_off + 12 * k)
                 if v & 0xFFFFFF == c2:
                     off = group
                     for _ in range(v >> 24):
@@ -74,8 +80,8 @@ class ZhDict:
                         if text[i + 2:i + w["n"]] == w["rest"] and i + w["n"] <= len(text):
                             out.append(w)
                     break
-        if self_off != 0xFFFFFFFF:
-            out.append(self.word_at(self_off)[0])
+        if self_word:
+            out.append(self_word)
         out.sort(key=lambda w: -w["n"])
         return out
 

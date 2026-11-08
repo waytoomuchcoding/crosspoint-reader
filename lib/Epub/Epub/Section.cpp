@@ -761,6 +761,11 @@ bool Section::commitBuildFile(const uint8_t version, const uint32_t bytesConsume
     Storage.remove(binTmpPath().c_str());
     return false;
   }
+  if (zh::sharedDict().isOpen()) {
+    const auto& st = zh::sharedDict().stats();
+    LOG_INF("ZH", "after section: %u lookups, %u SD reads, %u bytes (cumulative)", static_cast<unsigned>(st.lookups),
+            static_cast<unsigned>(st.reads), static_cast<unsigned>(st.bytes));
+  }
   return true;
 }
 
