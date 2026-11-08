@@ -230,6 +230,10 @@ def u24(v):
 
 def build(args):
     dic = load_cedict(args.cedict, load_unihan(args.unihan))
+    if args.keys_from:
+        # Test fixtures: keep only keys that occur in the given text.
+        text = open(args.keys_from, encoding="utf-8").read()
+        dic = collections.OrderedDict((k, v) for k, v in dic.items() if k in text)
     word_level, char_level = load_hsk(args.hsk)
     ranks = load_ranks(dic)
     print(f"keys {len(dic)}  hsk words {len(word_level)}  ranked {sum(r != NO_RANK for r in ranks.values())}",
@@ -331,6 +335,7 @@ def main():
     ap.add_argument("--unihan", required=True, help="Unihan_Readings.txt")
     ap.add_argument("--hsk", required=True, help="complete-hsk-vocabulary/wordlists/exclusive/new")
     ap.add_argument("--out", required=True, help="output directory (copy it to /zh on the SD card)")
+    ap.add_argument("--keys-from", help="keep only words that occur in this text file (for test fixtures)")
     build(ap.parse_args())
 
 

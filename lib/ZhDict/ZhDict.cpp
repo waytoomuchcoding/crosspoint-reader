@@ -55,7 +55,7 @@ bool Dict::readAt(HalFile& f, uint32_t off, void* buf, size_t len) {
 
 bool Dict::open(const char* dir) {
   if (opened) return true;
-  char path[48];
+  char path[160];
   const char* names[] = {"chars.bin", "pairs.bin", "words.bin", "entries.bin"};
   HalFile* files[] = {&charsFile, &pairsFile, &wordsFile, &entriesFile};
   for (int k = 0; k < 4; ++k) {
