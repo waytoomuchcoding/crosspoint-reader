@@ -58,6 +58,13 @@ INTERVAL_PRESETS = {
     "punctuation": [(0x2000, 0x206F)],
     "cjk":         [(0x3000, 0x303F), (0x3040, 0x309F), (0x30A0, 0x30FF),
                     (0x4E00, 0x9FFF), (0xF900, 0xFAFF), (0xFF00, 0xFFEF)],
+    # Chinese reading: Han (with Extension A), radicals, strokes, enclosed
+    # characters, CJK punctuation and compatibility/small forms, fullwidth
+    # forms, and bopomofo with its tone marks (zhuyin ruby and lookup).
+    "zh":          [(0x02C7, 0x02C7), (0x02CA, 0x02CB), (0x02D9, 0x02D9), (0x2E80, 0x2FDF),
+                    (0x3000, 0x303F), (0x3100, 0x312F), (0x31A0, 0x31EF), (0x3200, 0x32FF),
+                    (0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF), (0xFE30, 0xFE6F),
+                    (0xFF00, 0xFFEF)],
     "hangul":      [(0xAC00, 0xD7AF), (0x1100, 0x11FF), (0x3130, 0x318F)],
     "cherokee":    [(0x13A0, 0x13FF), (0xAB70, 0xABBF)],
     "tifinagh":    [(0x2D30, 0x2D7F)],
@@ -640,7 +647,14 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=F
     fallback_face = None
     if fallback_fontfile:
         fallback_face = freetype.Face(fallback_fontfile)
-        fallback_face.set_char_size(size << 6, size << 6, RASTER_DPI, RASTER_DPI)
+        if PIXEL_NATIVE and fallback_face.is_scalable:
+            fallback_face.set_pixel_sizes(0, PIXEL_NATIVE)
+        elif PIXEL_NATIVE:
+            strikes = [i for i, st in enumerate(fallback_face.available_sizes) if st.y_ppem >> 6 == PIXEL_NATIVE]
+            if strikes:
+                fallback_face.select_size(strikes[0])
+        else:
+            fallback_face.set_char_size(size << 6, size << 6, RASTER_DPI, RASTER_DPI)
 
     load_flags = freetype.FT_LOAD_RENDER
     if PIXEL_NATIVE:

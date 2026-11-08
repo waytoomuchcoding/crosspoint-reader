@@ -63,6 +63,8 @@ class ZhLookupActivity final : public Activity {
     uint8_t len;
   };
   struct Reading {
+    uint8_t hsk = 0;
+    std::vector<std::string> tabLines;  // wrapped pinyin for the tab, small font
     std::string pinyin;
     std::string trad;
     uint32_t zhuyin[zh::MAX_WORD_CHARS] = {};
@@ -98,7 +100,9 @@ class ZhLookupActivity final : public Activity {
   void stepStart(int delta);
   void buildPopup();
   void buildPreview();
-  void wrapInto(const std::string& text, int maxWidth, int indent);
+  void wrapInto(int font, const std::string& text, int maxWidth, int indent, std::vector<std::string>& out) const;
+  int popupTextWidth() const;
+  void fitPopupHeight();
 
   // Jump mode
   void startJump();
@@ -134,6 +138,11 @@ class ZhLookupActivity final : public Activity {
   const bool startInJump;
   int fontId = 0;
   int lineHeight = 0;
+  int smallFont = 0;  // about half the reader size, for readings and definitions
+  int smallLineHeight = 0;
+  int popupHeight = 0;  // largest pop-up
+  int popupFit = 0;     // this selection's pop-up
+  int smallLinesPerPage = 0;
   bool ready = false;
 
   std::unique_ptr<Page> page;
@@ -162,7 +171,6 @@ class ZhLookupActivity final : public Activity {
   std::vector<Reading> readings;
   std::vector<PopupPage> popupPages;
   int popupPage = 0;
-  int linesPerPage = 0;
   int tabWidth = 0;
 
   // Jump mode: a stack of (first line, line count) narrowings.

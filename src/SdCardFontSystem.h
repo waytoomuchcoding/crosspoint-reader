@@ -61,6 +61,10 @@ class SdCardFontSystem {
     }
   }
 
+  // Font id of the current SD family at about `scale` times the reader size
+  // (loads that size if needed); 0 when the family has no such file.
+  int sizeVariant(int fontId, float scale) { return resolveVariant(fontId, scale); }
+
  private:
   // Load the active SD family at the built-in UI point sizes and register each
   // as a size-matched script fallback for the corresponding UI font, so book

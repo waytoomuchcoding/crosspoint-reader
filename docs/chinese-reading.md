@@ -36,7 +36,7 @@ Download `unifont-16.0.04.otf` from <https://unifoundry.com/unifont/> and run:
 
     pip install freetype-py fonttools
     python3 lib/EpdFont/scripts/fontconvert_sdcard.py unifont-16.0.04.otf --pixel-native 16 \
-      --intervals 'latin-ext,punctuation,cjk,(0x02C7-0x02C7),(0x02CA-0x02CB),(0x02D9-0x02D9),(0x3100-0x312F),(0x31A0-0x31BF),(0xFE30-0xFE6F)' \
+      --intervals latin-ext,punctuation,symbols,zh \
       --sizes 16,32 --style regular --name Unifont --output-dir Unifont/
 
 `--pixel-native 16` renders each glyph at Unifont's own 16 px in 1-bit and

@@ -15,6 +15,7 @@
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "SdCardFontSystem.h"
 #include "activities/ActivityResult.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -26,7 +27,6 @@ constexpr size_t CONTEXT_CHARS = zh::MAX_WORD_CHARS - 1;
 constexpr int POPUP_MARGIN = 8;
 constexpr int POPUP_PAD = 8;
 constexpr int POPUP_BORDER = 4;
-constexpr int MAX_POPUP_LINES = 7;  // DESIGN 4.4
 // DESIGN 4.2: hold 450 ms; repeat after 280 ms, every 90 ms, every 45 ms after 1.2 s.
 constexpr unsigned long HOLD_MS = 450;
 constexpr unsigned long REPEAT_FIRST_MS = 280;
@@ -34,20 +34,6 @@ constexpr unsigned long REPEAT_MS = 90;
 constexpr unsigned long REPEAT_FAST_AFTER_MS = 1200;
 constexpr unsigned long REPEAT_FAST_MS = 45;
 constexpr unsigned long PREVIEW_DWELL_MS = 250;  // DESIGN 4.3
-
-std::string zhuyinText(uint32_t code) {
-  std::string out;
-  const int tone = zh::zhuyinTone(code);
-  if (tone == 5) utf8AppendCodepoint(0x02D9, out);  // ˙ leads
-  for (int k = 0; k < 3; ++k) {
-    const int sym = zh::zhuyinSymbol(code, k);
-    if (sym) utf8AppendCodepoint(0x3104 + sym, out);
-  }
-  if (tone == 2) utf8AppendCodepoint(0x02CA, out);
-  if (tone == 3) utf8AppendCodepoint(0x02C7, out);
-  if (tone == 4) utf8AppendCodepoint(0x02CB, out);
-  return out;
-}
 
 }  // namespace
 
@@ -58,17 +44,22 @@ void ZhLookupActivity::onEnter() {
   Activity::onEnter();
   fontId = SETTINGS.getReaderFontId();
   lineHeight = renderer.getLineHeight(fontId);
-  const int popupHeight = renderer.getScreenHeight() * 2 / 5;
-  linesPerPage =
-      std::clamp((popupHeight - 2 * (POPUP_PAD + POPUP_BORDER)) / std::max(1, lineHeight), 3, MAX_POPUP_LINES);
+  // Readings and definitions use the reader family at about half size
+  // (pixel fonts ship a 1x file next to the 2x reading size).
+  smallFont = renderer.isSdCardFont(fontId) ? sdFontSystem.sizeVariant(fontId, 0.5f) : 0;
+  if (smallFont == 0) smallFont = fontId;
+  smallLineHeight = renderer.getLineHeight(smallFont);
+  popupHeight = renderer.getScreenHeight() / 2;
+  const int content = popupHeight - 2 * (POPUP_PAD + POPUP_BORDER);
+  smallLinesPerPage = std::max(2, (content - lineHeight - POPUP_PAD / 2) / std::max(1, smallLineHeight));
   entryBuf = makeUniqueNoThrow<uint8_t[]>(ENTRY_BUF_BYTES);
   if (!entryBuf || !zh::openSharedDict() || !buildPage(pageIndex)) {
     LOG_ERR("ZH", "lookup unavailable");
     cancel();
     return;
   }
-  // Reading tabs fit a six-letter pinyin syllable ("zhuang") plus padding.
-  tabWidth = renderer.getTextAdvanceX(fontId, "zhuàng", EpdFontFamily::REGULAR, 0) + 2 * POPUP_PAD;
+  // Tabs fit two pinyin syllables per line ("chuāng zhuàng" wraps once).
+  tabWidth = renderer.getTextAdvanceX(smallFont, "zhuàng ", EpdFontFamily::REGULAR, 0) * 3 / 2 + 2 * POPUP_PAD;
   if (startInJump) startJump();
   // A button still held from opening this screen (the long-press) must not act here.
   {
@@ -392,8 +383,10 @@ void ZhLookupActivity::openPopup() {
   const size_t len = cursorLen();
   selStart = start;
   matchCount = zh::sharedDict().matchesAt(cps.data(), runEnd(start), start, matches, zh::MAX_MATCHES);
+  // Word cursor: the word itself. Character cursor: every word starting at
+  // this character, longest first (e.g. the second character of a four-character word).
   matchIndex = 0;
-  for (int k = 0; k < matchCount; ++k) {
+  for (int k = 0; k < matchCount && !charMode; ++k) {
     if (matches[k].len == len) matchIndex = k;
   }
   buildPopup();
@@ -412,14 +405,15 @@ void ZhLookupActivity::stepStart(const int delta) {
   selectAt(static_cast<size_t>(s), 0);
 }
 
-void ZhLookupActivity::wrapInto(const std::string& text, const int maxWidth, const int indent) {
+void ZhLookupActivity::wrapInto(const int font, const std::string& text, const int maxWidth, const int indent,
+                                std::vector<std::string>& out) const {
   // Greedy wrap by codepoint; breaks at the last space unless that would leave
   // only the indent or a sense number ("2.") on the line.
   std::string cur;
   int curW = 0;
   size_t lastSpace = std::string::npos;
   const std::string indentText(indent, ' ');
-  const int indentW = indent > 0 ? renderer.getTextAdvanceX(fontId, indentText.c_str(), EpdFontFamily::REGULAR, 0) : 0;
+  const int indentW = indent > 0 ? renderer.getTextAdvanceX(font, indentText.c_str(), EpdFontFamily::REGULAR, 0) : 0;
   const auto* p = reinterpret_cast<const unsigned char*>(text.c_str());
   while (*p) {
     const unsigned char* before = p;
@@ -427,23 +421,23 @@ void ZhLookupActivity::wrapInto(const std::string& text, const int maxWidth, con
     if (cp == 0) break;
     char one[5] = {};
     memcpy(one, before, p - before);
-    const int w = renderer.getTextAdvanceX(fontId, one, EpdFontFamily::REGULAR, 0);
+    const int w = renderer.getTextAdvanceX(font, one, EpdFontFamily::REGULAR, 0);
     if (curW + w > maxWidth && !cur.empty()) {
       std::string carry;
       if (lastSpace != std::string::npos && lastSpace > static_cast<size_t>(indent) + 3) {
         carry = cur.substr(lastSpace + 1);
         cur.resize(lastSpace);
       }
-      lines.push_back(std::move(cur));
+      out.push_back(std::move(cur));
       cur = indentText + carry;
-      curW = indentW + (carry.empty() ? 0 : renderer.getTextAdvanceX(fontId, carry.c_str(), EpdFontFamily::REGULAR, 0));
+      curW = indentW + (carry.empty() ? 0 : renderer.getTextAdvanceX(font, carry.c_str(), EpdFontFamily::REGULAR, 0));
       lastSpace = std::string::npos;
     }
-    if (cp == ' ') lastSpace = cur.size();
+    if (cp == ' ' && curW > 0) lastSpace = cur.size();
     cur.append(reinterpret_cast<const char*>(before), p - before);
     curW += w;
   }
-  if (!cur.empty()) lines.push_back(std::move(cur));
+  if (!cur.empty()) out.push_back(std::move(cur));
 }
 
 void ZhLookupActivity::buildPopup() {
@@ -451,26 +445,25 @@ void ZhLookupActivity::buildPopup() {
   readings.clear();
   popupPages.clear();
   popupPage = 0;
-  std::string head;
-  const int len = matchCount > 0 ? matches[matchIndex].len : 1;
-  for (int k = 0; k < len && selStart + k < cps.size(); ++k) utf8AppendCodepoint(cps[selStart + k], head);
-  const int innerWidth = renderer.getScreenWidth() - 2 * (POPUP_MARGIN + POPUP_BORDER + POPUP_PAD);
-  const int textWidth = innerWidth - tabWidth - POPUP_PAD;
+  const int textWidth = popupTextWidth();
 
   if (matchCount == 0) {
     Reading r;
-    lines.push_back(head);
     lines.push_back(tr(STR_ZH_NOT_IN_DICT));
-    r.lineCount = 2;
-    readings.push_back(r);
+    r.lineCount = 1;
+    readings.push_back(std::move(r));
     popupPages.push_back({0, 0});
+    fitPopupHeight();
     return;
   }
   const zh::WordMatch& m = matches[matchIndex];
   const size_t got = zh::sharedDict().readEntry(m.entryOff, entryBuf.get(), ENTRY_BUF_BYTES);
   const uint8_t* p = entryBuf.get();
   const uint8_t* end = p + got;
-  if (got == 0) return;
+  if (got == 0) {
+    fitPopupHeight();
+    return;
+  }
   const int count = *p++;
   readings.reserve(count);
   for (int r = 0; r < count && p < end; ++r) {
@@ -492,43 +485,55 @@ void ZhLookupActivity::buildPopup() {
     const char* defs = reinterpret_cast<const char*>(p + 2);
     p += 2 + defLen;
 
+    // The title row (reader font) is drawn per page; the rest uses the small font.
+    if (r == 0 && m.hsk) rd.hsk = m.hsk;
+    wrapInto(smallFont, rd.pinyin, tabWidth - 2 * POPUP_PAD, 0, rd.tabLines);
     rd.firstLine = static_cast<uint16_t>(lines.size());
-    std::string title = head;
-    if (!rd.trad.empty()) title += "【" + rd.trad + "】";
-    if (r == 0 && m.hsk) title += "  HSK" + std::to_string(m.hsk);
-    wrapInto(title, textWidth, 0);
-    std::string sound = rd.pinyin + "  ";
-    for (int s = 0; s < rd.syllables; ++s) {
-      if (s) sound += " ";
-      sound += zhuyinText(rd.zhuyin[s]);
-    }
-    wrapInto(sound, textWidth, 0);
+    // Zhuyin is drawn beside the title's characters, like ruby in the book.
+    wrapInto(smallFont, rd.pinyin, textWidth, 0, lines);
     int sense = 1;
     for (size_t s = 0; s < defLen;) {
       size_t e = s;
       while (e < defLen && defs[e] != '\x1f') ++e;
-      wrapInto(std::to_string(sense++) + ". " + std::string(defs + s, e - s), textWidth, 3);
+      wrapInto(smallFont, std::to_string(sense++) + ". " + std::string(defs + s, e - s), textWidth, 3, lines);
       s = e + 1;
     }
     rd.lineCount = static_cast<uint16_t>(lines.size() - rd.firstLine);
-    for (size_t at = rd.firstLine; at < lines.size(); at += linesPerPage) {
+    for (size_t at = rd.firstLine; at < lines.size(); at += smallLinesPerPage) {
       popupPages.push_back({static_cast<uint8_t>(readings.size()), static_cast<uint16_t>(at)});
     }
     readings.push_back(std::move(rd));
   }
   if (popupPages.empty()) popupPages.push_back({0, 0});
+  fitPopupHeight();
+}
+
+void ZhLookupActivity::fitPopupHeight() {
+  // Shrink to the tallest page of this selection (tabs or text), so short
+  // entries do not leave an empty box, without the height jumping between pages.
+  int tabs = 0;
+  for (const auto& r : readings) tabs += std::max<int>(1, r.tabLines.size()) * smallLineHeight + POPUP_PAD;
+  int text = 0;
+  for (const auto& pg : popupPages) {
+    const Reading& rd = readings[pg.reading];
+    const int pageLines = std::min<int>(smallLinesPerPage, rd.firstLine + rd.lineCount - pg.firstLine);
+    text = std::max(text, lineHeight + POPUP_PAD / 2 + pageLines * smallLineHeight);
+  }
+  const int content = std::max(tabs, text);
+  popupFit = std::min(popupHeight, content + 2 * (POPUP_PAD + POPUP_BORDER));
 }
 
 void ZhLookupActivity::buildPreview() {
   // DESIGN 4.4: every dictionary word starting at the cursor, longest first,
-  // one line each: word, first reading, first sense.
+  // one line each in the small font: word, first reading, first sense.
   previewLines.clear();
   const size_t start = cursorStart();
   if (start >= chars.size()) return;
   zh::WordMatch found[zh::MAX_MATCHES];
   const int count = zh::sharedDict().matchesAt(cps.data(), runEnd(start), start, found, zh::MAX_MATCHES);
   const int width = renderer.getScreenWidth() - 2 * (POPUP_MARGIN + POPUP_BORDER + POPUP_PAD);
-  for (int k = 0; k < count && static_cast<int>(previewLines.size()) < linesPerPage; ++k) {
+  std::vector<std::string> wrapped;
+  for (int k = 0; k < count && static_cast<int>(previewLines.size()) < smallLinesPerPage; ++k) {
     std::string line;
     for (int c = 0; c < found[k].len; ++c) utf8AppendCodepoint(cps[start + c], line);
     const size_t got = zh::sharedDict().readEntry(found[k].entryOff, entryBuf.get(), ENTRY_BUF_BYTES);
@@ -536,7 +541,7 @@ void ZhLookupActivity::buildPreview() {
     const uint8_t* end = p + got;
     if (got > 3 && p[0] > 0) {
       const size_t pyLen = std::min<size_t>(p[1], got - 2);
-      line += " " + std::string(reinterpret_cast<const char*>(p + 2), pyLen);
+      line += "  " + std::string(reinterpret_cast<const char*>(p + 2), pyLen);
       const uint8_t* q = p + 2 + pyLen;
       if (q < end) q += 1 + *q;        // traditional form
       if (q < end) q += 1 + 3 * (*q);  // zhuyin
@@ -545,18 +550,13 @@ void ZhLookupActivity::buildPreview() {
         const char* defs = reinterpret_cast<const char*>(q + 2);
         size_t e = 0;
         while (e < defLen && defs[e] != '\x1f') ++e;
-        line += " " + std::string(defs, e);
+        line += "  " + std::string(defs, e);
       }
     }
     // Keep the first wrapped line only.
-    const size_t before = lines.size();
-    wrapInto(line, width, 0);
-    if (lines.size() > before) {
-      std::string first = lines[before];
-      if (lines.size() > before + 1) first += "…";
-      previewLines.push_back(std::move(first));
-      lines.resize(before);
-    }
+    wrapped.clear();
+    wrapInto(smallFont, line, width, 0, wrapped);
+    if (!wrapped.empty()) previewLines.push_back(wrapped.size() > 1 ? wrapped[0] + "…" : wrapped[0]);
   }
 }
 
@@ -623,6 +623,10 @@ void ZhLookupActivity::drawHighlight(const size_t first, const size_t len) {
   }
 }
 
+int ZhLookupActivity::popupTextWidth() const {
+  return renderer.getScreenWidth() - 2 * (POPUP_MARGIN + POPUP_BORDER + POPUP_PAD) - tabWidth - POPUP_PAD;
+}
+
 int ZhLookupActivity::popupTop(const int height) const {
   const int screenH = renderer.getScreenHeight();
   if (endOn == firstOn) return 0;
@@ -636,7 +640,7 @@ int ZhLookupActivity::popupTop(const int height) const {
 void ZhLookupActivity::drawPreview() {
   if (previewLines.empty()) return;
   const int w = renderer.getScreenWidth() - 2 * POPUP_MARGIN;
-  const int h = static_cast<int>(previewLines.size()) * lineHeight + 2 * (POPUP_PAD + POPUP_BORDER);
+  const int h = static_cast<int>(previewLines.size()) * smallLineHeight + 2 * (POPUP_PAD + POPUP_BORDER);
   const int x = POPUP_MARGIN;
   const int y = popupTop(h);
   renderer.fillRect(x, y, w, h, false);
@@ -645,14 +649,14 @@ void ZhLookupActivity::drawPreview() {
   renderer.drawRect(x + 3, y + 3, w - 6, h - 6, true);
   int ty = y + POPUP_BORDER + POPUP_PAD;
   for (const auto& line : previewLines) {
-    renderer.drawText(fontId, x + POPUP_BORDER + POPUP_PAD, ty, line.c_str(), true);
-    ty += lineHeight;
+    renderer.drawText(smallFont, x + POPUP_BORDER + POPUP_PAD, ty, line.c_str(), true);
+    ty += smallLineHeight;
   }
 }
 
 void ZhLookupActivity::drawPopup() {
   const int w = renderer.getScreenWidth() - 2 * POPUP_MARGIN;
-  const int h = linesPerPage * lineHeight + 2 * (POPUP_PAD + POPUP_BORDER);
+  const int h = popupFit;
   const int x = POPUP_MARGIN;
   const int y = popupTop(h);
   // Focused pop-up: 4 px border (DESIGN 4.3).
@@ -661,31 +665,71 @@ void ZhLookupActivity::drawPopup() {
   if (popupPages.empty() || readings.empty()) return;
   const PopupPage& pg = popupPages[std::min<size_t>(popupPage, popupPages.size() - 1)];
   const int innerY = y + POPUP_BORDER + POPUP_PAD;
+  const int innerBottom = y + h - POPUP_BORDER - POPUP_PAD;
 
-  // Reading tabs down the left; the current one inverted. Scroll when they overflow.
+  // Reading tabs down the left, each wrapping its full pinyin in the small
+  // font; the current one inverted. Scroll so the current tab is visible.
   const int tabX = x + POPUP_BORDER;
-  const int rows = linesPerPage;
-  const int firstTab = std::max(0, static_cast<int>(pg.reading) - rows + 1);
-  for (int r = firstTab; r < static_cast<int>(readings.size()) && r < firstTab + rows; ++r) {
-    const int ty = innerY + (r - firstTab) * lineHeight;
+  const auto tabHeight = [&](const Reading& r) {
+    return std::max<int>(1, r.tabLines.size()) * smallLineHeight + POPUP_PAD;
+  };
+  int firstTab = 0;
+  for (;;) {
+    int used = 0;
+    for (int r = firstTab; r <= pg.reading; ++r) used += tabHeight(readings[r]);
+    if (used <= innerBottom - innerY || firstTab == pg.reading) break;
+    ++firstTab;
+  }
+  int ty = innerY - POPUP_PAD / 2;
+  for (int r = firstTab; r < static_cast<int>(readings.size()); ++r) {
+    const int th = tabHeight(readings[r]);
+    if (ty + th > innerBottom + POPUP_PAD) break;
     const bool current = r == pg.reading;
-    if (current) renderer.fillRect(tabX, ty, tabWidth, lineHeight, true);
-    std::string label = readings[r].pinyin;
-    // First syllable only; the full reading is on the right.
-    const size_t space = label.find(' ');
-    if (space != std::string::npos) label = label.substr(0, space) + "…";
-    renderer.drawText(fontId, tabX + POPUP_PAD, ty, label.c_str(), !current);
+    if (current) renderer.fillRect(tabX, ty, tabWidth, th, true);
+    int ly = ty + POPUP_PAD / 2;
+    for (const auto& line : readings[r].tabLines) {
+      renderer.drawText(smallFont, tabX + POPUP_PAD, ly, line.c_str(), !current);
+      ly += smallLineHeight;
+    }
+    ty += th;
+    if (!current) renderer.drawLine(tabX, ty - 1, tabX + tabWidth - 1, ty - 1, true);
   }
   renderer.drawLine(tabX + tabWidth, y + POPUP_BORDER, tabX + tabWidth, y + h - POPUP_BORDER - 1, 2, true);
 
-  // This page of the current reading.
+  // Right pane: the title in the reader font, then this page in the small font.
   const Reading& rd = readings[pg.reading];
+  const int textX = tabX + tabWidth + POPUP_PAD;
+  // Each character followed by its zhuyin column (as ruby in the book), then
+  // the traditional form and HSK band.
+  int tx = textX;
+  const int wordLen = matchCount > 0 ? matches[matchIndex].len : 1;
+  for (int k = 0; k < wordLen && selStart + k < cps.size(); ++k) {
+    char ch[5] = {};
+    utf8AppendCodepoint(ch, cps[selStart + k]);
+    renderer.drawText(fontId, tx, innerY, ch, true);
+    tx += renderer.getTextAdvanceX(fontId, ch, EpdFontFamily::REGULAR, 0);
+    if (k < rd.syllables && rd.zhuyin[k]) {
+      const int rx = tx;
+      zh::forEachRubyPixel(rd.zhuyin[k], lineHeight, [&](int px, int py) { renderer.drawPixel(rx + px, innerY + py); });
+      tx += zh::RUBY_WIDTH;
+    }
+  }
+  if (!rd.trad.empty()) {
+    const std::string trad = "【" + rd.trad + "】";
+    renderer.drawText(fontId, tx, innerY, trad.c_str(), true);
+    tx += renderer.getTextAdvanceX(fontId, trad.c_str(), EpdFontFamily::REGULAR, 0);
+  }
+  if (rd.hsk) {
+    char hsk[8];
+    snprintf(hsk, sizeof(hsk), "HSK%d", rd.hsk);
+    renderer.drawText(smallFont, tx + POPUP_PAD, innerY + (lineHeight - smallLineHeight) / 2, hsk, true);
+  }
   const size_t to = std::min<size_t>({static_cast<size_t>(rd.firstLine + rd.lineCount),
-                                      static_cast<size_t>(pg.firstLine + linesPerPage), lines.size()});
-  int ty = innerY;
+                                      static_cast<size_t>(pg.firstLine + smallLinesPerPage), lines.size()});
+  int ly = innerY + lineHeight + POPUP_PAD / 2;
   for (size_t k = pg.firstLine; k < to; ++k) {
-    renderer.drawText(fontId, tabX + tabWidth + POPUP_PAD, ty, lines[k].c_str(), true);
-    ty += lineHeight;
+    renderer.drawText(smallFont, textX, ly, lines[k].c_str(), true);
+    ly += smallLineHeight;
   }
   // Page position on the bottom border.
   if (popupPages.size() > 1) {
