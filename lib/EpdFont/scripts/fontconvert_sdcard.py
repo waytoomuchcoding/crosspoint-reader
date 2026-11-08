@@ -570,6 +570,11 @@ def extract_ligatures_fonttools(font_path, codepoints):
     return pairs
 
 
+# Rasterization DPI. Pixel fonts such as GNU Unifont stay crisp only when a
+# size maps to whole pixels (--dpi 144: 8 pt = 16 px, 16 pt = 32 px).
+RASTER_DPI = 150
+
+
 def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=False,
                          fallback_fontfile=None):
     """Rasterize all glyphs for one font style. Returns StyleRasterData."""
@@ -583,12 +588,12 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=F
     # load_glyph() with FT_LOAD_RENDER renders at the active size, so calling
     # it before set_char_size() would waste work at the default size and risk
     # Invalid_Size_Handle on some fonts.
-    face.set_char_size(size << 6, size << 6, 150, 150)
+    face.set_char_size(size << 6, size << 6, RASTER_DPI, RASTER_DPI)
     ligature_glyph_indices = extract_ligature_glyph_indices_fonttools(fontfile)
     fallback_face = None
     if fallback_fontfile:
         fallback_face = freetype.Face(fallback_fontfile)
-        fallback_face.set_char_size(size << 6, size << 6, 150, 150)
+        fallback_face.set_char_size(size << 6, size << 6, RASTER_DPI, RASTER_DPI)
 
     load_flags = freetype.FT_LOAD_RENDER
     if force_autohint:
@@ -945,6 +950,8 @@ def main():
                         help="Font style for single-style mode (default: regular).")
     parser.add_argument("--name", dest="name",
                         help="Font family name for output filenames (default: derived from font filename).")
+    parser.add_argument("--dpi", dest="dpi", type=int, default=150,
+                        help="Rasterization DPI (default 150). Use 144 for 16 px pixel fonts.")
     parser.add_argument("--force-autohint", dest="force_autohint", action="store_true",
                         help="Force FreeType auto-hinter instead of native font hinting.")
     parser.add_argument("-o", "--output", dest="output",
@@ -973,6 +980,8 @@ def main():
                         help="Fallback font file for bold-italic style.")
 
     args = parser.parse_args()
+    global RASTER_DPI
+    RASTER_DPI = args.dpi
 
     if args.list_presets:
         print("Available interval presets:")
