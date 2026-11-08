@@ -14,24 +14,38 @@ looking up a word.
 
 ## Setup
 
-You build the font and the dictionary on a computer and copy them to the SD
-card. The data is not shipped with the firmware because of its licences.
+### Easiest: download on the reader
 
-### 1. Font
+**Settings > Reader > Download Chinese Dictionary** joins Wi-Fi and installs
+the dictionary into `/zh` and Unifont into `/.fonts/Unifont` (about 26 MB).
+The files come from this fork's `zh-dict` release, which the **Chinese
+dictionary** GitHub Actions workflow (`.github/workflows/zh-dictionary.yml`)
+builds from the original sources: run it once from the Actions tab, and it
+refreshes monthly. The download goes into `/zh.new` and replaces `/zh` only
+when every file has arrived intact. The reader restarts afterwards.
+
+Then choose **Settings > Reader > Font Family: Unifont** and a size.
+
+### By hand
+
+You can also build the files on a computer and copy them to the SD card.
+
+#### Font
 
 Download `unifont-16.0.04.otf` from <https://unifoundry.com/unifont/> and run:
 
     pip install freetype-py fonttools
-    python3 lib/EpdFont/scripts/fontconvert_sdcard.py unifont-16.0.04.otf --dpi 144 \
-      --intervals 'latin-ext,punctuation,cjk,(0x02C7-0x02C7),(0x02CA-0x02CB),(0x02D9-0x02D9),(0x3100-0x312F),(0x31A0-0x31BF),(0x2460-0x2473)' \
-      --sizes 8,16 --style regular --name Unifont --output-dir Unifont/
+    python3 lib/EpdFont/scripts/fontconvert_sdcard.py unifont-16.0.04.otf --pixel-native 16 \
+      --intervals 'latin-ext,punctuation,cjk,(0x02C7-0x02C7),(0x02CA-0x02CB),(0x02D9-0x02D9),(0x3100-0x312F),(0x31A0-0x31BF),(0xFE30-0xFE6F)' \
+      --sizes 16,32 --style regular --name Unifont --output-dir Unifont/
 
-`--dpi 144` makes 8 pt = 16 px and 16 pt = 32 px, so every Unifont pixel
-lands on whole screen pixels. Copy the `Unifont` folder to `/.fonts/` on the
-card, then choose **Settings > Reader > Font Family: Unifont** and **Font
-Size: 16**.
+`--pixel-native 16` renders each glyph at Unifont's own 16 px in 1-bit and
+enlarges it, so 32 px text is pixel-sharp. Sizes are in pixels; the files are
+labelled with the matching point size (`Unifont_15.cpfont` is 32 px). Other
+pixel fonts work the same way with their own native size (WenQuanYi 12/14/16,
+Fusion Pixel 8/10/12, Zpix 12). Copy the `Unifont` folder to `/.fonts/`.
 
-### 2. Dictionary
+#### Dictionary
 
 Download:
 
@@ -48,7 +62,7 @@ Then:
       --unihan Unihan_Readings.txt \
       --hsk complete-hsk-vocabulary/wordlists/exclusive/new --out zh/
 
-Copy the `zh` folder (about 19 MB) to the root of the SD card.
+Copy the `zh` folder (about 21 MB) to the root of the SD card.
 
 ### 3. Settings
 
@@ -65,12 +79,27 @@ zhuyin.
 
 ## Using lookup
 
-| Button | Cursor | Pop-up |
-| --- | --- | --- |
-| ◀ / ▶ | Previous / next word | Previous / next card |
-| Side buttons | Line up / down | Move the start one character |
-| Confirm | Open the pop-up | Next shorter word starting here |
-| Back | Leave lookup | Close the pop-up |
+Open it from the reader menu (**Look Up**), or hold Confirm while reading
+(with **Settings > Controls > Long-press Menu** set to **Dictionary**) to
+start in jump mode.
+
+| Button | Cursor | Pop-up | Jump |
+| --- | --- | --- | --- |
+| ◀ / ▶ | Previous / next word (or character); hold to sweep | Previous / next page of readings | Band 3 / 4 |
+| Side buttons | Line up / down | Move the start one character | Undo / cancel |
+| Confirm | Open the pop-up; hold for jump mode | Next shorter word starting here | Band 2 |
+| Back | Leave lookup; hold to switch word / character cursor | Close the pop-up | Band 1 |
+
+- Held buttons repeat after 280 ms, then every 90 ms, and every 45 ms after
+  1.2 s. Presses are applied at once and only the latest state is drawn.
+- Moving past the first or last word or line turns the page. Words that cross
+  a page break are matched whole.
+- After a short pause the preview (double border) lists every dictionary word
+  starting at the cursor.
+- The pop-up shows one tab per reading on the left; ◀ ▶ page through every
+  reading and its senses in turn.
+- Jump mode splits the page's lines into four bands; pick bands until one
+  line is left, and the cursor lands on its first word.
 
 Words come from the same segmentation that places zhuyin: each stretch of
 Chinese characters is split into the most probable sequence of dictionary

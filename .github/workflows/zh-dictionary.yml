@@ -1,0 +1,59 @@
+# Builds the Chinese reading data (dictionary + Unifont) from its public
+# sources and publishes it on the `zh-dict` release, which the reader's
+# Settings > Reader > Download Chinese Dictionary fetches.
+name: Chinese dictionary
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 1 * *"  # monthly, to pick up CC-CEDICT updates
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install tools
+        run: pip install wordfreq freetype-py fonttools pyyaml zopfli
+
+      - name: Download sources
+        run: |
+          mkdir -p src && cd src
+          curl -sSfL -o cedict.txt.gz https://www.mdbg.net/chinese/export/cedict/cedict_1_0_ts_utf-8_mdbg.txt.gz
+          gunzip cedict.txt.gz
+          curl -sSfLO https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip
+          unzip -o Unihan.zip Unihan_Readings.txt
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/drkameleon/complete-hsk-vocabulary.git hsk
+          git -C hsk sparse-checkout set wordlists/exclusive/new
+          curl -sSfLO https://unifoundry.com/pub/unifont/unifont-16.0.04/font-builds/unifont-16.0.04.otf
+
+      - name: Build dictionary
+        run: |
+          python3 scripts/zh/build_zh_dict.py --cedict src/cedict.txt --unihan src/Unihan_Readings.txt \
+            --hsk src/hsk/wordlists/exclusive/new --out out/zh
+
+      - name: Build fonts
+        run: |
+          python3 lib/EpdFont/scripts/fontconvert_sdcard.py src/unifont-16.0.04.otf --pixel-native 16 \
+            --intervals 'latin-ext,punctuation,cjk,(0x02C7-0x02C7),(0x02CA-0x02CB),(0x02D9-0x02D9),(0x3100-0x312F),(0x31A0-0x31BF),(0xFE30-0xFE6F)' \
+            --sizes 16,32 --style regular --name Unifont --output-dir out/fonts/Unifont
+
+      - name: Package
+        run: python3 scripts/zh/package_release.py --dict out/zh --fonts out/fonts --version "$(date -u +%Y-%m-%d)" --out dist
+
+      - name: Publish to the zh-dict release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view zh-dict >/dev/null 2>&1 || gh release create zh-dict --title "Chinese reading data" \
+            --notes "Dictionary and fonts for Settings > Reader > Download Chinese Dictionary. Data: CC BY-SA 4.0 (see zh-LICENSE.txt)." \
+            --latest=false
+          gh release upload zh-dict dist/* --clobber
