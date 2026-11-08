@@ -574,6 +574,37 @@ def extract_ligatures_fonttools(font_path, codepoints):
 # size maps to whole pixels (--dpi 144: 8 pt = 16 px, 16 pt = 32 px).
 RASTER_DPI = 150
 
+# Pixel-font mode (--pixel-native PX): render each glyph once at the font's
+# native PX in 1-bit, then enlarge every pixel to size // PX screen pixels.
+# Sizes are then pixel sizes (24 = 2x a 12 px font). Works for bitmap-only
+# fonts (BDF/PCF strikes) too. 0 = off.
+PIXEL_NATIVE = 0
+
+
+class _ScaledBitmap:
+    """8-bit (0/255) top-down bitmap with FreeType-like attributes."""
+
+    def __init__(self, mono, scale):
+        self.width = mono.width * scale
+        self.rows = mono.rows * scale
+        self.pitch = self.width
+        src = mono.buffer
+        pitch = abs(mono.pitch)
+        out = bytearray(self.width * self.rows)
+        for y in range(mono.rows):
+            row = y * pitch if mono.pitch >= 0 else (mono.rows - 1 - y) * pitch
+            line = bytearray(self.width)
+            for x in range(mono.width):
+                if mono.pixel_mode == 1:  # FT_PIXEL_MODE_MONO
+                    on = src[row + (x >> 3)] & (0x80 >> (x & 7))
+                else:
+                    on = src[row + x] >= 128
+                if on:
+                    line[x * scale:(x + 1) * scale] = b"\xff" * scale
+            for k in range(scale):
+                out[(y * scale + k) * self.width:(y * scale + k + 1) * self.width] = line
+        self.buffer = bytes(out)
+
 
 def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=False,
                          fallback_fontfile=None):
@@ -584,18 +615,36 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=F
     style_label = style_names.get(style_id, str(style_id))
 
     face = freetype.Face(fontfile)
-    # Set font size at 150 DPI (matching fontconvert.py) BEFORE any glyph load.
-    # load_glyph() with FT_LOAD_RENDER renders at the active size, so calling
-    # it before set_char_size() would waste work at the default size and risk
-    # Invalid_Size_Handle on some fonts.
-    face.set_char_size(size << 6, size << 6, RASTER_DPI, RASTER_DPI)
-    ligature_glyph_indices = extract_ligature_glyph_indices_fonttools(fontfile)
+    scale = 1
+    if PIXEL_NATIVE:
+        if size % PIXEL_NATIVE:
+            raise SystemExit(f"--pixel-native {PIXEL_NATIVE}: size {size} is not a multiple")
+        scale = size // PIXEL_NATIVE
+        if face.is_scalable:
+            face.set_pixel_sizes(0, PIXEL_NATIVE)
+        else:
+            strikes = [i for i, s in enumerate(face.available_sizes) if s.y_ppem >> 6 == PIXEL_NATIVE or s.height == PIXEL_NATIVE]
+            if not strikes:
+                raise SystemExit(f"{fontfile}: no {PIXEL_NATIVE} px strike")
+            face.select_size(strikes[0])
+    else:
+        # Set font size at 150 DPI (matching fontconvert.py) BEFORE any glyph load.
+        # load_glyph() with FT_LOAD_RENDER renders at the active size, so calling
+        # it before set_char_size() would waste work at the default size and risk
+        # Invalid_Size_Handle on some fonts.
+        face.set_char_size(size << 6, size << 6, RASTER_DPI, RASTER_DPI)
+    try:
+        ligature_glyph_indices = extract_ligature_glyph_indices_fonttools(fontfile)
+    except Exception:
+        ligature_glyph_indices = {}  # bitmap-only fonts have no GSUB
     fallback_face = None
     if fallback_fontfile:
         fallback_face = freetype.Face(fallback_fontfile)
         fallback_face.set_char_size(size << 6, size << 6, RASTER_DPI, RASTER_DPI)
 
     load_flags = freetype.FT_LOAD_RENDER
+    if PIXEL_NATIVE:
+        load_flags |= freetype.FT_LOAD_TARGET_MONO | freetype.FT_LOAD_NO_HINTING
     if force_autohint:
         load_flags |= freetype.FT_LOAD_FORCE_AUTOHINT
 
@@ -631,6 +680,20 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=F
         if start <= i_end:
             validated_intervals.append((start, i_end))
 
+    # The reader accepts at most 4096 intervals (SdCardFont MAX_INTERVALS). Fonts
+    # with patchy coverage split into thousands, so bridge the smallest gaps; the
+    # bridged codepoints become empty glyphs.
+    gap = 1
+    while len(validated_intervals) > 4000:
+        gap *= 2
+        merged = []
+        for start, end in validated_intervals:
+            if merged and start - merged[-1][1] - 1 <= gap:
+                merged[-1] = (merged[-1][0], end)
+            else:
+                merged.append((start, end))
+        validated_intervals = merged
+
     intervals = validated_intervals
     total_glyphs = sum(end - start + 1 for start, end in intervals)
     print(f"  [{style_label}] Validated: {len(intervals)} intervals, {total_glyphs} glyphs", file=sys.stderr)
@@ -648,6 +711,8 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=F
                 continue
 
             bitmap = f.glyph.bitmap
+            if PIXEL_NATIVE:
+                bitmap = _ScaledBitmap(bitmap, scale)
 
             # Build 4-bit greyscale bitmap (same logic as fontconvert.py).
             #
@@ -712,9 +777,10 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=F
             glyph = GlyphProps(
                 width=bitmap.width,
                 height=bitmap.rows,
-                advance_x=fp4_from_ft16_16(f.glyph.linearHoriAdvance),
-                left=f.glyph.bitmap_left,
-                top=f.glyph.bitmap_top,
+                advance_x=(fp4_from_ft16_16((f.glyph.advance.x << 10) * scale) if PIXEL_NATIVE
+                           else fp4_from_ft16_16(f.glyph.linearHoriAdvance)),
+                left=f.glyph.bitmap_left * scale,
+                top=f.glyph.bitmap_top * scale,
                 data_length=len(packed),
                 data_offset=total_bitmap_size,
                 code_point=code_point,
@@ -725,18 +791,21 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=F
     # Get font metrics from pipe character (same heuristic as fontconvert.py)
     load_glyph(ord('|'))
 
-    advanceY = norm_ceil(face.size.height)
-    ascender = norm_ceil(face.size.ascender)
-    descender = norm_floor(face.size.descender)
+    advanceY = norm_ceil(face.size.height) * scale
+    ascender = norm_ceil(face.size.ascender) * scale
+    descender = norm_floor(face.size.descender) * scale
 
     print(f"  [{style_label}] Metrics: advanceY={advanceY}, ascender={ascender}, descender={descender}", file=sys.stderr)
     print(f"  [{style_label}] Bitmap: {total_bitmap_size} bytes ({total_bitmap_size / 1024:.1f} KB)", file=sys.stderr)
 
     # --- Extract kerning and ligatures ---
-    ppem = size * 150.0 / 72.0
+    ppem = float(size) if PIXEL_NATIVE else size * RASTER_DPI / 72.0
     all_cps = set(g.code_point for g, _ in all_glyphs)
 
-    kern_map = extract_kerning_fonttools(fontfile, all_cps, ppem)
+    try:
+        kern_map = extract_kerning_fonttools(fontfile, all_cps, ppem)
+    except Exception:
+        kern_map = {}  # bitmap-only fonts
     # SMP codepoints (> U+FFFF) cannot be stored in the uint16 kern codepoint
     # field; drop them before class derivation to avoid a downstream
     # struct.error when packing the binary kern tables.
@@ -755,7 +824,10 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=F
     # SMP codepoints in ligature inputs / outputs are filtered inside
     # extract_ligatures_fonttools (see the codepoints_set filter), so every
     # entry returned here is already 16-bit safe.
-    ligature_pairs = extract_ligatures_fonttools(fontfile, all_cps)
+    try:
+        ligature_pairs = extract_ligatures_fonttools(fontfile, all_cps)
+    except Exception:
+        ligature_pairs = []
     if len(ligature_pairs) > 255:
         print(f"  [{style_label}] WARNING: {len(ligature_pairs)} ligature pairs exceeds uint8_t max (255), truncating",
               file=sys.stderr)
@@ -950,6 +1022,9 @@ def main():
                         help="Font style for single-style mode (default: regular).")
     parser.add_argument("--name", dest="name",
                         help="Font family name for output filenames (default: derived from font filename).")
+    parser.add_argument("--pixel-native", dest="pixel_native", type=int, default=0,
+                        help="Pixel font mode: the font's native pixel size. Sizes become pixel sizes "
+                             "and must be multiples of it; glyphs are rendered 1-bit and enlarged.")
     parser.add_argument("--dpi", dest="dpi", type=int, default=150,
                         help="Rasterization DPI (default 150). Use 144 for 16 px pixel fonts.")
     parser.add_argument("--force-autohint", dest="force_autohint", action="store_true",
@@ -980,8 +1055,9 @@ def main():
                         help="Fallback font file for bold-italic style.")
 
     args = parser.parse_args()
-    global RASTER_DPI
+    global RASTER_DPI, PIXEL_NATIVE
     RASTER_DPI = args.dpi
+    PIXEL_NATIVE = args.pixel_native
 
     if args.list_presets:
         print("Available interval presets:")
@@ -1073,7 +1149,10 @@ def main():
         if args.output and len(sizes) == 1:
             output_path = args.output
         else:
-            filename = f"{font_name}_{sz}.cpfont"
+            # The reader takes a file's size as points at 150 DPI (EpdFontFamily
+            # sizeInPixels); label pixel-mode files with the matching point size.
+            label = round(sz * 72 / 150) if PIXEL_NATIVE else sz
+            filename = f"{font_name}_{label}.cpfont"
             output_path = os.path.join(output_dir, filename)
         print(f"Generating {output_path} (size {sz}, {len(style_fonts)} style(s), v4)...", file=sys.stderr)
         total_size += generate_cpfont_multistyle(
