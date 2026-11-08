@@ -1,5 +1,7 @@
 #include "CrossPointSettings.h"
 
+#include <ZhDict.h>
+
 #include <BlePageTurnerJson.h>
 #include <I18n.h>
 #include <Logging.h>
@@ -351,6 +353,7 @@ ReaderRenderSpec CrossPointSettings::readerRenderSpec(const uint16_t viewportWid
   // Same layout as Display, so switching between them keeps the section cache.
   spec.imageRendering = imageRendering == IMAGES_DISPLAY_BW ? static_cast<uint8_t>(IMAGES_DISPLAY) : imageRendering;
   spec.focusReadingEnabled = focusReadingEnabled != 0;
+  spec.zhRubyThreshold = zh::rubyThresholdForStep(zhRuby);
   return spec;
 }
 

@@ -1,11 +1,14 @@
 #include "TextBlock.h"
 
+#include <ZhDict.h>
+
 #include <BidiUtils.h>
 #include <GfxRenderer.h>
 #include <Logging.h>
 #include <Memory.h>
 #include <MemoryManager.h>
 #include <Serialization.h>
+#include <Utf8.h>
 
 #include <cstring>
 #include <string_view>
@@ -57,7 +60,7 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
   // ruby-less line costs nothing beyond its arena. The layout engine hands one over for
   // every line it extracts, ruby or not; release it here rather than carrying it for the
   // block's lifetime. Move-assigning an empty vector frees the buffer (clear() would not).
-  if (!hasRuby()) {
+  if (!hasAnyRuby()) {
     this->rubyTexts = std::vector<std::string>{};
   }
 
@@ -139,10 +142,29 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
 }
 
 bool TextBlock::hasRuby() const {
+  // Text ruby only (drawn above the line); zhuyin codes sit beside their character.
+  for (const auto& rt : rubyTexts) {
+    if (!rt.empty() && !zh::isRubyCode(rt.c_str())) return true;
+  }
+  return false;
+}
+
+bool TextBlock::hasAnyRuby() const {
   for (const auto& rt : rubyTexts) {
     if (!rt.empty()) return true;
   }
   return false;
+}
+
+size_t TextBlock::zhRubySplit(const uint16_t i) const {
+  const auto* start = reinterpret_cast<const unsigned char*>(wordText(i));
+  const unsigned char* p = start;
+  while (*p) {
+    const uint32_t cp = utf8NextCodepoint(&p);
+    if (cp == 0) break;
+    if (zh::isHan(cp)) return static_cast<size_t>(p - start);
+  }
+  return 0;
 }
 
 bool TextBlock::setWordFonts(const uint8_t* slots, const int32_t (&fonts)[MAX_WORD_FONTS]) {
@@ -227,7 +249,8 @@ void TextBlock::render(const GfxRenderer& renderer, const int sectionFontId, con
   if (blockHasRuby && !scanning) {
     rubies.resize(numWords);
     for (uint16_t i = 0; i < numWords; i++) {
-      if (i < rubyTexts.size() && !rubyTexts[i].empty() && (wordStyle(i) & EpdFontFamily::RUBY_CONTINUE) == 0) {
+      if (i < rubyTexts.size() && !rubyTexts[i].empty() && !zh::isRubyCode(rubyTexts[i].c_str()) &&
+          (wordStyle(i) & EpdFontFamily::RUBY_CONTINUE) == 0) {
         int groupWordCount = 1;
         while (i + groupWordCount < numWords && (wordStyle(i + groupWordCount) & EpdFontFamily::RUBY_CONTINUE) != 0) {
           groupWordCount++;
@@ -363,12 +386,35 @@ void TextBlock::render(const GfxRenderer& renderer, const int sectionFontId, con
       const int suffixX = drawX + (rtl ? 0 : focusSplitXArr[i]);
       renderer.drawText(wordFont, prefixX, wordY, boldBuf, true, boldStyle, baseDir, tracking);
       renderer.drawText(wordFont, suffixX, wordY, word + boldLen, true, currentStyle, baseDir, tracking);
+    } else if (const uint32_t zhCode =
+                   i < rubyTexts.size() ? zh::decodeRubyCode(rubyTexts[i].c_str()) : 0) {
+      // Zhuyin: draw the word up to its Han character, the ruby column, then the
+      // rest of the word (attached punctuation) after the ruby.
+      const size_t split = zhRubySplit(i);
+      const size_t len = wordTextLen(i);
+      char head[24];
+      const size_t headLen = std::min(split, sizeof(head) - 1);
+      memcpy(head, word, headLen);
+      head[headLen] = '\0';
+      renderer.drawText(wordFont, drawX, wordY, head, true, currentStyle, baseDir, tracking);
+      const int headWidth = renderer.getTextAdvanceX(wordFont, head, currentStyle, tracking);
+      if (split < len) {
+        renderer.drawText(wordFont, drawX + headWidth + zh::RUBY_WIDTH, wordY, word + split, true, currentStyle,
+                          baseDir, tracking);
+      }
+      if (!scanning) {
+        const int rubyX = drawX + headWidth;
+        // Line height is the em for CJK pixel fonts, so the column centres on the glyph.
+        const int charHeight = renderer.getLineHeight(wordFont);
+        zh::forEachRubyPixel(zhCode, charHeight,
+                             [&](int px, int py) { renderer.drawPixel(rubyX + px, wordY + py, true); });
+      }
     } else {
       renderer.drawText(wordFont, drawX, wordY, word, true, currentStyle, baseDir, tracking);
     }
 
     // Horizontal ruby text rendering
-    if (blockHasRuby && i < rubyTexts.size() && !rubyTexts[i].empty() &&
+    if (blockHasRuby && i < rubyTexts.size() && !rubyTexts[i].empty() && !zh::isRubyCode(rubyTexts[i].c_str()) &&
         (wordStyle(i) & EpdFontFamily::RUBY_CONTINUE) == 0) {
       if (scanning) {
         renderer.drawText(fontId, 0, 0, rubyTexts[i].c_str(), true, EpdFontFamily::SUP);

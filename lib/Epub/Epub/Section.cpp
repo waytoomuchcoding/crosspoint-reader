@@ -1,5 +1,7 @@
 #include "Section.h"
 
+#include <ZhDict.h>
+
 #include <BufferedFile.h>
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
@@ -81,7 +83,8 @@ namespace {
 // v71: Focus split offsets follow the visual run order for RTL words.
 // v72: Make ruby rendering closer to how Chromium renders ruby by default.
 // v73: TrueType vector fonts load and advance .notdef for missing glyphs.
-constexpr uint8_t SECTION_FILE_VERSION = 73;
+// v74: Zhuyin ruby codes in per-word ruby strings; zhRubyThreshold in the header.
+constexpr uint8_t SECTION_FILE_VERSION = 74;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
@@ -103,7 +106,7 @@ constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(float) +
                                  sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) + sizeof(bool) +
                                  sizeof(uint8_t) + sizeof(bool) + sizeof(uint32_t) + sizeof(uint32_t) +
                                  sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(int8_t) +
-                                 sizeof(uint8_t) + sizeof(uint8_t);
+                                 sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint32_t);
 }  // namespace
 
 // Out-of-line so the unique_ptr<ChapterHtmlSlimParser> in BuildContext can be
@@ -152,7 +155,8 @@ void Section::writeSectionFileHeader(const ReaderRenderSpec& spec) {
                                    sizeof(spec.viewportHeight) + sizeof(pageCount) + sizeof(spec.hyphenationEnabled) +
                                    sizeof(spec.embeddedStyle) + sizeof(spec.imageRendering) +
                                    sizeof(spec.focusReadingEnabled) + sizeof(spec.characterSpacing) +
-                                   sizeof(spec.wordSpacingPercent) + sizeof(uint32_t) + sizeof(uint32_t) +
+                                   sizeof(spec.wordSpacingPercent) + sizeof(spec.zhRubyThreshold) +
+                                   sizeof(uint32_t) + sizeof(uint32_t) +
                                    sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t),
                 "Header size mismatch");
   // Written as the incomplete sentinel; finalizeBuild() patches it to
@@ -171,6 +175,7 @@ void Section::writeSectionFileHeader(const ReaderRenderSpec& spec) {
   serialization::writePod(file, spec.focusReadingEnabled);
   serialization::writePod(file, spec.characterSpacing);
   serialization::writePod(file, spec.wordSpacingPercent);
+  serialization::writePod(file, spec.zhRubyThreshold);
   serialization::writePod(file, pageCount);  // Placeholder for page count (will be initially 0, patched later)
   serialization::writePod(file, static_cast<uint32_t>(0));  // Placeholder for LUT offset (patched later)
   serialization::writePod(file, static_cast<uint32_t>(0));  // Placeholder for anchor map offset (patched later)
@@ -210,6 +215,7 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
     bool fileFocusReadingEnabled;
     int8_t fileCharacterSpacing;
     uint8_t fileWordSpacingPercent;
+    uint32_t fileZhRubyThreshold;
     serialization::readPod(file, fileFontId);
     serialization::readPod(file, fileLineCompression);
     serialization::readPod(file, fileExtraParagraphSpacing);
@@ -223,6 +229,7 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
     serialization::readPod(file, fileFocusReadingEnabled);
     serialization::readPod(file, fileCharacterSpacing);
     serialization::readPod(file, fileWordSpacingPercent);
+    serialization::readPod(file, fileZhRubyThreshold);
 
     if (spec.fontId != fileFontId || spec.lineCompression != fileLineCompression ||
         spec.extraParagraphSpacing != fileExtraParagraphSpacing ||
@@ -230,7 +237,8 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
         spec.viewportWidth != fileViewportWidth || spec.viewportHeight != fileViewportHeight ||
         spec.hyphenationEnabled != fileHyphenationEnabled || spec.embeddedStyle != fileEmbeddedStyle ||
         spec.imageRendering != fileImageRendering || spec.focusReadingEnabled != fileFocusReadingEnabled ||
-        spec.characterSpacing != fileCharacterSpacing || spec.wordSpacingPercent != fileWordSpacingPercent) {
+        spec.characterSpacing != fileCharacterSpacing || spec.wordSpacingPercent != fileWordSpacingPercent ||
+        spec.zhRubyThreshold != fileZhRubyThreshold) {
       file.close();
       LOG_ERR("SCT", "Deserialization failed: Parameters do not match");
       clearCache();
@@ -486,6 +494,12 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   ctx->parser->setTextSpacing(spec.characterSpacing, spec.wordSpacingPercent);
   ctx->parser->setParagraphIndentSpaces(spec.paragraphIndentSpaces);
   Hyphenator::setPreferredLanguage(epub->getLanguage());
+  // Zhuyin is Chinese; Japanese and Korean books share Han characters but not readings.
+  {
+    const std::string& lang = epub->getLanguage();
+    const bool otherCjk = lang.rfind("ja", 0) == 0 || lang.rfind("ko", 0) == 0;
+    zh::setRubyThreshold(otherCjk ? 0 : spec.zhRubyThreshold);
+  }
   build_ = std::move(ctx);
 
   if (!build_->parser->beginParse()) {

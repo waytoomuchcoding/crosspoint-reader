@@ -10,7 +10,9 @@ Inputs (download them yourself; they are not shipped with the firmware):
 
 Output directory layout (all integers little-endian):
 
-  chars.bin    header "ZHC1" u32 count, then count 16-byte records sorted by codepoint:
+  chars.bin    header "ZHC1" u32 count u32 maxDirBytes u32 maxGroupBytes, then a sparse
+               index (u32 codepoint of every 32nd record, ceil(count / 32) entries),
+               then count 16-byte records sorted by codepoint:
                  u32 cp, u32 pairDirOff, u16 pairCount, u8 charHsk, u8 flags, u32 selfOff
                pairDirOff indexes pairs.bin; selfOff indexes words.bin (0xFFFFFFFF = none).
                charHsk = lowest HSK 3.0 band (1-7) of any HSK word containing the
@@ -43,6 +45,7 @@ import struct
 import sys
 
 MAXLEN = 8
+SPARSE_STEP = 32
 NO_RANK = 0xFFFFFF
 
 TONE_MARKS = {"a": "āáǎàa", "e": "ēéěèe", "i": "īíǐìi", "o": "ōóǒòo", "u": "ūúǔùu", "ü": "ǖǘǚǜü"}
@@ -249,7 +252,7 @@ def build(args):
 
     words = bytearray()
     pairs = bytearray()
-    chars = bytearray(b"ZHC1" + struct.pack("<I", len(first_chars)))
+    chars = bytearray(16)
     max_dir = max_group = 0
     for c in first_chars:
         self_off = 0xFFFFFFFF
@@ -270,6 +273,9 @@ def build(args):
         max_dir = max(max_dir, len(seconds) * 8)
         chars += struct.pack("<IIHBBI", ord(c), dir_off, len(seconds), char_level.get(c, 0), 0, self_off)
 
+    records = chars[16:]
+    sparse = b"".join(records[k * 16:k * 16 + 4] for k in range(0, len(first_chars), SPARSE_STEP))
+    chars = bytearray(b"ZHC1" + struct.pack("<III", len(first_chars), max_dir, max_group)) + sparse + records
     os.makedirs(args.out, exist_ok=True)
     for name, data in (("chars.bin", chars), ("pairs.bin", pairs), ("words.bin", words), ("entries.bin", entries)):
         with open(os.path.join(args.out, name), "wb") as f:

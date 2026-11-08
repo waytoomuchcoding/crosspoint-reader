@@ -142,6 +142,10 @@ class TextBlock final : public Block {
   uint8_t focusBoundary(const uint16_t i) const { return focusPresent ? focusBoundaryArr[i] : 0; }
   uint16_t focusSplitX(const uint16_t i) const { return focusPresent ? focusSplitXArr[i] : 0; }
   bool hasRuby() const;
+  // Includes zhuyin codes (see ZhDict.h).
+  bool hasAnyRuby() const;
+  // Byte offset just past the first Han character of word i, 0 if none.
+  size_t zhRubySplit(uint16_t i) const;
   int getRubyShift(int ascender) const { return hasRuby() ? (ascender / 2) : 0; }
   const std::vector<std::string>& getRubyTexts() const { return rubyTexts; }
   std::vector<LinkSpan> takeLinkSpans() { return std::move(linkSpans); }

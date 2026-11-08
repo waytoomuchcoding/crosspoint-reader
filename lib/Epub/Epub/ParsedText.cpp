@@ -1,5 +1,7 @@
 #include "ParsedText.h"
 
+#include <ZhDict.h>
+
 #include <BidiUtils.h>
 #include <GfxRenderer.h>
 #include <Logging.h>
@@ -765,6 +767,55 @@ int ParsedText::resolveFirstLineIndent(const bool isFirstLine, const GfxRenderer
   return scaleSpace(renderer.getSpaceWidth(fontId, EpdFontFamily::REGULAR), wordSpacingPercent) * paragraphIndentSpaces;
 }
 // Consumes data to minimize memory usage
+// Marks Han characters that get zhuyin ruby. Each stretch of consecutive Han
+// characters is segmented into words; a word gets ruby when it is rarer than
+// the reader's frequency threshold. Each CJK character is its own word here
+// (CjkBreaks), possibly with attached punctuation.
+void ParsedText::applyZhRuby() {
+  const uint32_t threshold = zh::rubyThreshold();
+  if (threshold == 0 || words.empty()) return;
+  zh::Dict& dict = zh::sharedDict();
+  if (!dict.isOpen() && !zh::openSharedDict()) return;
+
+  uint32_t run[zh::MAX_RUN];
+  uint16_t runWord[zh::MAX_RUN];
+  size_t runLen = 0;
+  const auto flush = [&]() {
+    if (runLen == 0) return;
+    zh::segmentRun(dict, run, runLen, [&](const zh::Segment& seg) {
+      if (!zh::wantsRuby(seg, threshold)) return;
+      for (uint8_t k = 0; k < seg.len; ++k) {
+        if (seg.zhuyin[k] == 0) continue;
+        char code[8];
+        zh::encodeRubyCode(seg.zhuyin[k], code);
+        setRubyForWordAt(runWord[seg.start + k], code);
+      }
+    });
+    runLen = 0;
+  };
+  for (size_t i = 0; i < words.size(); ++i) {
+    const std::string_view w = wordAt(i);
+    const auto* p = reinterpret_cast<const uint8_t*>(w.data());
+    const auto* end = p + w.size();
+    bool sawHan = false;
+    while (p < end) {
+      const uint32_t cp = utf8NextCodepoint(&p);
+      if (cp == 0) break;
+      // One ruby slot per word: only its first Han character can carry ruby.
+      if (zh::isHan(cp) && !sawHan) {
+        sawHan = true;
+        if (runLen == zh::MAX_RUN) flush();
+        run[runLen] = cp;
+        runWord[runLen] = static_cast<uint16_t>(i);
+        ++runLen;
+      } else {
+        flush();
+      }
+    }
+  }
+  flush();
+}
+
 void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fontId, const uint16_t viewportWidth,
                                        const std::function<void(std::unique_ptr<TextBlock>, uint32_t)>& processLine,
                                        const bool includeLastLine, const int8_t characterSpacing,
@@ -789,6 +840,8 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
       }
     }
   }
+
+  applyZhRuby();
 
   isNaturalAlign =
       blockStyle.alignment == CssTextAlign::Justify ||
@@ -896,7 +949,7 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
 int ParsedText::calculateRubyExtraStartOffset(const size_t wordIdx, const size_t maxWordIdx,
                                               const GfxRenderer& renderer, const int fontId) const {
   if (rubyTexts.empty() || wordIdx >= rubyTexts.size() || rubyTexts[wordIdx].empty() ||
-      (wordStyles[wordIdx] & EpdFontFamily::RUBY_CONTINUE) != 0) {
+      zh::isRubyCode(rubyTexts[wordIdx].c_str()) || (wordStyles[wordIdx] & EpdFontFamily::RUBY_CONTINUE) != 0) {
     return 0;
   }
 
@@ -939,7 +992,7 @@ int ParsedText::calculateRubyExtraEndOffset(const size_t lineStartIdx, const siz
   }
 
   // leaderIdx must be a ruby group leader (non-empty ruby, no RUBY_CONTINUE flag).
-  if (leaderIdx >= rubyTexts.size() || rubyTexts[leaderIdx].empty() ||
+  if (leaderIdx >= rubyTexts.size() || rubyTexts[leaderIdx].empty() || zh::isRubyCode(rubyTexts[leaderIdx].c_str()) ||
       (wordStyles[leaderIdx] & EpdFontFamily::RUBY_CONTINUE) != 0) {
     return 0;
   }
@@ -988,6 +1041,11 @@ std::vector<uint16_t> ParsedText::calculateWordWidths(const GfxRenderer& rendere
                                                wordFocusBoundary[i], blockStyle.characterSpacing, wordSpacingPercent));
   }
 
+  // Zhuyin ruby sits in a column to the right of its character.
+  for (size_t i = 0; i < rubyTexts.size() && i < wordWidths.size(); ++i) {
+    if (zh::isRubyCode(rubyTexts[i].c_str())) wordWidths[i] += zh::RUBY_WIDTH;
+  }
+
   // Adjust widths for ruby groups to comply with JLReq standards
   if (!rubyTexts.empty()) {
     struct RubyGroupInfo {
@@ -1003,7 +1061,8 @@ std::vector<uint16_t> ParsedText::calculateWordWidths(const GfxRenderer& rendere
 
     std::vector<RubyGroupInfo> groups;
     for (size_t i = 0; i < words.size(); ++i) {
-      if (i < rubyTexts.size() && !rubyTexts[i].empty() && (wordStyles[i] & EpdFontFamily::RUBY_CONTINUE) == 0) {
+      if (i < rubyTexts.size() && !rubyTexts[i].empty() && !zh::isRubyCode(rubyTexts[i].c_str()) &&
+          (wordStyles[i] & EpdFontFamily::RUBY_CONTINUE) == 0) {
         RubyGroupInfo g;
         g.start = i;
         g.baseWidth = wordWidths[i];

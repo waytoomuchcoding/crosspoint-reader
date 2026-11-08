@@ -28,18 +28,19 @@ class ZhDict:
         self.entries = open(f"{d}/entries.bin", "rb").read()
         assert self.chars[:4] == b"ZHC1"
         self.count = struct.unpack_from("<I", self.chars, 4)[0]
+        self.base = 16 + 4 * ((self.count + 31) // 32)
 
     def char_record(self, cp):
         lo, hi = 0, self.count
         while lo < hi:
             mid = (lo + hi) // 2
-            c, = struct.unpack_from("<I", self.chars, 8 + mid * 16)
+            c, = struct.unpack_from("<I", self.chars, self.base + mid * 16)
             if c < cp:
                 lo = mid + 1
             elif c > cp:
                 hi = mid
             else:
-                c, dir_off, n, hsk, _flags, self_off = struct.unpack_from("<IIHBBI", self.chars, 8 + mid * 16)
+                c, dir_off, n, hsk, _flags, self_off = struct.unpack_from("<IIHBBI", self.chars, self.base + mid * 16)
                 return dir_off, n, hsk, self_off
         return None
 

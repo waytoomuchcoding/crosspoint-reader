@@ -24,6 +24,8 @@ struct ReaderRenderSpec {
   bool embeddedStyle = true;
   uint8_t imageRendering = 0;
   bool focusReadingEnabled = false;
+  // Zhuyin ruby frequency threshold (see ZhDict.h); 0 = off.
+  uint32_t zhRubyThreshold = 0;
 };
 
 // Stable signature for clipping anchors. Page-local word ordinals are valid
@@ -49,5 +51,6 @@ inline uint32_t readerRenderSpecSignature(const ReaderRenderSpec& spec) {
   mix(spec.embeddedStyle);
   mix(spec.imageRendering);
   mix(spec.focusReadingEnabled);
+  mix(spec.zhRubyThreshold);
   return signature == 0 ? 1 : signature;
 }

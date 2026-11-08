@@ -135,6 +135,7 @@ class ParsedText {
                    const std::function<void(std::unique_ptr<TextBlock>, uint32_t)>& processLine,
                    const GfxRenderer& renderer, int fontId);
   std::vector<uint16_t> calculateWordWidths(const GfxRenderer& renderer, int fontId);
+  void applyZhRuby();
 
  public:
   explicit ParsedText(const bool hyphenationEnabled = false, const bool focusReadingEnabled = false,
