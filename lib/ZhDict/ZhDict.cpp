@@ -11,8 +11,13 @@ namespace zh {
 namespace {
 
 constexpr uint32_t NO_OFFSET = 0xFFFFFFFF;
-constexpr size_t CHAR_RECORD_BYTES = 24;
-constexpr size_t PAIR_RECORD_BYTES = 12;
+// Layout constants, see scripts/zh/build_zh_dict.py.
+constexpr size_t SECTOR = 512;
+constexpr size_t CHAR_RECORD_BYTES = 40;
+constexpr size_t CHARS_PER_PAGE = SECTOR / CHAR_RECORD_BYTES;  // 12
+constexpr size_t PAIR_RECORD_BYTES = 16;
+constexpr size_t SLICE_ENTRIES = SECTOR / PAIR_RECORD_BYTES;  // 32
+constexpr int INLINE_SLICES = 4;
 constexpr size_t HEADER_BYTES = 16;
 
 uint32_t le32(const uint8_t* p) {
@@ -61,32 +66,57 @@ bool Dict::open(const char* dir) {
     }
   }
   uint8_t header[HEADER_BYTES];
-  if (!readAt(charsFile, 0, header, sizeof(header)) || memcmp(header, "ZHC1", 4) != 0) {
-    LOG_ERR("ZH", "chars.bin: bad header");
+  if (!readAt(charsFile, 0, header, sizeof(header)) || memcmp(header, "ZHC2", 4) != 0) {
+    LOG_ERR("ZH", "chars.bin: bad header (rebuild with scripts/zh/build_zh_dict.py)");
     close();
     return false;
   }
   charCount = le32(header + 4);
-  maxGroupBytes = le32(header + 12);
-  sparseCount = (charCount + SPARSE_STEP - 1) / SPARSE_STEP;
-  // One buffer serves word groups and the 32-record character chunks.
-  const size_t bufBytes = std::max<size_t>(maxGroupBytes, SPARSE_STEP * CHAR_RECORD_BYTES);
-  sparse = makeUniqueNoThrow<uint32_t[]>(sparseCount);
+  maxGroupBytes = le32(header + 8);
+  pageCount = le32(header + 12);
+  // One buffer serves word groups, character pages and directory slices.
+  const size_t bufBytes = std::max<size_t>(maxGroupBytes, SECTOR);
+  pageIndex = makeUniqueNoThrow<uint16_t[]>(pageCount);
   groupBuf = makeUniqueNoThrow<uint8_t[]>(bufBytes);
   scratchBuf = makeUniqueNoThrow<SegmentScratch>();
-  if (!sparse || !groupBuf || !scratchBuf || !readAt(charsFile, HEADER_BYTES, sparse.get(), sparseCount * 4)) {
-    LOG_ERR("ZH", "open failed: %u chars, %u B group buffer", static_cast<unsigned>(charCount),
-            static_cast<unsigned>(bufBytes));
+  if (!pageIndex || !groupBuf || !scratchBuf) {
+    LOG_ERR("ZH", "OOM opening dictionary");
     close();
     return false;
+  }
+  // Page index: first codepoint of each page, clamped to 16 bits (pages past
+  // U+FFFF are searched linearly; such characters are rare in running text).
+  for (uint32_t k = 0; k < pageCount;) {
+    const uint32_t n = std::min<uint32_t>(SECTOR / 4, pageCount - k);
+    if (!readAt(charsFile, HEADER_BYTES + k * 4, groupBuf.get(), n * 4)) {
+      close();
+      return false;
+    }
+    for (uint32_t j = 0; j < n; ++j) pageIndex[k + j] = static_cast<uint16_t>(std::min<uint32_t>(le32(groupBuf.get() + 4 * j), 0xFFFF));
+    k += n;
+  }
+  recordBase = static_cast<uint32_t>((HEADER_BYTES + pageCount * 4 + SECTOR - 1) / SECTOR * SECTOR);
+  // Slice starts of the longest pair directories (~2.7 KB), kept in RAM.
+  snprintf(path, sizeof(path), "%s/slices.bin", dir);
+  HalFile slicesFile;
+  if (Storage.exists(path) && Storage.openFileForRead("ZH", path, slicesFile)) {
+    sliceCount = static_cast<uint32_t>(slicesFile.fileSize() / 4);
+    slices = makeUniqueNoThrow<uint32_t[]>(std::max<uint32_t>(sliceCount, 1));
+    if (!slices || !readAt(slicesFile, 0, slices.get(), sliceCount * 4)) {
+      LOG_ERR("ZH", "slices.bin unreadable");
+      close();
+      return false;
+    }
+    slicesFile.close();
   }
   for (auto& c : cache) c.valid = 0;
   for (auto& c : pairCache) c.valid = 0;
   statsData = Stats{};
   opened = true;
-  LOG_INF("ZH", "dictionary open: %u first characters, %u B index, %u B buffer, %u B scratch",
-          static_cast<unsigned>(charCount), static_cast<unsigned>(sparseCount * 4), static_cast<unsigned>(bufBytes),
-          static_cast<unsigned>(sizeof(SegmentScratch)));
+  LOG_INF("ZH", "dictionary open: %u characters; RAM %u B index + %u B slices + %u B buffer + %u B scratch + %u B caches",
+          static_cast<unsigned>(charCount), static_cast<unsigned>(pageCount * 2), static_cast<unsigned>(sliceCount * 4),
+          static_cast<unsigned>(bufBytes), static_cast<unsigned>(sizeof(SegmentScratch)),
+          static_cast<unsigned>(sizeof(cache) + sizeof(pairCache)));
   return true;
 }
 
@@ -95,7 +125,9 @@ void Dict::close() {
   pairsFile.close();
   wordsFile.close();
   entriesFile.close();
-  sparse.reset();
+  pageIndex.reset();
+  slices.reset();
+  sliceCount = 0;
   groupBuf.reset();
   scratchBuf.reset();
   opened = false;
@@ -107,40 +139,47 @@ bool Dict::findChar(uint32_t cp, CharRecord& out) {
     out = slot;
     return slot.valid == 2;
   }
-  // Last sparse entry <= cp.
-  uint32_t lo = 0, hi = sparseCount;
+  CharRecord rec;
+  rec.cp = cp;
+  bool found = false;
+  // Last page whose first codepoint <= cp; beyond U+FFFF, every clamped page is a candidate.
+  const uint16_t key = static_cast<uint16_t>(std::min<uint32_t>(cp, 0xFFFF));
+  uint32_t lo = 0, hi = pageCount;
   while (lo < hi) {
     const uint32_t mid = (lo + hi) / 2;
-    if (sparse[mid] <= cp)
+    if (pageIndex[mid] <= key)
       lo = mid + 1;
     else
       hi = mid;
   }
-  bool found = false;
-  CharRecord rec;
-  rec.cp = cp;
-  if (lo > 0) {
-    const uint32_t first = (lo - 1) * SPARSE_STEP;
-    const uint32_t n = std::min<uint32_t>(SPARSE_STEP, charCount - first);
-    const uint32_t base = HEADER_BYTES + sparseCount * 4;
+  uint32_t page = lo > 0 ? lo - 1 : 0;
+  if (cp >= 0xFFFF) {
+    while (page > 0 && pageIndex[page] == 0xFFFF && pageIndex[page - 1] == 0xFFFF) --page;
+  }
+  for (; page < pageCount && !found; ++page) {
     uint8_t* buf = groupBuf.get();
-    if (readAt(charsFile, base + first * CHAR_RECORD_BYTES, buf, n * CHAR_RECORD_BYTES)) {
-      for (uint32_t k = 0; k < n; ++k) {
-        const uint8_t* r = buf + k * CHAR_RECORD_BYTES;
-        if (le32(r) == cp) {
-          rec.dirOff = le32(r + 4);
-          rec.dirCount = static_cast<uint16_t>(r[8] | (r[9] << 8));
-          rec.hsk = r[10];
-          rec.selfHsk = r[11];
-          rec.selfEntry = le32(r + 12);
-          rec.selfRank = le24(r + 16);
-          rec.selfFlags = r[19];
-          rec.selfZhuyin = le24(r + 20);
-          found = true;
-          break;
-        }
-      }
+    if (!readAt(charsFile, recordBase + page * SECTOR, buf, CHARS_PER_PAGE * CHAR_RECORD_BYTES)) break;
+    const uint32_t first = page * CHARS_PER_PAGE;
+    const uint32_t n = std::min<uint32_t>(CHARS_PER_PAGE, charCount - first);
+    for (uint32_t k = 0; k < n; ++k) {
+      const uint8_t* r = buf + k * CHAR_RECORD_BYTES;
+      const uint32_t c = le32(r);
+      if (c > cp) break;
+      if (c != cp) continue;
+      rec.dirOff = le32(r + 4);
+      rec.dirCount = static_cast<uint16_t>(r[8] | (r[9] << 8));
+      rec.hsk = r[10];
+      rec.selfHsk = r[11];
+      rec.selfEntry = le32(r + 12);
+      rec.selfRank = le24(r + 16);
+      rec.selfFlags = r[19];
+      rec.selfZhuyin = le24(r + 20);
+      rec.sliceOff = le32(r + 24);
+      for (int s = 0; s < INLINE_SLICES; ++s) rec.inlineSlices[s] = le24(r + 28 + 3 * s);
+      found = true;
+      break;
     }
+    if (cp < 0xFFFF || (n > 0 && le32(buf + (n - 1) * CHAR_RECORD_BYTES) >= cp)) break;
   }
   rec.valid = found ? 2 : 1;  // 1 = cached miss
   slot = rec;
@@ -158,23 +197,33 @@ bool Dict::findPair(const CharRecord& first, uint32_t cp2, PairRecord& out) {
   rec.cp1 = first.cp;
   rec.cp2 = cp2;
   rec.valid = 1;
-  uint32_t lo = 0, hi = first.dirCount;
-  uint8_t e[PAIR_RECORD_BYTES];
-  while (lo < hi) {
-    const uint32_t mid = (lo + hi) / 2;
-    if (!readAt(pairsFile, first.dirOff + mid * PAIR_RECORD_BYTES, e, sizeof(e))) return false;
-    const uint32_t v = le32(e);
-    const uint32_t c2 = v & 0xFFFFFF;
-    if (c2 < cp2) {
-      lo = mid + 1;
-    } else if (c2 > cp2) {
-      hi = mid;
-    } else {
-      rec.count = static_cast<uint8_t>(v >> 24);
-      rec.groupOff = le32(e + 4);
-      rec.groupBytes = static_cast<uint16_t>(e[8] | (e[9] << 8));
-      break;
+  // Directories over 32 entries are split into sector-sized slices; pick the
+  // slice from the RAM-resident slice starts, then read exactly one sector.
+  uint32_t sliceIndex = 0;
+  const uint32_t sliceTotal = (first.dirCount + SLICE_ENTRIES - 1) / SLICE_ENTRIES;
+  if (sliceTotal > 1) {
+    const uint32_t* starts = nullptr;
+    uint32_t inlineStarts[INLINE_SLICES];
+    if (sliceTotal <= INLINE_SLICES) {
+      for (int s = 0; s < INLINE_SLICES; ++s) inlineStarts[s] = first.inlineSlices[s];
+      starts = inlineStarts;
+    } else if (slices && first.sliceOff / 4 + sliceTotal <= sliceCount) {
+      starts = slices.get() + first.sliceOff / 4;
     }
+    if (!starts) return false;
+    while (sliceIndex + 1 < sliceTotal && starts[sliceIndex + 1] <= cp2) ++sliceIndex;
+  }
+  const uint32_t entries = std::min<uint32_t>(SLICE_ENTRIES, first.dirCount - sliceIndex * SLICE_ENTRIES);
+  uint8_t* buf = groupBuf.get();
+  if (!readAt(pairsFile, first.dirOff + sliceIndex * SECTOR, buf, entries * PAIR_RECORD_BYTES)) return false;
+  for (uint32_t k = 0; k < entries; ++k) {
+    const uint8_t* e = buf + k * PAIR_RECORD_BYTES;
+    const uint32_t v = le32(e);
+    if ((v & 0xFFFFFF) != cp2) continue;
+    rec.count = static_cast<uint8_t>(v >> 24);
+    rec.groupOff = le32(e + 4);
+    rec.groupBytes = static_cast<uint16_t>(e[8] | (e[9] << 8));
+    break;
   }
   slot = rec;
   out = rec;

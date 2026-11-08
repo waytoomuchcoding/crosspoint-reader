@@ -763,8 +763,10 @@ bool Section::commitBuildFile(const uint8_t version, const uint32_t bytesConsume
   }
   if (zh::sharedDict().isOpen()) {
     const auto& st = zh::sharedDict().stats();
-    LOG_INF("ZH", "after section: %u lookups, %u SD reads, %u bytes (cumulative)", static_cast<unsigned>(st.lookups),
+    LOG_INF("ZH", "section done: %u lookups, %u SD reads, %u bytes", static_cast<unsigned>(st.lookups),
             static_cast<unsigned>(st.reads), static_cast<unsigned>(st.bytes));
+    // Release the dictionary's RAM between chapters; layout reopens it on demand.
+    zh::sharedDict().close();
   }
   return true;
 }
@@ -807,6 +809,7 @@ bool Section::finalizeBuild() {
 }
 
 void Section::suspendBuild() {
+  zh::sharedDict().close();
   if (!build_) return;
 
   // Only worth persisting if this build produced pages a pre-existing partial doesn't
@@ -846,6 +849,7 @@ void Section::suspendBuild() {
 }
 
 void Section::abandonBuild() {
+  zh::sharedDict().close();
   if (!build_) return;
   if (build_->parser) build_->parser->abortParse();
   if (build_->cssParser) build_->cssParser->clear();

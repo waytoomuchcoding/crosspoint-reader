@@ -28,6 +28,7 @@ class ZhLookupActivity final : public Activity {
         marginTop(marginTop) {}
 
   void onEnter() override;
+  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
 

@@ -10,19 +10,28 @@ Inputs (download them yourself; they are not shipped with the firmware):
 
 Output directory layout (all integers little-endian):
 
-  chars.bin    header "ZHC1" u32 count u32 maxDirBytes u32 maxGroupBytes, then a sparse
-               index (u32 codepoint of every 32nd record, ceil(count / 32) entries),
-               then count 24-byte records sorted by codepoint:
+  The files are laid out in 512-byte SD sectors so that each lookup step
+  costs about one sector read on the device.
+
+  chars.bin    header "ZHC2" u32 count u32 maxGroupBytes u32 pageCount, then the
+               codepoint of the first record of every page (u32 x pageCount), padded
+               to 512 bytes, then pages of 512 bytes holding 12 records of 40 bytes:
                  u32 cp, u32 pairDirOff, u16 pairCount, u8 charHsk, u8 selfHsk,
                  u32 selfEntryOff (0xFFFFFFFF = the character alone is not a word),
-                 u8[3] selfRank, u8 selfFlags, u8[3] selfZhuyin, u8 reserved
-               The self* fields describe the character as a one-character word, so
-               segmentation never reads words.bin for single characters.
+                 u8[3] selfRank, u8 selfFlags, u8[3] selfZhuyin, u8 reserved,
+                 u32 sliceIndexOff (into slices.bin; 0xFFFFFFFF unless pairCount > 128),
+                 u8[3] x 4 inline slice starts (used when 32 < pairCount <= 128)
                charHsk = lowest HSK 3.0 band (1-7) of any HSK word containing the
-               character, 0 = none.
-  pairs.bin    per first character, its second characters sorted by codepoint, 12 bytes each:
+               character, 0 = none. The self* fields describe the character as a
+               one-character word.
+  pairs.bin    per first character, its second characters sorted by codepoint, 16 bytes each:
                  u32 (secondCp | groupCount << 24), u32 groupOff (into words.bin),
-                 u16 groupBytes, u16 reserved
+                 u16 groupBytes, u16 reserved, u32 reserved
+               Directories longer than 32 entries start on a 512-byte boundary, so
+               each 32-entry slice is exactly one sector.
+  slices.bin   for directories of more than 4 slices, the second-character codepoint
+               that starts each 32-entry slice (u32 x ceil(pairCount / 32)). Shorter
+               directories keep these in the character record.
   words.bin    word records; the words sharing a first-two-character prefix are
                contiguous and sorted by full key:
                  u8 nChars, u8 restLen, restLen bytes UTF-8 (chars after the first two;
@@ -49,7 +58,12 @@ import struct
 import sys
 
 MAXLEN = 8
-SPARSE_STEP = 32
+SECTOR = 512
+CHAR_RECORD = 40
+CHARS_PER_PAGE = SECTOR // CHAR_RECORD  # 12
+INLINE_SLICES = 4
+PAIR_ENTRY = 16
+SLICE = SECTOR // PAIR_ENTRY  # 32
 NO_RANK = 0xFFFFFF
 
 TONE_MARKS = {"a": "āáǎàa", "e": "ēéěèe", "i": "īíǐìi", "o": "ōóǒòo", "u": "ūúǔùu", "ü": "ǖǘǚǜü"}
@@ -256,8 +270,9 @@ def build(args):
 
     words = bytearray()
     pairs = bytearray()
-    chars = bytearray(16)
-    max_dir = max_group = 0
+    slices = bytearray()
+    records = []
+    max_group = 0
     for c in first_chars:
         self_fields = struct.pack("<BI", 0, 0xFFFFFFFF) + u24(NO_RANK) + bytes([0]) + u24(0) + bytes([0])
         if c in singles:
@@ -266,8 +281,19 @@ def build(args):
             flags = (1 if rs[0]["proper"] else 0) | (2 if hsk else 0)
             z = zhuyin_codes(rs[0]["py"], 1)[0]
             self_fields = struct.pack("<BI", hsk, entry_off[c]) + u24(ranks[c]) + bytes([flags]) + u24(z) + bytes([0])
-        dir_off = len(pairs)
         seconds = sorted(by_first[c].items(), key=lambda kv: ord(kv[0])) if c in by_first else []
+        slice_off = 0xFFFFFFFF
+        inline_slices = b""
+        if len(seconds) > SLICE:
+            pairs += bytes(-len(pairs) % SECTOR)
+            starts = [ord(seconds[k][0]) for k in range(0, len(seconds), SLICE)]
+            if len(starts) > INLINE_SLICES:
+                slice_off = len(slices)
+                slices += b"".join(struct.pack("<I", cp) for cp in starts)
+            else:
+                inline_slices = b"".join(u24(cp) for cp in starts)
+        inline_slices += bytes(3 * INLINE_SLICES - len(inline_slices))
+        dir_off = len(pairs)
         for c2, keys in seconds:
             keys.sort()
             group_off = len(words)
@@ -276,19 +302,24 @@ def build(args):
             max_group = max(max_group, len(words) - group_off)
             if len(keys) > 255:
                 raise SystemExit(f"group {c}{c2} has {len(keys)} words")
-            pairs += struct.pack("<IIHH", ord(c2) | (len(keys) << 24), group_off, len(words) - group_off, 0)
-        max_dir = max(max_dir, len(seconds) * 12)
-        chars += struct.pack("<IIHB", ord(c), dir_off, len(seconds), char_level.get(c, 0)) + self_fields
+            pairs += struct.pack("<IIHHI", ord(c2) | (len(keys) << 24), group_off, len(words) - group_off, 0, 0)
+        rec = struct.pack("<IIHB", ord(c), dir_off, len(seconds), char_level.get(c, 0)) + self_fields
+        records.append(rec + struct.pack("<I", slice_off) + inline_slices)
 
-    records = chars[16:]
-    sparse = b"".join(records[k * 24:k * 24 + 4] for k in range(0, len(first_chars), SPARSE_STEP))
-    chars = bytearray(b"ZHC1" + struct.pack("<III", len(first_chars), max_dir, max_group)) + sparse + records
+    pages = [records[k:k + CHARS_PER_PAGE] for k in range(0, len(records), CHARS_PER_PAGE)]
+    sparse = b"".join(page[0][:4] for page in pages)
+    chars = bytearray(b"ZHC2" + struct.pack("<III", len(records), max_group, len(pages))) + sparse
+    chars += bytes(-len(chars) % SECTOR)
+    for page in pages:
+        body = b"".join(page)
+        chars += body + bytes(SECTOR - len(body))
     os.makedirs(args.out, exist_ok=True)
-    for name, data in (("chars.bin", chars), ("pairs.bin", pairs), ("words.bin", words), ("entries.bin", entries)):
+    for name, data in (("chars.bin", chars), ("pairs.bin", pairs), ("slices.bin", slices), ("words.bin", words),
+                       ("entries.bin", entries)):
         with open(os.path.join(args.out, name), "wb") as f:
             f.write(data)
         print(f"{name:12s} {len(data):>10,d} bytes", file=sys.stderr)
-    print(f"largest pair directory {max_dir} bytes, largest word group {max_group} bytes", file=sys.stderr)
+    print(f"largest word group {max_group} bytes, {len(pages)} character pages", file=sys.stderr)
 
 
 def main():

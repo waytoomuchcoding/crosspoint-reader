@@ -4,11 +4,10 @@
 // and zhuyin ruby selection. The files are built by scripts/zh/build_zh_dict.py;
 // see its docstring for the format.
 //
-// RAM while open: a sparse codepoint index (~1.8 KB for CC-CEDICT), a
-// 128-entry character cache (4.6 KB), a 128-entry pair cache (2 KB), one
-// word-group buffer sized from the file header (~4 KB) and segmentation
-// scratch (~5.5 KB). Everything else
-// is read from SD on demand.
+// RAM while open (~19 KB): a 16-bit page index (~2.4 KB), slice starts of the
+// longest directories (~2.7 KB), a buffer for one word group (~4 KB),
+// segmentation scratch (~3 KB) and character/pair caches (~7 KB). Open it only
+// while laying out or looking up; close() releases everything.
 
 #include <HalStorage.h>
 
@@ -52,7 +51,7 @@ struct Segment {
   bool inDict;
 };
 
-constexpr size_t MAX_RUN = 96;
+constexpr size_t MAX_RUN = 64;
 
 // Working memory for segmentRun, allocated once when the dictionary opens.
 struct SegmentScratch {
@@ -103,6 +102,8 @@ class Dict {
     uint32_t selfZhuyin = 0;
     uint8_t selfHsk = 0;
     uint8_t selfFlags = 0;
+    uint32_t sliceOff = 0xFFFFFFFF;   // into slices.bin, for directories over 4 slices
+    uint32_t inlineSlices[4] = {};    // slice starts for directories of 2-4 slices
   };
   // A second-character lookup in a pair directory, cached (absent pairs too).
   struct PairRecord {
@@ -112,8 +113,7 @@ class Dict {
     uint8_t count = 0;  // 0 = no word starts with this pair
     uint8_t valid = 0;
   };
-  static constexpr int SPARSE_STEP = 32;
-  static constexpr int CACHE_SIZE = 128;
+  static constexpr int CACHE_SIZE = 96;
   static constexpr int PAIR_CACHE_SIZE = 128;
 
   bool findChar(uint32_t cp, CharRecord& out);
@@ -124,8 +124,11 @@ class Dict {
   bool opened = false;
   uint32_t charCount = 0;
   uint32_t maxGroupBytes = 0;
-  std::unique_ptr<uint32_t[]> sparse;  // codepoint of every SPARSE_STEP-th record
-  uint32_t sparseCount = 0;
+  uint32_t pageCount = 0;
+  uint32_t recordBase = 0;
+  std::unique_ptr<uint16_t[]> pageIndex;  // first codepoint of each 512-byte record page
+  std::unique_ptr<uint32_t[]> slices;     // slices.bin
+  uint32_t sliceCount = 0;
   std::unique_ptr<uint8_t[]> groupBuf;
   std::unique_ptr<SegmentScratch> scratchBuf;
   CharRecord cache[CACHE_SIZE];

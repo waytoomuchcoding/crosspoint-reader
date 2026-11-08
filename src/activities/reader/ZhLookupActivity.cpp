@@ -64,6 +64,11 @@ void ZhLookupActivity::onEnter() {
   requestUpdate();
 }
 
+void ZhLookupActivity::onExit() {
+  zh::sharedDict().close();
+  Activity::onExit();
+}
+
 void ZhLookupActivity::cancel() {
   ActivityResult result;
   result.isCancelled = true;

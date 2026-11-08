@@ -25,30 +25,27 @@ class ZhDict:
         self.chars = open(f"{d}/chars.bin", "rb").read()
         self.pairs = open(f"{d}/pairs.bin", "rb").read()
         self.words = open(f"{d}/words.bin", "rb").read()
+        self.slices = open(f"{d}/slices.bin", "rb").read()
         self.entries = open(f"{d}/entries.bin", "rb").read()
-        assert self.chars[:4] == b"ZHC1"
-        self.count = struct.unpack_from("<I", self.chars, 4)[0]
-        self.base = 16 + 4 * ((self.count + 31) // 32)
+        assert self.chars[:4] == b"ZHC2"
+        self.count, _max_group, self.pages = struct.unpack_from("<III", self.chars, 4)
+        self.base = (16 + 4 * self.pages + 511) // 512 * 512
+        self.recs = {}
+        for k in range(self.count):
+            off = self.base + (k // 12) * 512 + (k % 12) * 40
+            self.recs[struct.unpack_from("<I", self.chars, off)[0]] = off
 
     def char_record(self, cp):
-        lo, hi = 0, self.count
-        while lo < hi:
-            mid = (lo + hi) // 2
-            c, = struct.unpack_from("<I", self.chars, self.base + mid * 24)
-            if c < cp:
-                lo = mid + 1
-            elif c > cp:
-                hi = mid
-            else:
-                r = self.chars[self.base + mid * 24:self.base + mid * 24 + 24]
-                c, dir_off, n, hsk, self_hsk, self_entry = struct.unpack_from("<IIHBBI", r)
-                self_word = None
-                if self_entry != 0xFFFFFFFF:
-                    self_word = dict(n=1, rest="", entry=self_entry, hsk=self_hsk, flags=r[19],
-                                     rank=int.from_bytes(r[16:19], "little"),
-                                     zhuyin=[int.from_bytes(r[20:23], "little")])
-                return dir_off, n, hsk, self_word
-        return None
+        off = self.recs.get(cp)
+        if off is None:
+            return None
+        r = self.chars[off:off + 40]
+        c, dir_off, n, hsk, self_hsk, self_entry = struct.unpack_from("<IIHBBI", r)
+        self_word = None
+        if self_entry != 0xFFFFFFFF:
+            self_word = dict(n=1, rest="", entry=self_entry, hsk=self_hsk, flags=r[19],
+                             rank=int.from_bytes(r[16:19], "little"), zhuyin=[int.from_bytes(r[20:23], "little")])
+        return dir_off, n, hsk, self_word
 
     def word_at(self, off):
         n, rest_len = self.words[off], self.words[off + 1]
@@ -72,7 +69,7 @@ class ZhDict:
         if i + 1 < len(text):
             c2 = ord(text[i + 1])
             for k in range(n):
-                v, group, _size = struct.unpack_from("<IIH", self.pairs, dir_off + 12 * k)
+                v, group, _size = struct.unpack_from("<IIH", self.pairs, dir_off + 16 * k)
                 if v & 0xFFFFFF == c2:
                     off = group
                     for _ in range(v >> 24):
