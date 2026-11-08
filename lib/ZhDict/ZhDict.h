@@ -131,8 +131,12 @@ class Dict {
   uint32_t sliceCount = 0;
   std::unique_ptr<uint8_t[]> groupBuf;
   std::unique_ptr<SegmentScratch> scratchBuf;
-  CharRecord cache[CACHE_SIZE];
-  PairRecord pairCache[PAIR_CACHE_SIZE];
+  // Heap-allocated in open() so a closed dictionary costs no RAM.
+  struct Caches {
+    CharRecord chars[CACHE_SIZE];
+    PairRecord pairs[PAIR_CACHE_SIZE];
+  };
+  std::unique_ptr<Caches> caches;
   Stats statsData;
 };
 

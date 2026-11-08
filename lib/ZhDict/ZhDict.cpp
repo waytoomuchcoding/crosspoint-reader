@@ -79,7 +79,8 @@ bool Dict::open(const char* dir) {
   pageIndex = makeUniqueNoThrow<uint16_t[]>(pageCount);
   groupBuf = makeUniqueNoThrow<uint8_t[]>(bufBytes);
   scratchBuf = makeUniqueNoThrow<SegmentScratch>();
-  if (!pageIndex || !groupBuf || !scratchBuf) {
+  caches = makeUniqueNoThrow<Caches>();
+  if (!pageIndex || !groupBuf || !scratchBuf || !caches) {
     LOG_ERR("ZH", "OOM opening dictionary");
     close();
     return false;
@@ -110,15 +111,13 @@ bool Dict::open(const char* dir) {
     }
     slicesFile.close();
   }
-  for (auto& c : cache) c.valid = 0;
-  for (auto& c : pairCache) c.valid = 0;
   statsData = Stats{};
   opened = true;
   LOG_INF("ZH",
           "dictionary open: %u characters; RAM %u B index + %u B slices + %u B buffer + %u B scratch + %u B caches",
           static_cast<unsigned>(charCount), static_cast<unsigned>(pageCount * 2), static_cast<unsigned>(sliceCount * 4),
           static_cast<unsigned>(bufBytes), static_cast<unsigned>(sizeof(SegmentScratch)),
-          static_cast<unsigned>(sizeof(cache) + sizeof(pairCache)));
+          static_cast<unsigned>(sizeof(Caches)));
   return true;
 }
 
@@ -132,11 +131,12 @@ void Dict::close() {
   sliceCount = 0;
   groupBuf.reset();
   scratchBuf.reset();
+  caches.reset();
   opened = false;
 }
 
 bool Dict::findChar(uint32_t cp, CharRecord& out) {
-  CharRecord& slot = cache[cp % CACHE_SIZE];
+  CharRecord& slot = caches->chars[cp % CACHE_SIZE];
   if (slot.valid && slot.cp == cp) {
     out = slot;
     return slot.valid == 2;
@@ -190,7 +190,7 @@ bool Dict::findChar(uint32_t cp, CharRecord& out) {
 }
 
 bool Dict::findPair(const CharRecord& first, uint32_t cp2, PairRecord& out) {
-  PairRecord& slot = pairCache[(first.cp * 31 + cp2) % PAIR_CACHE_SIZE];
+  PairRecord& slot = caches->pairs[(first.cp * 31 + cp2) % PAIR_CACHE_SIZE];
   if (slot.valid && slot.cp1 == first.cp && slot.cp2 == cp2) {
     out = slot;
     return true;
