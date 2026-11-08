@@ -530,6 +530,8 @@ STR_ZH_RUBY_HELP: "Zhuyin is shown beside words that are rarer than this. Lower 
 STR_ZH_RUBY_MORE: "More"
 STR_ZH_RUBY_LESS: "Less"
 STR_ZH_SHORTER: "Shorter"
+STR_ZH_WORD: "Word"
+STR_ZH_CHAR: "Char"
 STR_ZH_RUBY_OFF: "Off"
 STR_ZH_RUBY_ALL: "All Words"
 STR_ZH_RUBY_500: "Rarer Than Top 500"

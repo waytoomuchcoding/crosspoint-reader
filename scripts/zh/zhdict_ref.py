@@ -93,6 +93,7 @@ class ZhDict:
         for _ in range(n):
             pl = self.entries[p]; py = self.entries[p + 1:p + 1 + pl].decode(); p += 1 + pl
             tl = self.entries[p]; tr = self.entries[p + 1:p + 1 + tl].decode(); p += 1 + tl
+            p += 1 + 3 * self.entries[p]  # per-reading zhuyin
             dl, = struct.unpack_from("<H", self.entries, p); p += 2
             defs = self.entries[p:p + dl].decode().split("\x1f"); p += dl
             out.append((py, tr, defs))

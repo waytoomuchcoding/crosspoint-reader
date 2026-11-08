@@ -470,17 +470,23 @@ void EpubReaderActivity::openDictionaryWordSelect() {
 
 // Chinese books use the /zh dictionary (CC-CEDICT) with word segmentation
 // instead of the StarDict word picker. Returns false when it does not apply.
-bool EpubReaderActivity::openZhLookup() {
+bool EpubReaderActivity::openZhLookup(const bool startInJump) {
   if (!section || !epub || section->currentPage < 0 || section->currentPage >= section->pageCount) return false;
   const std::string& lang = epub->getLanguage();
   if (lang.rfind("ja", 0) == 0 || lang.rfind("ko", 0) == 0) return false;
   if (!zh::openSharedDict()) return false;
-  auto page = section->loadPage(section->currentPage);
-  if (!page) return false;
   int top, right, bottom, left;
   renderer.getOrientedViewableTRBL(&top, &right, &bottom, &left);
-  auto activity = makeUniqueNoThrow<ZhLookupActivity>(renderer, mappedInput, std::move(page),
-                                                      left + SETTINGS.screenMargin, top + SETTINGS.screenMargin);
+  // The lookup screen turns pages itself; the reader follows to the page it ends on.
+  auto activity = makeUniqueNoThrow<ZhLookupActivity>(
+      renderer, mappedInput, [this](const int index) { return section ? section->loadPage(index) : nullptr; },
+      section->currentPage, section->pageCount, left + SETTINGS.screenMargin, top + SETTINGS.screenMargin, startInJump,
+      [this](const int index) {
+        if (section && index >= 0 && index < section->pageCount && index != section->currentPage) {
+          section->currentPage = index;
+          currentPageVisibleOffset = section->getVisibleTextOffsetForPage(index);
+        }
+      });
   if (!activity) return false;
   startActivityForResult(std::move(activity), [this](const ActivityResult&) { requestUpdate(); });
   return true;
@@ -916,6 +922,8 @@ void EpubReaderActivity::loop() {
         }
         break;
       case CrossPointSettings::LP_MENU_DICTIONARY:
+        // Holding Confirm opens Chinese lookup in jump mode (DESIGN 4.1).
+        if (openZhLookup(true)) return;
         openDictionaryWordSelect();
         return;
       case CrossPointSettings::LP_MENU_CREATE_CLIPPING:

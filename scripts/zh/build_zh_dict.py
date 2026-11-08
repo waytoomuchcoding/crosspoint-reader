@@ -39,7 +39,8 @@ Output directory layout (all integers little-endian):
                  u8[3] freqRank (0xFFFFFF = not in the frequency list),
                  nChars x u8[3] zhuyin (see below)
   entries.bin  per key: u8 nReadings, then per reading:
-                 u8 pinyinLen, pinyin (tone marks), u8 tradLen, trad, u16 defLen,
+                 u8 pinyinLen, pinyin (tone marks), u8 tradLen, trad,
+                 u8 nSyllables, nSyllables x u8[3] zhuyin, u16 defLen,
                  senses joined by 0x1F
 
   zhuyin u24 = s1 | s2 << 6 | s3 << 12 | tone << 18, where s1..s3 are bopomofo
@@ -244,7 +245,9 @@ def build(args):
             py = mark_pinyin(r["py"]).encode()[:255]
             trad = (r["trad"] if r["trad"] != key else "").encode()[:255]
             defs = "\x1f".join(r["senses"]).encode()[:65535]
-            entries += bytes([len(py)]) + py + bytes([len(trad)]) + trad + struct.pack("<H", len(defs)) + defs
+            zh = [z for z in (pack_zhuyin(zhuyin_syllable(s)) for s in r["py"].split())][:MAXLEN]
+            entries += bytes([len(py)]) + py + bytes([len(trad)]) + trad + bytes([len(zh)]) + b"".join(u24(z) for z in zh)
+            entries += struct.pack("<H", len(defs)) + defs
 
     def word_record(key):
         rs = dic[key]
