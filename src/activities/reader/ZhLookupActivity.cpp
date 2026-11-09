@@ -804,13 +804,19 @@ void ZhLookupActivity::drawFrame() {
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 
-void ZhLookupActivity::render(RenderLock&&) {
+void ZhLookupActivity::render(RenderLock&& lock) {
   if (!ready) return;
-  auto* fcm = renderer.getFontCacheManager();
-  auto scope = fcm->createPrewarmScope();
-  drawFrame();
-  scope.endScanAndPrewarm();
-  drawFrame();
+  {
+    auto* fcm = renderer.getFontCacheManager();
+    auto scope = fcm->createPrewarmScope();
+    drawFrame();
+    scope.endScanAndPrewarm();
+    drawFrame();
+  }
+  // The frame is in the buffer: let input keep moving the cursor during the
+  // panel refresh (~380 ms on the X3). Presses made meanwhile are drawn as one
+  // frame when it finishes, so a held button sweeps several words per refresh.
+  lock.unlock();
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
 
