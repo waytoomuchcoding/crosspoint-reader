@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -73,6 +74,17 @@ class SdCardFontSystem {
   // family is loaded. Safe to call repeatedly (sizes already loaded are
   // reused).
   void setupUiFallbacks(GfxRenderer& renderer);
+  // Best family on the card to stand in for a UI size the reader family lacks:
+  // has a file at exactly `pointSize` covering Han, most glyphs wins.
+  const SdCardFontFamilyInfo* findUiFallbackFamily(uint8_t pointSize, const SdCardFontFamilyInfo* exclude) const;
+  // UI fallbacks loaded while the reader uses a built-in family (no SD family
+  // in the manager); unloadCpfonts() frees them.
+  bool uiOnlyFallbacks_ = false;
+  // SETTINGS.uiFontFamilyName: swap the built-in UI fonts for that SD family's
+  // nearest sizes, keeping the built-ins to put back when SD fonts unload.
+  void applyUiFontFamily(GfxRenderer& renderer);
+  void restoreBuiltinUiFonts(GfxRenderer& renderer);
+  std::map<int, EpdFontFamily> builtinUiFonts_;
 
 #if CROSSPOINT_VECTOR_FONTS
   // --- Vector (.ttf/.otf) font path (FreeInkFont via TtfEpdFont) -------------

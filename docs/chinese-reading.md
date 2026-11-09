@@ -48,6 +48,43 @@ labelled with the matching point size (`Unifont_15.cpfont` is 32 px). Other
 pixel fonts work the same way with their own native size (WenQuanYi 12/14/16,
 Fusion Pixel 8/10/12, Zpix 12). Copy the `Unifont` folder to `/.fonts/`.
 
+Pixel-native files are marked bitonal, so pages in them skip the grayscale
+anti-aliasing pass even when Text Anti-Aliasing is on. Patchy fonts take
+`--max-intervals 128`: each coverage interval costs 12 bytes of RAM while the
+font is loaded. `--synthetic-bold` adds a bold style (headings, UI) by
+smearing each glyph one pixel to the right.
+
+The best high-resolution face found is CMEX Ming 24
+(<https://github.com/bluebat/cmexfonts>, MIT, 21.6k simplified and traditional
+characters, no Latin):
+
+    python3 lib/EpdFont/scripts/fontconvert_sdcard.py cmex24m.bdf --pixel-native 24 \
+      --intervals latin-ext,punctuation,symbols,zh --sizes 24,48 --name CMEX24 \
+      --fallback-regular fusion-pixel-12px-monospaced-latin.otf --max-intervals 128 \
+      --output-dir CMEX24/
+
+#### Pop-up headword font
+
+The lookup pop-up draws the word in `/zh/headword.cpfont` when present (the
+download ships CMEX Ming 24 at 48 px), whatever the reading font. A row too
+wide for it falls back to the reader font, then the small font; characters the
+headword font lacks are drawn in the reader font.
+
+    python3 lib/EpdFont/scripts/fontconvert_sdcard.py cmex24m.bdf --pixel-native 24 \
+      --intervals punctuation,zh --size 48 --max-intervals 64 -o headword.cpfont
+
+#### UI font
+
+Menus, buttons and the status bar use the built-in fonts. CJK text there (book
+and chapter titles) falls back to an SD family with a file at the exact UI
+size (8, 10 and 12 pt): the reader family first, else the family on the card
+with the most glyphs at that size. To draw the whole UI in a bitmap family
+instead, set `"uiFontFamilyName"` in `/.crosspoint/settings.json` (no menu
+yet); each UI size takes that family's nearest file, ties to the larger. A
+`WenQuanYi` folder holding WQY 12 px at 1x and 2x (`WenQuanYi_6`,
+`WenQuanYi_12`) and WQY 16 px (`WenQuanYi_8`, `WenQuanYi_15`) covers Latin and
+CJK at every UI size.
+
 #### Dictionary
 
 Download:
@@ -158,4 +195,5 @@ generate a sample book with `scripts/generate_zh_test_epub.py`.
   licence; this repository ships only the converter.
 - wordfreq data: CC BY-SA 4.0. HSK lists: MIT. Unihan: Unicode licence.
 - GNU Unifont: GPL-2.0+ with the font embedding exception, or OFL-1.1.
+- CMEX Ming 24 (`zh/headword.cpfont`): MIT, designed by DynaLab, released by CMEX.
 - Ark Pixel Font (zhuyin glyphs in `ZhuyinGlyphs.h`): OFL-1.1.

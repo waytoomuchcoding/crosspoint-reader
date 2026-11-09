@@ -367,6 +367,9 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t readerMenuStyle = READER_MENU_LIST;
   // SD card font family name (empty = use built-in fontFamily)
   char sdFontFamilyName[32] = "";
+  // SD bitmap family drawn in place of the built-in UI fonts (menus, status
+  // bar, buttons); empty = built-in. Each UI size takes the nearest file.
+  char uiFontFamilyName[32] = "";
   // Dictionary folder name under /dictionaries (empty = no dictionary)
   char dictionaryName[32] = "";
   // Save successful dictionary lookups to vocabulary history (default off).

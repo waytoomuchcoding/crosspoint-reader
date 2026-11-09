@@ -5,11 +5,15 @@
 #include <HalStorage.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <SdCardFont.h>
 #include <TtfEpdFont.h>
 #include <esp_heap_caps.h>
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
+#include <cstdlib>
+#include <functional>
 #include <iterator>
 
 #include "CrossPointSettings.h"
@@ -128,6 +132,17 @@ void SdCardFontSystem::begin(GfxRenderer& renderer) {
     }
   }
 
+  // Built-in reader font (none selected, or the selection failed to load):
+  // UI text still gets a CJK fallback from the card.
+  if (manager_.currentFamilyName().empty()
+#if CROSSPOINT_VECTOR_FONTS
+      && ttfFamily_.empty()
+#endif
+  ) {
+    setupUiFallbacks(renderer);
+    uiOnlyFallbacks_ = true;
+  }
+
   LOG_DBG("SDFS", "SD font system ready (%d families discovered)", registry_.getFamilyCount());
 }
 
@@ -163,8 +178,14 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
   const std::string& currentFamily = manager_.currentFamilyName();
 
   if (wantedFamily[0] == '\0') {
-    if (!currentFamily.empty()) {
+    if (!currentFamily.empty() || (registryWasDirty && uiOnlyFallbacks_)) {
       unloadCpfonts(renderer);
+    }
+    // Built-in reader fonts have no CJK: still give UI text (book titles in the
+    // status bar, menus) a same-size CJK fallback from the card.
+    if (!uiOnlyFallbacks_) {
+      setupUiFallbacks(renderer);
+      uiOnlyFallbacks_ = true;
     }
     // Back on a built-in family, which exists only at BUILTIN_READER_POINT_SIZES:
     // a size inherited from an SD family has to come back into that set.
@@ -195,7 +216,7 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
             registryWasDirty ? " [registry dirty]" : "");
   }
 
-  if (!currentFamily.empty()) {
+  if (!currentFamily.empty() || uiOnlyFallbacks_) {
     unloadCpfonts(renderer);
   }
 
@@ -217,58 +238,135 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
 
 void SdCardFontSystem::setupUiFallbacks(GfxRenderer& renderer) {
   const std::string& familyName = manager_.currentFamilyName();
-  if (familyName.empty()) return;  // no SD family loaded — nothing to fall back to
-
-  const auto* family = registry_.findFamily(familyName);
-  if (!family) return;
+  const SdCardFontFamilyInfo* family = familyName.empty() ? nullptr : registry_.findFamily(familyName);
 
   // Probe the already-loaded reader-size font before paying for the UI sizes:
   // resolveTextFontId only redirects on codepoints the built-in UI fonts lack,
   // so a family with no coverage beyond theirs can never act as a fallback and
   // its UI sizes would be dead weight in RAM.
-  const auto readerIt = renderer.getFontMap().find(manager_.getFontId(familyName));
-  if (readerIt == renderer.getFontMap().end()) return;
-  // One representative codepoint per script the built-in fonts may lack,
-  // matching the non-Latin interval presets the SD-font converter ships
-  // (docs/sd-card-fonts.md).
-  static constexpr uint32_t kFallbackProbes[] = {
-      0x4E00,  // CJK Unified Ideographs (Han)
-      0x3042,  // Hiragana
-      0x30A2,  // Katakana
-      0xAC00,  // Hangul Syllables
-      0x03B1,  // Greek
-      0x0430,  // Cyrillic
-      0x05D0,  // Hebrew
-      0x0627,  // Arabic
-      0x0531,  // Armenian
-      0x10D0,  // Georgian
-      0x1200,  // Ethiopic
-      0x13A0,  // Cherokee
-      0x2D30,  // Tifinagh
-      0x0259,  // IPA Extensions (ə)
-  };
   bool hasFallbackScript = false;
-  for (const uint32_t cp : kFallbackProbes) {
-    if (readerIt->second.hasCodepoint(cp)) {
-      hasFallbackScript = true;
-      break;
+  if (family) {
+    const auto readerIt = renderer.getFontMap().find(manager_.getFontId(familyName));
+    // One representative codepoint per script the built-in fonts may lack,
+    // matching the non-Latin interval presets the SD-font converter ships
+    // (docs/sd-card-fonts.md).
+    static constexpr uint32_t kFallbackProbes[] = {
+        0x4E00,  // CJK Unified Ideographs (Han)
+        0x3042,  // Hiragana
+        0x30A2,  // Katakana
+        0xAC00,  // Hangul Syllables
+        0x03B1,  // Greek
+        0x0430,  // Cyrillic
+        0x05D0,  // Hebrew
+        0x0627,  // Arabic
+        0x0531,  // Armenian
+        0x10D0,  // Georgian
+        0x1200,  // Ethiopic
+        0x13A0,  // Cherokee
+        0x2D30,  // Tifinagh
+        0x0259,  // IPA Extensions (ə)
+    };
+    if (readerIt != renderer.getFontMap().end()) {
+      for (const uint32_t cp : kFallbackProbes) {
+        if (readerIt->second.hasCodepoint(cp)) {
+          hasFallbackScript = true;
+          break;
+        }
+      }
     }
-  }
-  if (!hasFallbackScript) {
-    LOG_DBG("SDFS", "%s has no fallback-script coverage - skipping UI fallback sizes", familyName.c_str());
-    return;
+    if (!hasFallbackScript) {
+      LOG_DBG("SDFS", "%s has no fallback-script coverage - using other families for UI", familyName.c_str());
+    }
   }
 
   for (const auto& ui : kUiFontSizes) {
-    // Use the persisted CSS variant id so UI and reader text share one prewarm set.
-    const int id = variantFontId(manager_.getFontId(familyName), ui.pointSize);
-    const int sdFontId = manager_.loadFamilyExtraSize(*family, renderer, ui.pointSize, id);
+    int sdFontId = 0;
+    if (hasFallbackScript) {
+      // Use the persisted CSS variant id so UI and reader text share one prewarm set.
+      const int id = variantFontId(manager_.getFontId(familyName), ui.pointSize);
+      sdFontId = manager_.loadFamilyExtraSize(*family, renderer, ui.pointSize, id);
+    }
+    // The reader family has no file at this UI size (pixel fonts ship only
+    // multiples of their native size): borrow one from another family, so CJK
+    // titles in the status bar and menus never fall to tofu.
+    if (sdFontId == 0) {
+      if (const auto* other = findUiFallbackFamily(ui.pointSize, family)) {
+        const int id = variantFontId(static_cast<int>(std::hash<std::string>{}(other->name)), ui.pointSize);
+        sdFontId = manager_.loadFamilyExtraSize(*other, renderer, ui.pointSize, id);
+        if (sdFontId != 0) LOG_DBG("SDFS", "UI %u pt CJK fallback: %s", ui.pointSize, other->name.c_str());
+      }
+    }
     if (sdFontId != 0) {
       renderer.setFallbackFont(ui.fontId, sdFontId);
     } else {
-      LOG_DBG("SDFS", "No %u pt SD glyphs for UI fallback in %s", ui.pointSize, familyName.c_str());
+      LOG_DBG("SDFS", "No %u pt SD glyphs for UI fallback", ui.pointSize);
     }
   }
+  applyUiFontFamily(renderer);
+}
+
+void SdCardFontSystem::applyUiFontFamily(GfxRenderer& renderer) {
+  if (SETTINGS.uiFontFamilyName[0] == '\0') return;
+  const auto* family = registry_.findFamily(SETTINGS.uiFontFamilyName);
+  if (!family || family->vector) {
+    LOG_DBG("SDFS", "UI font family not usable: %s", SETTINGS.uiFontFamilyName);
+    return;
+  }
+  for (const auto& ui : kUiFontSizes) {
+    // Nearest size, ties to the larger: pixel families ship sparse sizes
+    // (16/24 px for 10 pt) and UI text reads better slightly large than small.
+    const SdCardFontFileInfo* file = nullptr;
+    for (const auto& f : family->files) {
+      if (f.style != 0) continue;
+      const int delta = std::abs(static_cast<int>(f.pointSize) - ui.pointSize);
+      const int bestDelta = file ? std::abs(static_cast<int>(file->pointSize) - ui.pointSize) : INT_MAX;
+      if (delta < bestDelta || (delta == bestDelta && f.pointSize > file->pointSize)) file = &f;
+    }
+    const auto builtin = renderer.getFontMap().find(ui.fontId);
+    if (!file || builtin == renderer.getFontMap().end()) continue;
+    // Keep the built-in so restoreBuiltinUiFonts() can put it back; the SD
+    // font then takes over the UI id itself, so every caller follows.
+    builtinUiFonts_.emplace(ui.fontId, builtin->second);
+    renderer.removeFont(ui.fontId);
+    if (manager_.loadFamilyVariant(*family, renderer, file->pointSize, ui.fontId)) {
+      LOG_DBG("SDFS", "UI %u pt font: %s %u pt", ui.pointSize, family->name.c_str(), file->pointSize);
+    } else {
+      renderer.insertFont(ui.fontId, builtinUiFonts_.at(ui.fontId));
+      builtinUiFonts_.erase(ui.fontId);
+    }
+  }
+}
+
+void SdCardFontSystem::restoreBuiltinUiFonts(GfxRenderer& renderer) {
+  for (const auto& [fontId, family] : builtinUiFonts_) {
+    renderer.removeFont(fontId);
+    renderer.insertFont(fontId, family);
+  }
+  builtinUiFonts_.clear();
+}
+
+const SdCardFontFamilyInfo* SdCardFontSystem::findUiFallbackFamily(const uint8_t pointSize,
+                                                                   const SdCardFontFamilyInfo* exclude) const {
+  const SdCardFontFamilyInfo* best = nullptr;
+  uint32_t bestGlyphs = 0;
+  for (const auto& fam : registry_.getFamilies()) {
+    if (fam.vector || &fam == exclude) continue;
+    const SdCardFontFileInfo* file = fam.findFile(pointSize);
+    if (!file) continue;
+    char path[SdCardFontFamilyInfo::PATH_BUFFER_SIZE];
+    if (!fam.filePath(*file, path, sizeof(path))) continue;
+    // Header + intervals only; freed again right after the probe.
+    SdCardFont probe;
+    if (!probe.load(path)) continue;
+    const EpdFont* regular = probe.getEpdFont(0);
+    if (!regular || !regular->hasCodepoint(0x4E00)) continue;
+    const uint32_t glyphs = probe.glyphCount(0);
+    if (glyphs > bestGlyphs) {
+      best = &fam;
+      bestGlyphs = glyphs;
+    }
+  }
+  return best;
 }
 
 int SdCardFontSystem::variantFontId(const int readerFontId, const uint8_t pointSize) {
@@ -286,7 +384,9 @@ int SdCardFontSystem::variantFontId(const int readerFontId, const uint8_t pointS
 
 void SdCardFontSystem::unloadCpfonts(GfxRenderer& renderer) {
   cpfontVariants_.clear();  // the manager owns and frees the fonts themselves
+  uiOnlyFallbacks_ = false;
   manager_.unloadAll(renderer);
+  restoreBuiltinUiFonts(renderer);
 }
 
 int SdCardFontSystem::resolveVariant(const int fontId, const float scale) {
