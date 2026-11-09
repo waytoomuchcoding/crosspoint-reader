@@ -77,6 +77,15 @@ constexpr int PAGE_TURN_RATES[] = {1, 1, 3, 6, 12};
 constexpr float bookmarkProgressEpsilon = 0.0001f;
 constexpr int CLIP_SELECTION_PAGE_WINDOW = 3;
 
+// True when the reader font is a bitonal (pixel) SD font, so the page has no
+// grey text to draw. Heading sizes are files of the same family, converted the
+// same way; UI fallbacks never take part in the grayscale pass.
+bool readerTextIsBitonal(const GfxRenderer& renderer, const int fontId) {
+  const auto& sdFonts = renderer.getSdCardFonts();
+  const auto it = sdFonts.find(fontId);
+  return it != sdFonts.end() && it->second && it->second->isBitonal();
+}
+
 // Word i's font: headings and CSS font-size runs can differ from the section font.
 int clippingWordFont(const GfxRenderer& renderer, const int fontId, const TextBlock& block, const uint16_t i) {
   return TextBlock::renderFontId(renderer, block.wordFontId(i, fontId), fontId);
@@ -2190,7 +2199,9 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const bool manualRefreshPending = forcedRefreshPending;
   forcedRefreshPending = false;
   const bool cleanImageBasePending = manualRefreshPending || pagesUntilFullRefresh <= 1;
-  const bool needsTextGrayscale = SETTINGS.textAntiAliasing;
+  // Pixel (bitonal) SD fonts have no grey pixels: the extra grayscale render
+  // and panel pass would redraw identical black text, so skip it.
+  const bool needsTextGrayscale = SETTINGS.textAntiAliasing && !readerTextIsBitonal(renderer, fontId);
   const bool needsAnyGrayscale = needsTextGrayscale || (pageHasImages && !BoardConfig::isEegoA4());
   const bool absoluteImageGrayscale = pageHasImages && !gpio.deviceIsX3() &&
                                       display.getController() == HalDisplay::Controller::UC8279 &&

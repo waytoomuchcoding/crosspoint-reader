@@ -149,6 +149,13 @@ class SdCardFont {
   // Content hash of the file header + style TOC entries (computed during load).
   // Used to generate deterministic font IDs for section cache invalidation.
   uint32_t contentHash() const { return contentHash_; }
+  // True when every glyph pixel is fully on or off (pixel-native .cpfont), so
+  // text in this font gains nothing from the grayscale anti-aliasing pass.
+  bool isBitonal() const { return bitonal_; }
+  // Glyph records in a style (bridged empty codepoints included), 0 if absent.
+  uint32_t glyphCount(uint8_t style = 0) const {
+    return style < styleCount_ && styles_ ? styles_[style].header.glyphCount : 0;
+  }
 
  private:
   // Per-style metadata (parsed from file header/TOC)
@@ -328,6 +335,7 @@ class SdCardFont {
 
   Stats stats_;
   uint32_t contentHash_ = 0;
+  bool bitonal_ = false;
   uint32_t fileSize_ = 0;  // bounds glyph bitmap offsets (glyphEntryValid)
   uint8_t corruptGlyphsLogged_ = 0;
   static inline std::atomic<bool> corruptGlyphNotice_{false};

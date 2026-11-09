@@ -586,13 +586,20 @@ RASTER_DPI = 150
 # Sizes are then pixel sizes (24 = 2x a 12 px font). Works for bitmap-only
 # fonts (BDF/PCF strikes) too. 0 = off.
 PIXEL_NATIVE = 0
+# Pixel mode: bold styles without their own font file are the regular glyphs
+# smeared one font pixel to the right (classic X11 bitmap bold).
+SYNTHETIC_BOLD = False
+# Upper bound on Unicode intervals per style. Every interval costs 12 bytes of
+# RAM for as long as the font is loaded, so patchy CJK fonts bridge their gaps
+# down to this (the bridged codepoints become empty glyphs).
+MAX_INTERVALS = 4000
 
 
 class _ScaledBitmap:
     """8-bit (0/255) top-down bitmap with FreeType-like attributes."""
 
-    def __init__(self, mono, scale):
-        self.width = mono.width * scale
+    def __init__(self, mono, scale, embolden=False):
+        self.width = (mono.width + (1 if embolden else 0)) * scale
         self.rows = mono.rows * scale
         self.pitch = self.width
         src = mono.buffer
@@ -608,6 +615,8 @@ class _ScaledBitmap:
                     on = src[row + x] >= 128
                 if on:
                     line[x * scale:(x + 1) * scale] = b"\xff" * scale
+                    if embolden:
+                        line[(x + 1) * scale:(x + 2) * scale] = b"\xff" * scale
             for k in range(scale):
                 out[(y * scale + k) * self.width:(y * scale + k + 1) * self.width] = line
         self.buffer = bytes(out)
@@ -694,11 +703,11 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=F
         if start <= i_end:
             validated_intervals.append((start, i_end))
 
-    # The reader accepts at most 4096 intervals (SdCardFont MAX_INTERVALS). Fonts
-    # with patchy coverage split into thousands, so bridge the smallest gaps; the
-    # bridged codepoints become empty glyphs.
+    # The reader accepts at most 4096 intervals (SdCardFont MAX_INTERVALS) and
+    # keeps them all in RAM. Fonts with patchy coverage split into thousands, so
+    # bridge the smallest gaps; the bridged codepoints become empty glyphs.
     gap = 1
-    while len(validated_intervals) > 4000:
+    while len(validated_intervals) > MAX_INTERVALS:
         gap *= 2
         merged = []
         for start, end in validated_intervals:
@@ -725,8 +734,9 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=F
                 continue
 
             bitmap = f.glyph.bitmap
+            embolden = PIXEL_NATIVE and SYNTHETIC_BOLD and style_id in (1, 3)
             if PIXEL_NATIVE:
-                bitmap = _ScaledBitmap(bitmap, scale)
+                bitmap = _ScaledBitmap(bitmap, scale, embolden)
 
             # Build 4-bit greyscale bitmap (same logic as fontconvert.py).
             #
@@ -791,7 +801,7 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=F
             glyph = GlyphProps(
                 width=bitmap.width,
                 height=bitmap.rows,
-                advance_x=(fp4_from_ft16_16((f.glyph.advance.x << 10) * scale) if PIXEL_NATIVE
+                advance_x=(fp4_from_ft16_16(((f.glyph.advance.x << 10) + (embolden << 16)) * scale) if PIXEL_NATIVE
                            else fp4_from_ft16_16(f.glyph.linearHoriAdvance)),
                 left=f.glyph.bitmap_left * scale,
                 top=f.glyph.bitmap_top * scale,
@@ -930,7 +940,9 @@ def generate_cpfont_multistyle(style_fonts, size, intervals, output_path,
     MAGIC = b"CPFONT\x00\x00"
     HEADER_SIZE = 32
     STYLE_TOC_ENTRY_SIZE = 32
-    flags = 1  # always 2-bit greyscale
+    # Bit 0: 2-bit greyscale bitmaps (always). Bit 1: bitonal — every pixel is
+    # fully on or off (pixel-native fonts), so pages need no anti-aliasing pass.
+    flags = 1 | (2 if PIXEL_NATIVE else 0)
     style_count = len(style_fonts)
 
     # Rasterize each style
@@ -1039,6 +1051,11 @@ def main():
     parser.add_argument("--pixel-native", dest="pixel_native", type=int, default=0,
                         help="Pixel font mode: the font's native pixel size. Sizes become pixel sizes "
                              "and must be multiples of it; glyphs are rendered 1-bit and enlarged.")
+    parser.add_argument("--synthetic-bold", dest="synthetic_bold", action="store_true",
+                        help="Pixel mode: add a bold style made by smearing the regular glyphs one pixel right.")
+    parser.add_argument("--max-intervals", dest="max_intervals", type=int, default=4000,
+                        help="Bridge coverage gaps until at most this many intervals remain (each costs "
+                             "12 bytes of device RAM while the font is loaded).")
     parser.add_argument("--dpi", dest="dpi", type=int, default=150,
                         help="Rasterization DPI (default 150). Use 144 for 16 px pixel fonts.")
     parser.add_argument("--force-autohint", dest="force_autohint", action="store_true",
@@ -1069,9 +1086,13 @@ def main():
                         help="Fallback font file for bold-italic style.")
 
     args = parser.parse_args()
-    global RASTER_DPI, PIXEL_NATIVE
+    global RASTER_DPI, PIXEL_NATIVE, SYNTHETIC_BOLD, MAX_INTERVALS
     RASTER_DPI = args.dpi
     PIXEL_NATIVE = args.pixel_native
+    SYNTHETIC_BOLD = args.synthetic_bold
+    MAX_INTERVALS = args.max_intervals
+    if SYNTHETIC_BOLD and not PIXEL_NATIVE:
+        parser.error("--synthetic-bold needs --pixel-native")
 
     if args.list_presets:
         print("Available interval presets:")
@@ -1152,6 +1173,11 @@ def main():
         # Single font file provided: wrap as a single-style v4 font
         style_map = {"regular": 0, "bold": 1, "italic": 2, "bolditalic": 3}
         style_fonts[style_map[args.style]] = fontfile
+
+    if SYNTHETIC_BOLD and 0 in style_fonts and 1 not in style_fonts:
+        style_fonts[1] = style_fonts[0]
+        if 0 in fallback_style_fonts:
+            fallback_style_fonts[1] = fallback_style_fonts[0]
 
     # Always generate v4 format
     if args.output and len(sizes) != 1:

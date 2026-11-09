@@ -638,7 +638,10 @@ bool SdCardFont::load(const char* path) {
   // Begin content hash: accumulate global header
   uint32_t hash = fnv1a(headerBuf, HEADER_SIZE);
 
-  bool is2Bit = (readU16(headerBuf + 10) & 1) != 0;
+  const uint16_t headerFlags = readU16(headerBuf + 10);
+  bool is2Bit = (headerFlags & 1) != 0;
+  // Bit 1: the converter wrote a bitonal (pixel-native) font with no grey pixels.
+  bitonal_ = (headerFlags & 2) != 0;
 
   uint8_t styleCount = headerBuf[12];
   if (styleCount == 0 || styleCount > MAX_STYLES) {
