@@ -3,6 +3,7 @@
 #include <Logging.h>
 #include <Memory.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -348,5 +349,60 @@ uint32_t decodeRubyCode(const char* s) {
 }
 
 void encodeRubyCode(uint32_t code, char out[8]) { snprintf(out, 8, "%c%06x", RUBY_MARK, code & 0xFFFFFF); }
+
+EntryReader::EntryReader(const uint8_t* record, size_t len) : p(record), end(record + len) {
+  if (len > 0) readings = *p++;
+}
+
+bool EntryReader::next(EntryReading& out) {
+  if (done >= readings) return false;
+  out = EntryReading{};
+  const auto takeString = [&](const char*& text, uint8_t& textLen) {
+    if (p >= end || *p > end - p - 1) return false;
+    textLen = *p;
+    text = reinterpret_cast<const char*>(p + 1);
+    p += 1 + textLen;
+    return true;
+  };
+  if (!takeString(out.pinyin, out.pinyinLen) || !takeString(out.trad, out.tradLen) || p >= end) {
+    done = readings;
+    return false;
+  }
+  const int syllables = *p++;
+  for (int s = 0; s < syllables && end - p >= 3; ++s, p += 3) {
+    if (s < MAX_WORD_CHARS) out.zhuyin[out.syllables++] = le24(p);
+  }
+  if (end - p < 2) {
+    done = readings;
+    return false;
+  }
+  // A sense list cut by the read buffer is kept up to the cut.
+  out.sensesLen = static_cast<uint16_t>(std::min<size_t>(p[0] | (p[1] << 8), end - p - 2));
+  out.senses = reinterpret_cast<const char*>(p + 2);
+  p += 2 + out.sensesLen;
+  ++done;
+  return true;
+}
+
+void appendZhuyin(std::string& out, uint32_t code) {
+  const auto append = [&](uint32_t cp) {
+    if (cp < 0x800) {
+      out += static_cast<char>(0xC0 | (cp >> 6));
+    } else {
+      out += static_cast<char>(0xE0 | (cp >> 12));
+      out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    }
+    out += static_cast<char>(0x80 | (cp & 0x3F));
+  };
+  // Tones 2-4 follow the syllable; the neutral tone dot comes first.
+  static constexpr uint32_t TONE_MARKS[] = {0, 0, 0x02CA, 0x02C7, 0x02CB, 0x02D9};
+  const int tone = zhuyinTone(code);
+  if (tone == 5) append(TONE_MARKS[5]);
+  for (int i = 0; i < 3; ++i) {
+    const int symbol = zhuyinSymbol(code, i);
+    if (symbol) append(0x3104 + static_cast<uint32_t>(symbol));
+  }
+  if (tone >= 2 && tone <= 4) append(TONE_MARKS[tone]);
+}
 
 }  // namespace zh

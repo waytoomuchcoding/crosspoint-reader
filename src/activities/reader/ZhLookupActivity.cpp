@@ -148,6 +148,7 @@ bool ZhLookupActivity::extractChars(const Page& src, const bool visible, std::ve
       CharBox c;
       c.cp = hanCp;
       c.breakBefore = pendingBreak;
+      c.source = block->wordSourceRange(i).start;
       pendingBreak = false;
       if (visible) {
         // Headings and other sized text use their own font.
@@ -460,32 +461,21 @@ void ZhLookupActivity::buildPopup() {
   }
   const zh::WordMatch& m = matches[matchIndex];
   const size_t got = zh::sharedDict().readEntry(m.entryOff, entryBuf.get(), ENTRY_BUF_BYTES);
-  const uint8_t* p = entryBuf.get();
-  const uint8_t* end = p + got;
   if (got == 0) {
     fitPopupHeight();
     return;
   }
-  const int count = *p++;
-  readings.reserve(count);
-  for (int r = 0; r < count && p < end; ++r) {
+  zh::EntryReader entry(entryBuf.get(), got);
+  readings.reserve(entry.count());
+  zh::EntryReading er;
+  for (int r = 0; entry.next(er); ++r) {
     Reading rd;
-    const auto takeString = [&](std::string& out) {
-      if (p >= end) return false;
-      const size_t n = std::min<size_t>(*p, end - p - 1);
-      out.assign(reinterpret_cast<const char*>(p + 1), n);
-      p += 1 + n;
-      return true;
-    };
-    if (!takeString(rd.pinyin) || !takeString(rd.trad) || p >= end) break;
-    const int syllables = *p++;
-    for (int s = 0; s < syllables && end - p >= 3; ++s, p += 3) {
-      if (s < zh::MAX_WORD_CHARS) rd.zhuyin[rd.syllables++] = p[0] | (p[1] << 8) | (p[2] << 16);
-    }
-    if (end - p < 2) break;
-    const size_t defLen = std::min<size_t>(p[0] | (p[1] << 8), end - p - 2);
-    const char* defs = reinterpret_cast<const char*>(p + 2);
-    p += 2 + defLen;
+    rd.pinyin.assign(er.pinyin, er.pinyinLen);
+    rd.trad.assign(er.trad, er.tradLen);
+    std::copy(er.zhuyin, er.zhuyin + er.syllables, rd.zhuyin);
+    rd.syllables = er.syllables;
+    const size_t defLen = er.sensesLen;
+    const char* defs = er.senses;
 
     // The title row (reader font) is drawn per page; the rest uses the small font.
     if (r == 0 && m.hsk) rd.hsk = m.hsk;
@@ -525,6 +515,51 @@ void ZhLookupActivity::fitPopupHeight() {
   popupFit = std::min(popupHeight, content + 2 * (POPUP_PAD + POPUP_BORDER));
 }
 
+void ZhLookupActivity::saveToVocabulary() {
+  if (!vocabularyFor || !SETTINGS.vocabularyHistoryEnabled || matchCount == 0) return;
+  const zh::WordMatch& m = matches[matchIndex];
+  if (m.entryOff == lastSavedEntry || selStart + m.len > chars.size()) return;
+  const size_t got = zh::sharedDict().readEntry(m.entryOff, entryBuf.get(), ENTRY_BUF_BYTES);
+  if (got == 0) return;
+
+  std::string word;
+  for (size_t i = selStart; i < selStart + m.len; ++i) utf8AppendCodepoint(cps[i], word);
+  // Plain text, one reading after another:
+  //   xué xí ㄒㄩㄝˊ ㄒㄧˊ 學習
+  //   1. to learn
+  std::string definition;
+  if (m.hsk) definition += "HSK " + std::to_string(m.hsk) + "\n";
+  zh::EntryReader entry(entryBuf.get(), got);
+  zh::EntryReading er;
+  while (entry.next(er)) {
+    if (!definition.empty() && definition.back() != '\n') definition += '\n';
+    definition.append(er.pinyin, er.pinyinLen);
+    for (int s = 0; s < er.syllables; ++s) {
+      definition += ' ';
+      zh::appendZhuyin(definition, er.zhuyin[s]);
+    }
+    if (er.tradLen && word.compare(0, std::string::npos, er.trad, er.tradLen) != 0) {
+      definition += ' ';
+      definition.append(er.trad, er.tradLen);
+    }
+    int sense = 1;
+    for (size_t s = 0; s < er.sensesLen;) {
+      size_t e = s;
+      while (e < er.sensesLen && er.senses[e] != '\x1f') ++e;
+      definition += '\n' + std::to_string(sense++) + ". ";
+      definition.append(er.senses + s, e - s);
+      s = e + 1;
+    }
+  }
+  // Context characters belong to the neighbouring pages.
+  const int page = selStart < firstOn ? pageIndex - 1 : selStart >= endOn ? pageIndex + 1 : pageIndex;
+  if (VocabularyStore::append(vocabularyFor(page, chars[selStart].source), word, word, definition, false)) {
+    lastSavedEntry = m.entryOff;
+  } else {
+    LOG_ERR("VOCAB", "Could not save Chinese lookup");
+  }
+}
+
 void ZhLookupActivity::buildPreview() {
   // DESIGN 4.4: every dictionary word starting at the cursor, longest first,
   // one line each in the small font: word, first reading, first sense.
@@ -539,21 +574,15 @@ void ZhLookupActivity::buildPreview() {
     std::string line;
     for (int c = 0; c < found[k].len; ++c) utf8AppendCodepoint(cps[start + c], line);
     const size_t got = zh::sharedDict().readEntry(found[k].entryOff, entryBuf.get(), ENTRY_BUF_BYTES);
-    const uint8_t* p = entryBuf.get();
-    const uint8_t* end = p + got;
-    if (got > 3 && p[0] > 0) {
-      const size_t pyLen = std::min<size_t>(p[1], got - 2);
-      line += "  " + std::string(reinterpret_cast<const char*>(p + 2), pyLen);
-      const uint8_t* q = p + 2 + pyLen;
-      if (q < end) q += 1 + *q;        // traditional form
-      if (q < end) q += 1 + 3 * (*q);  // zhuyin
-      if (end - q >= 2) {
-        const size_t defLen = std::min<size_t>(q[0] | (q[1] << 8), end - q - 2);
-        const char* defs = reinterpret_cast<const char*>(q + 2);
-        size_t e = 0;
-        while (e < defLen && defs[e] != '\x1f') ++e;
-        line += "  " + std::string(defs, e);
-      }
+    zh::EntryReader entry(entryBuf.get(), got);
+    zh::EntryReading er;
+    if (entry.next(er)) {
+      line += "  ";
+      line.append(er.pinyin, er.pinyinLen);
+      size_t e = 0;
+      while (e < er.sensesLen && er.senses[e] != '\x1f') ++e;
+      line += "  ";
+      line.append(er.senses, e);
     }
     // Keep the first wrapped line only.
     wrapped.clear();
@@ -896,6 +925,7 @@ void ZhLookupActivity::handleInput() {
 
   bool changed = false;
   bool exit = false;
+  bool save = false;
   {
     RenderLock lock;
     switch (focus) {
@@ -928,6 +958,7 @@ void ZhLookupActivity::handleInput() {
         }
         if (back == PRESS) {
           consume(keyBack);
+          save = true;
           focus = Focus::Cursor;
           cursor = charMode ? static_cast<int>(selStart) : wordContaining(selStart);
           changed = true;
@@ -953,4 +984,5 @@ void ZhLookupActivity::handleInput() {
     return;
   }
   if (changed) requestUpdate();
+  if (save) saveToVocabulary();  // after the redraw request: the SD write must not delay it
 }

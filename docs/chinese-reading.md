@@ -104,6 +104,29 @@ start in jump mode.
 - Jump mode splits the page's lines into four bands; pick bands until one
   line is left, and the cursor lands on its first word.
 
+### Saving looked-up words
+
+With **Settings > Reader > Save Vocabulary Lookups** on, closing the pop-up
+adds the word it showed to `/Vocabulary.txt`, the same file as the
+[dictionary's vocabulary history](./dictionary.md#vocabulary-history). Only the
+word you settled on is saved, not every word you stepped through. A word not in
+the dictionary is not saved. Closing the pop-up again on the same word does not
+add a second record.
+
+`word` and `headword` are the characters as they appear in the book. The
+`definition` lists each reading as a line with pinyin, zhuyin and the
+traditional form (when it differs), then its numbered senses; an HSK word
+starts with `HSK n`. For example:
+
+```
+HSK 1
+xué xí ㄒㄩㄝˊ ㄒㄧˊ 學習
+1. to learn
+2. to study
+```
+
+`start_offset` is the EPUB source offset of the word's first character.
+
 Words come from the same segmentation that places zhuyin: each stretch of
 Chinese characters is split into the most probable sequence of dictionary
 words, using word frequencies (a word costs 3 + ln(frequency rank)).

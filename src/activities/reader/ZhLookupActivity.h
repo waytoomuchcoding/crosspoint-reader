@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "activities/Activity.h"
+#include "vocabulary/VocabularyStore.h"
 
 // Chinese word lookup (docs/chinese-reading.md, DESIGN 4-6).
 //
@@ -20,23 +21,28 @@
 // left, definitions on the right; ◀ ▶ page through every reading, the side
 // buttons move the selection start one character, Confirm cycles shorter
 // words. Holding Confirm opens jump mode: the page splits into four bands
-// picked with Back/Confirm/◀/▶ until one line remains.
+// picked with Back/Confirm/◀/▶ until one line remains. Closing the pop-up
+// saves the word it shows to the vocabulary history when that is enabled.
 //
 // Words that cross a page break are segmented and looked up whole: up to
 // seven characters of the neighbouring pages are loaded as context.
 //
-// RAM: a CharBox per Han character on the page (~300 x 20 B), the page's
+// RAM: a CharBox per Han character on the page (~300 x 36 B), the page's
 // words, a 3 KB entry buffer and the wrapped text of one selection.
 class ZhLookupActivity final : public Activity {
  public:
   using PageLoader = std::function<std::unique_ptr<Page>(int pageIndex)>;
   using PageChanged = std::function<void(int pageIndex)>;
+  // Book context for a vocabulary record; empty when the history is off.
+  using VocabularyFor = std::function<VocabularyContext(int pageIndex, uint32_t sourceOffset)>;
 
   ZhLookupActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, PageLoader loader, int pageIndex,
-                   int pageCount, int marginLeft, int marginTop, bool startInJump, PageChanged onPageChanged)
+                   int pageCount, int marginLeft, int marginTop, bool startInJump, PageChanged onPageChanged,
+                   VocabularyFor vocabularyFor)
       : Activity("ZhLookup", renderer, mappedInput),
         loadPage(std::move(loader)),
         onPageChanged(std::move(onPageChanged)),
+        vocabularyFor(std::move(vocabularyFor)),
         pageIndex(pageIndex),
         pageCount(pageCount),
         marginLeft(marginLeft),
@@ -55,9 +61,10 @@ class ZhLookupActivity final : public Activity {
     int16_t em = 0;  // sizes the ruby (zh::rubyStyle); set only when ruby != 0
     uint16_t line = 0xFFFF;
     uint32_t cp = 0;
-    uint32_t ruby = 0;        // packed zhuyin drawn beside it, 0 = none
-    int font = 0;             // the word's render font (headings differ from body text)
-    bool breakBefore = true;  // a word cannot span from the previous character
+    uint32_t ruby = 0;             // packed zhuyin drawn beside it, 0 = none
+    uint32_t source = UINT32_MAX;  // EPUB source offset of its word, for vocabulary records
+    int font = 0;                  // the word's render font (headings differ from body text)
+    bool breakBefore = true;       // a word cannot span from the previous character
   };
   struct Word {
     uint16_t first;
@@ -104,6 +111,7 @@ class ZhLookupActivity final : public Activity {
   void wrapInto(int font, const std::string& text, int maxWidth, int indent, std::vector<std::string>& out) const;
   int popupTextWidth() const;
   void fitPopupHeight();
+  void saveToVocabulary();
 
   // Jump mode
   void startJump();
@@ -132,6 +140,7 @@ class ZhLookupActivity final : public Activity {
 
   PageLoader loadPage;
   PageChanged onPageChanged;
+  VocabularyFor vocabularyFor;
   int pageIndex;
   int pageCount;
   const int marginLeft;
@@ -173,6 +182,7 @@ class ZhLookupActivity final : public Activity {
   std::vector<PopupPage> popupPages;
   int popupPage = 0;
   int tabWidth = 0;
+  uint32_t lastSavedEntry = UINT32_MAX;  // one record per word when it is reopened in a row
 
   // Jump mode: a stack of (first line, line count) narrowings.
   struct Band {

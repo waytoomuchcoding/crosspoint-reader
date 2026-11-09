@@ -20,6 +20,8 @@
 #include "ReaderToolbarUi.h"
 #include "components/OptionPopup.h"
 
+struct VocabularyContext;
+
 class EpubReaderActivity final : public ReaderActivity {
   std::shared_ptr<Epub> epub;
   std::unique_ptr<Epub::SyncMetadata> vocabularyMetadata;
@@ -200,6 +202,7 @@ class EpubReaderActivity final : public ReaderActivity {
   void openFootnoteSelect(bool reopenMenuOnCancel);
   void openDictionaryWordSelect();
   bool openZhLookup(bool startInJump = false);
+  void fillVocabularySeries(VocabularyContext& vocabulary);
   // Selection to restore when returning from a dictionary lookup.
   ClipSelectionActivity::Selection pendingLookupSelection;
   ClipSelectionActivity::Selection lookupReturnSelection;

@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 
 namespace zh {
 
@@ -78,6 +79,7 @@ class Dict {
 
   // Reads an entries.bin record into buf (NUL-terminated). Layout as written by
   // the converter; parse with EntryReader. Returns bytes read, 0 on failure.
+  // A record longer than the buffer is cut short; EntryReader stops at the cut.
   size_t readEntry(uint32_t off, uint8_t* buf, size_t bufSize);
 
   SegmentScratch* scratch() { return scratchBuf.get(); }
@@ -191,6 +193,38 @@ inline bool wantsRuby(const Segment& seg, uint32_t threshold) {
 // lineHeight tall.
 template <typename F>
 void forEachRubyPixel(uint32_t code, int em, int lineHeight, F&& plot);
+
+// One reading of an entries.bin record; the strings point into the record buffer.
+// Record: reading count, then per reading: pinyin and traditional form (length
+// byte + UTF-8), syllable count + 3-byte packed zhuyin each, and the senses
+// (16-bit length + UTF-8, separated by '\x1f').
+struct EntryReading {
+  const char* pinyin = nullptr;
+  uint8_t pinyinLen = 0;
+  const char* trad = nullptr;
+  uint8_t tradLen = 0;
+  uint32_t zhuyin[MAX_WORD_CHARS] = {};
+  uint8_t syllables = 0;
+  const char* senses = nullptr;
+  uint16_t sensesLen = 0;
+};
+
+class EntryReader {
+ public:
+  EntryReader(const uint8_t* record, size_t len);
+  int count() const { return readings; }
+  // Fills `out` with the next reading; false at the end or a truncated record.
+  bool next(EntryReading& out);
+
+ private:
+  const uint8_t* p;
+  const uint8_t* end;
+  int readings = 0;
+  int done = 0;
+};
+
+// Appends packed zhuyin as text with its tone mark, e.g. ㄒㄩㄝˊ (neutral: ˙ㄉㄜ).
+void appendZhuyin(std::string& out, uint32_t code);
 
 // Ruby strings stored per word in the page cache: "\x1B" + 6 hex digits.
 constexpr char RUBY_MARK = '\x1B';

@@ -153,6 +153,58 @@ TEST_F(ZhDictTest, ReadsEntries) {
   EXPECT_EQ(pinyin, "yín háng");
 }
 
+TEST_F(ZhDictTest, EntryReaderSplitsReadings) {
+  const auto m = matches("银行");
+  ASSERT_FALSE(m.empty());
+  uint8_t buf[1024];
+  const size_t got = dict.readEntry(m.front().entryOff, buf, sizeof(buf));
+  zh::EntryReader entry(buf, got);
+  ASSERT_GE(entry.count(), 1);
+  zh::EntryReading r;
+  ASSERT_TRUE(entry.next(r));
+  EXPECT_EQ(std::string(r.pinyin, r.pinyinLen), "yín háng");
+  EXPECT_EQ(std::string(r.trad, r.tradLen), "銀行");
+  ASSERT_EQ(r.syllables, 2);
+  EXPECT_EQ(r.zhuyin[0], zhuyin("ㄧㄣ", 2));
+  EXPECT_EQ(r.zhuyin[1], zhuyin("ㄏㄤ", 2));
+  EXPECT_NE(std::string(r.senses, r.sensesLen).find("bank"), std::string::npos);
+  int rest = 0;
+  while (entry.next(r)) ++rest;
+  EXPECT_EQ(rest + 1, entry.count());
+}
+
+TEST_F(ZhDictTest, EntryReaderStopsAtATruncatedRecord) {
+  const auto m = matches("银行");
+  ASSERT_FALSE(m.empty());
+  uint8_t buf[1024];
+  const size_t got = dict.readEntry(m.front().entryOff, buf, sizeof(buf));
+  // Every cut either yields the full first reading or none, never reads past the cut.
+  for (size_t cut = 0; cut < got; ++cut) {
+    zh::EntryReader entry(buf, cut);
+    zh::EntryReading r;
+    while (entry.next(r)) {
+      EXPECT_LE(reinterpret_cast<const uint8_t*>(r.senses + r.sensesLen), buf + cut);
+      EXPECT_LE(reinterpret_cast<const uint8_t*>(r.trad + r.tradLen), buf + cut);
+    }
+  }
+}
+
+TEST(ZhZhuyin, TextHasToneMarks) {
+  std::string out;
+  zh::appendZhuyin(out, zhuyin("ㄒㄩㄝ", 2));
+  EXPECT_EQ(out, "ㄒㄩㄝˊ");
+  out.clear();
+  zh::appendZhuyin(out, zhuyin("ㄇㄚ", 1));
+  EXPECT_EQ(out, "ㄇㄚ");
+  out.clear();
+  zh::appendZhuyin(out, zhuyin("ㄉㄜ", 5));
+  EXPECT_EQ(out, "˙ㄉㄜ");
+  out.clear();
+  zh::appendZhuyin(out, zhuyin("ㄏㄠ", 3));
+  zh::appendZhuyin(out, zhuyin("ㄕ", 4));
+  EXPECT_EQ(out, "ㄏㄠˇㄕˋ");
+}
+
 TEST(ZhRuby, ThresholdSelectsRareDictionaryWords) {
   zh::Segment common{};
   common.inDict = true;

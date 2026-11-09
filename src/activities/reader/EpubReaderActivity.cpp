@@ -486,10 +486,37 @@ bool EpubReaderActivity::openZhLookup(const bool startInJump) {
           section->currentPage = index;
           currentPageVisibleOffset = section->getVisibleTextOffsetForPage(index);
         }
+      },
+      [this](const int index, const uint32_t sourceOffset) {
+        VocabularyContext vocabulary;
+        vocabulary.title = epub->getTitle();
+        vocabulary.author = epub->getAuthor();
+        // As for the word picker: the chapter of the page, not of the exact offset.
+        int tocIndex = section ? section->getTocIndexForPage(index) : -1;
+        if (tocIndex < 0) tocIndex = epub->getTocIndexForSpineIndex(currentSpineIndex);
+        if (tocIndex >= 0) vocabulary.chapter = epub->getTocItem(tocIndex).title;
+        vocabulary.page = static_cast<uint16_t>(index + 1);
+        vocabulary.spine = static_cast<uint16_t>(currentSpineIndex);
+        vocabulary.startOffset = sourceOffset;
+        fillVocabularySeries(vocabulary);
+        return vocabulary;
       });
   if (!activity) return false;
   startActivityForResult(std::move(activity), [this](const ActivityResult&) { requestUpdate(); });
   return true;
+}
+
+void EpubReaderActivity::fillVocabularySeries(VocabularyContext& vocabulary) {
+  if (SETTINGS.vocabularyHistoryEnabled && !vocabularyMetadata) {
+    auto metadata = makeUniqueNoThrow<Epub::SyncMetadata>();
+    if (metadata && epub->loadSyncMetadata(*metadata)) {
+      vocabularyMetadata = std::move(metadata);
+    }
+  }
+  if (vocabularyMetadata) {
+    vocabulary.series = vocabularyMetadata->series;
+    vocabulary.seriesIndex = vocabularyMetadata->seriesIndex;
+  }
 }
 
 void EpubReaderActivity::startClipSelection(const int initialX, const int initialY,
@@ -599,16 +626,7 @@ void EpubReaderActivity::startClipSelection(const int initialX, const int initia
       vocabulary.page = startPage + 1;
       vocabulary.spine = spineIndex;
       vocabulary.startOffset = clipping.startOffset;
-      if (SETTINGS.vocabularyHistoryEnabled && !vocabularyMetadata) {
-        auto metadata = makeUniqueNoThrow<Epub::SyncMetadata>();
-        if (metadata && epub->loadSyncMetadata(*metadata)) {
-          vocabularyMetadata = std::move(metadata);
-        }
-      }
-      if (vocabularyMetadata) {
-        vocabulary.series = vocabularyMetadata->series;
-        vocabulary.seriesIndex = vocabularyMetadata->seriesIndex;
-      }
+      fillVocabularySeries(vocabulary);
       auto lookup = makeUniqueNoThrow<DictionaryWordSelectActivity>(
           renderer, mappedInput, std::move(page), left + SETTINGS.screenMargin, top + SETTINGS.screenMargin,
           clipping.text, std::move(vocabulary));
