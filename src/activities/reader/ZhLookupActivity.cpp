@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
+#include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
 #include <Memory.h>
@@ -34,6 +35,9 @@ constexpr unsigned long REPEAT_MS = 90;
 constexpr unsigned long REPEAT_FAST_AFTER_MS = 1200;
 constexpr unsigned long REPEAT_FAST_MS = 45;
 constexpr unsigned long PREVIEW_DWELL_MS = 250;  // DESIGN 4.3
+// Large headword font shipped with the dictionary (a 48 px Ming bitmap face).
+constexpr char HEADWORD_FONT_PATH[] = "/zh/headword.cpfont";
+constexpr int HEADWORD_FONT_ID = 0x5A48574F;  // "ZHWO"; outside the FNV-hashed SD ids in practice
 
 }  // namespace
 
@@ -49,9 +53,11 @@ void ZhLookupActivity::onEnter() {
   smallFont = renderer.isSdCardFont(fontId) ? sdFontSystem.sizeVariant(fontId, 0.5f) : 0;
   if (smallFont == 0) smallFont = fontId;
   smallLineHeight = renderer.getLineHeight(smallFont);
+  loadHeadwordFont();
+  titleHeight = headFont ? std::max(lineHeight, renderer.getLineHeight(headFont)) : lineHeight;
   popupHeight = renderer.getScreenHeight() / 2;
   const int content = popupHeight - 2 * (POPUP_PAD + POPUP_BORDER);
-  smallLinesPerPage = std::max(2, (content - lineHeight - POPUP_PAD / 2) / std::max(1, smallLineHeight));
+  smallLinesPerPage = std::max(2, (content - titleHeight - POPUP_PAD / 2) / std::max(1, smallLineHeight));
   entryBuf = makeUniqueNoThrow<uint8_t[]>(ENTRY_BUF_BYTES);
   if (!entryBuf || !zh::openSharedDict() || !buildPage(pageIndex)) {
     LOG_ERR("ZH", "lookup unavailable");
@@ -84,8 +90,61 @@ void ZhLookupActivity::onEnter() {
 
 void ZhLookupActivity::onExit() {
   zh::sharedDict().close();
+  unloadHeadwordFont();
   if (onPageChanged) onPageChanged(pageIndex);
   Activity::onExit();
+}
+
+void ZhLookupActivity::loadHeadwordFont() {
+  if (!Storage.exists(HEADWORD_FONT_PATH)) return;
+  auto font = makeUniqueNoThrow<SdCardFont>();
+  if (!font || !font->load(HEADWORD_FONT_PATH)) {
+    LOG_ERR("ZH", "headword font unavailable");
+    return;
+  }
+  if (renderer.getFontMap().count(HEADWORD_FONT_ID)) renderer.removeFont(HEADWORD_FONT_ID);
+  renderer.registerSdCardFont(HEADWORD_FONT_ID, font.get());
+  // The size argument only feeds CSS-style size matching, unused for this id.
+  renderer.insertFont(HEADWORD_FONT_ID, EpdFontFamily(0, font->getEpdFont(0), font->getEpdFont(1),
+                                                      font->getEpdFont(2), font->getEpdFont(3)));
+  headwordFile = std::move(font);
+  headFont = HEADWORD_FONT_ID;
+}
+
+void ZhLookupActivity::unloadHeadwordFont() {
+  if (!headFont) return;
+  renderer.removeFont(headFont);
+  headwordFile.reset();
+  headFont = 0;
+}
+
+// Characters missing from the headword font were bridged into empty glyphs by
+// the converter; draw those in the reader font instead.
+int ZhLookupActivity::titleCharFont(const int font, const char* ch) const {
+  if (font == headFont && renderer.getTextAdvanceX(font, ch, EpdFontFamily::REGULAR, 0) <= 0) return fontId;
+  return font;
+}
+
+int ZhLookupActivity::titleFontFor(const Reading& rd, const int avail) const {
+  const int wordLen = matchCount > 0 ? matches[matchIndex].len : 1;
+  for (const int font : {headFont, fontId, smallFont}) {
+    if (!font) continue;
+    const int em = renderer.getTextAdvanceX(font, zh::EM_PROBE, EpdFontFamily::REGULAR, 0);
+    int width = 0;
+    for (int k = 0; k < wordLen && selStart + k < cps.size(); ++k) {
+      char ch[5] = {};
+      utf8AppendCodepoint(ch, cps[selStart + k]);
+      width += renderer.getTextAdvanceX(titleCharFont(font, ch), ch, EpdFontFamily::REGULAR, 0);
+      if (k < rd.syllables && rd.zhuyin[k]) width += zh::rubyWidth(em);
+    }
+    if (!rd.trad.empty()) {
+      const std::string trad = "【" + rd.trad + "】";
+      width += renderer.getTextAdvanceX(font, trad.c_str(), EpdFontFamily::REGULAR, 0);
+    }
+    if (rd.hsk) width += POPUP_PAD + renderer.getTextAdvanceX(smallFont, "HSK6", EpdFontFamily::REGULAR, 0);
+    if (width <= avail) return font;
+  }
+  return smallFont;
 }
 
 void ZhLookupActivity::cancel() {
@@ -509,7 +568,7 @@ void ZhLookupActivity::fitPopupHeight() {
   for (const auto& pg : popupPages) {
     const Reading& rd = readings[pg.reading];
     const int pageLines = std::min<int>(smallLinesPerPage, rd.firstLine + rd.lineCount - pg.firstLine);
-    text = std::max(text, lineHeight + POPUP_PAD / 2 + pageLines * smallLineHeight);
+    text = std::max(text, titleHeight + POPUP_PAD / 2 + pageLines * smallLineHeight);
   }
   const int content = std::max(tabs, text);
   popupFit = std::min(popupHeight, content + 2 * (POPUP_PAD + POPUP_BORDER));
@@ -731,35 +790,42 @@ void ZhLookupActivity::drawPopup() {
   const Reading& rd = readings[pg.reading];
   const int textX = tabX + tabWidth + POPUP_PAD;
   // Each character followed by its zhuyin column (as ruby in the book), then
-  // the traditional form and HSK band.
+  // the traditional form and HSK band: in the large headword font when the
+  // whole row fits, else the reader font, else the small font.
+  const int titleFont = titleFontFor(rd, x + w - POPUP_BORDER - POPUP_PAD - textX);
+  const int titleLine = renderer.getLineHeight(titleFont);
+  const int titleY = innerY + (titleHeight - titleLine) / 2;
   int tx = textX;
   const int wordLen = matchCount > 0 ? matches[matchIndex].len : 1;
-  const int em = renderer.getTextAdvanceX(fontId, zh::EM_PROBE, EpdFontFamily::REGULAR, 0);
+  const int em = renderer.getTextAdvanceX(titleFont, zh::EM_PROBE, EpdFontFamily::REGULAR, 0);
   for (int k = 0; k < wordLen && selStart + k < cps.size(); ++k) {
     char ch[5] = {};
     utf8AppendCodepoint(ch, cps[selStart + k]);
-    renderer.drawText(fontId, tx, innerY, ch, true);
-    tx += renderer.getTextAdvanceX(fontId, ch, EpdFontFamily::REGULAR, 0);
+    const int chFont = titleCharFont(titleFont, ch);
+    // A fallback character sits on the same baseline as its neighbours.
+    const int chY = titleY + renderer.getFontAscenderSize(titleFont) - renderer.getFontAscenderSize(chFont);
+    renderer.drawText(chFont, tx, chY, ch, true);
+    tx += renderer.getTextAdvanceX(chFont, ch, EpdFontFamily::REGULAR, 0);
     if (k < rd.syllables && rd.zhuyin[k]) {
       const int rx = tx;
-      zh::forEachRubyPixel(rd.zhuyin[k], em, lineHeight,
-                           [&](int px, int py) { renderer.drawPixel(rx + px, innerY + py); });
+      zh::forEachRubyPixel(rd.zhuyin[k], em, titleLine,
+                           [&](int px, int py) { renderer.drawPixel(rx + px, titleY + py); });
       tx += zh::rubyWidth(em);
     }
   }
   if (!rd.trad.empty()) {
     const std::string trad = "【" + rd.trad + "】";
-    renderer.drawText(fontId, tx, innerY, trad.c_str(), true);
-    tx += renderer.getTextAdvanceX(fontId, trad.c_str(), EpdFontFamily::REGULAR, 0);
+    renderer.drawText(titleFont, tx, titleY, trad.c_str(), true);
+    tx += renderer.getTextAdvanceX(titleFont, trad.c_str(), EpdFontFamily::REGULAR, 0);
   }
   if (rd.hsk) {
     char hsk[8];
     snprintf(hsk, sizeof(hsk), "HSK%d", rd.hsk);
-    renderer.drawText(smallFont, tx + POPUP_PAD, innerY + (lineHeight - smallLineHeight) / 2, hsk, true);
+    renderer.drawText(smallFont, tx + POPUP_PAD, innerY + (titleHeight - smallLineHeight) / 2, hsk, true);
   }
   const size_t to = std::min<size_t>({static_cast<size_t>(rd.firstLine + rd.lineCount),
                                       static_cast<size_t>(pg.firstLine + smallLinesPerPage), lines.size()});
-  int ly = innerY + lineHeight + POPUP_PAD / 2;
+  int ly = innerY + titleHeight + POPUP_PAD / 2;
   for (size_t k = pg.firstLine; k < to; ++k) {
     renderer.drawText(smallFont, textX, ly, lines[k].c_str(), true);
     ly += smallLineHeight;

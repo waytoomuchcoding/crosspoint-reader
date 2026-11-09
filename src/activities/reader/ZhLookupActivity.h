@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Epub/Page.h>
+#include <SdCardFont.h>
 #include <ZhDict.h>
 
 #include <functional>
@@ -111,6 +112,11 @@ class ZhLookupActivity final : public Activity {
   void wrapInto(int font, const std::string& text, int maxWidth, int indent, std::vector<std::string>& out) const;
   int popupTextWidth() const;
   void fitPopupHeight();
+  void loadHeadwordFont();
+  void unloadHeadwordFont();
+  // Widest-first font for the pop-up title that fits `avail` px (0 = none fit).
+  int titleFontFor(const Reading& rd, int avail) const;
+  int titleCharFont(int font, const char* ch) const;
   void saveToVocabulary();
 
   // Jump mode
@@ -150,6 +156,11 @@ class ZhLookupActivity final : public Activity {
   int lineHeight = 0;
   int smallFont = 0;  // about half the reader size, for readings and definitions
   int smallLineHeight = 0;
+  // Optional large pop-up headword font (/zh/headword.cpfont), loaded only
+  // while this screen is open.
+  std::unique_ptr<SdCardFont> headwordFile;
+  int headFont = 0;
+  int titleHeight = 0;  // pop-up title row: the taller of the headword and reader fonts
   int popupHeight = 0;  // largest pop-up
   int popupFit = 0;     // this selection's pop-up
   int smallLinesPerPage = 0;

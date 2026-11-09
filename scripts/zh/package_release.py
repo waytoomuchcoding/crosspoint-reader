@@ -29,8 +29,10 @@ zh/*.bin are derived from:
   Unihan, https://www.unicode.org/charts/unihan.html  (Unicode License v3)
 These derived files are distributed under CC BY-SA 4.0.
 
-Fonts under .fonts/ keep their own licences:
-  GNU Unifont: GPL-2.0-or-later with the GNU font embedding exception, or OFL-1.1.
+Fonts keep their own licences:
+  GNU Unifont (.fonts/): GPL-2.0-or-later with the GNU font embedding exception, or OFL-1.1.
+  CMEX Ming 24 (zh/headword.cpfont), https://github.com/bluebat/cmexfonts: MIT,
+    designed by DynaLab, released by CMEX; converted to .cpfont.
 
 Built by scripts/zh/build_zh_dict.py and scripts/zh/package_release.py.
 """
@@ -47,6 +49,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--dict", required=True)
     ap.add_argument("--fonts", help="directory of font family folders (e.g. Unifont/Unifont_15.cpfont)")
+    ap.add_argument("--headword", help="large pop-up headword font, installed as zh/headword.cpfont")
     ap.add_argument("--version", required=True)
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
@@ -56,6 +59,8 @@ def main():
     for name in sorted(os.listdir(args.dict)):
         if name.endswith(".bin"):
             add(files, os.path.join(args.dict, name), f"zh/{name}", args.out)
+    if args.headword:
+        add(files, args.headword, "zh/headword.cpfont", args.out)
     license_path = os.path.join(args.out, "zh-LICENSE.txt")
     with open(license_path, "w") as f:
         f.write(LICENSE)

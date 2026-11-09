@@ -34,6 +34,7 @@ jobs:
           git clone --depth 1 --filter=blob:none --sparse https://github.com/drkameleon/complete-hsk-vocabulary.git hsk
           git -C hsk sparse-checkout set wordlists/exclusive/new
           curl -sSfLO https://unifoundry.com/pub/unifont/unifont-16.0.04/font-builds/unifont-16.0.04.otf
+          curl -sSfLO https://raw.githubusercontent.com/bluebat/cmexfonts/master/cmex24m.bdf
 
       - name: Build dictionary
         run: |
@@ -44,10 +45,13 @@ jobs:
         run: |
           python3 lib/EpdFont/scripts/fontconvert_sdcard.py src/unifont-16.0.04.otf --pixel-native 16 \
             --intervals latin-ext,punctuation,symbols,zh \
-            --sizes 16,32 --style regular --name Unifont --output-dir out/fonts/Unifont
+            --sizes 16,32 --style regular --name Unifont --max-intervals 128 --output-dir out/fonts/Unifont
+          # 48 px pop-up headword: CMEX Ming 24 at 2x, Han and CJK punctuation only.
+          python3 lib/EpdFont/scripts/fontconvert_sdcard.py src/cmex24m.bdf --pixel-native 24 \
+            --intervals punctuation,zh --size 48 --max-intervals 64 -o out/headword.cpfont
 
       - name: Package
-        run: python3 scripts/zh/package_release.py --dict out/zh --fonts out/fonts --version "$(date -u +%Y-%m-%d)" --out dist
+        run: python3 scripts/zh/package_release.py --dict out/zh --fonts out/fonts --headword out/headword.cpfont --version "$(date -u +%Y-%m-%d)" --out dist
 
       - name: Publish to the zh-dict release
         env:
