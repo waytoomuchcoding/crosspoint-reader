@@ -193,23 +193,47 @@ TEST(ZhRuby, CodesRoundTripThroughRubyStrings) {
 }
 
 TEST(ZhRuby, PixelsStayInsideTheRubyColumn) {
-  for (const uint32_t code : {zhuyin("ㄓㄨㄤ", 3), zhuyin("ㄉㄜ", 5), zhuyin("ㄚ", 1), zhuyin("ㄌㄧㄡ", 4)}) {
-    int count = 0, minY = 99, maxY = -99;
-    zh::forEachRubyPixel(code, 32, [&](int x, int y) {
-      EXPECT_GE(x, 0);
-      EXPECT_LT(x, zh::RUBY_WIDTH);
-      minY = std::min(minY, y);
-      maxY = std::max(maxY, y);
-      ++count;
-    });
-    EXPECT_GT(count, 0);
-    // Centred on a 32 px character: within the line, allowing the neutral-tone dot above.
-    EXPECT_GE(minY, -4);
-    EXPECT_LT(maxY, 32);
+  for (const int height : {16, 24, 28, 32, 36, 40, 42, 48, 54, 64, 66, 72, 80, 96}) {
+    const int width = zh::rubyWidth(height);
+    // The smallest column overflows below 23 px; scaled ones by up to ~15%.
+    const int slack = height < 23 ? 23 - height : height * 3 / 20;
+    for (const uint32_t code : {zhuyin("ㄓㄨㄤ", 3), zhuyin("ㄉㄜ", 5), zhuyin("ㄚ", 1), zhuyin("ㄌㄧㄡ", 4)}) {
+      int count = 0, minY = 999, maxY = -999;
+      zh::forEachRubyPixel(code, height, height, [&](int x, int y) {
+        EXPECT_GE(x, 0) << height;
+        EXPECT_LT(x, width) << height;
+        minY = std::min(minY, y);
+        maxY = std::max(maxY, y);
+        ++count;
+      });
+      EXPECT_GT(count, 0);
+      // Centred on the character: within the line, allowing the neutral-tone dot above.
+      const int scale = zh::rubyStyle(height).scale;
+      EXPECT_GE(minY, -4 * scale - slack) << height;
+      EXPECT_LT(maxY, height + slack) << height;
+    }
   }
+  // A line taller than the em (leading) centres the same column lower.
+  int top32 = 999, top40 = 999;
+  zh::forEachRubyPixel(zhuyin("ㄓㄨㄤ", 3), 32, 32, [&](int, int y) { top32 = std::min(top32, y); });
+  zh::forEachRubyPixel(zhuyin("ㄓㄨㄤ", 3), 32, 40, [&](int, int y) { top40 = std::min(top40, y); });
+  EXPECT_EQ(top40 - top32, 4);
   int none = 0;
-  zh::forEachRubyPixel(0, 32, [&](int, int) { ++none; });
+  zh::forEachRubyPixel(0, 32, 32, [&](int, int) { ++none; });
   EXPECT_EQ(none, 0);
+}
+
+TEST(ZhRuby, StyleFollowsTheTextSize) {
+  // {em, set, scale, block width}
+  const int cases[][4] = {{16, 0, 1, 10}, {24, 0, 1, 10}, {28, 0, 1, 10}, {29, 1, 1, 16},
+                          {32, 1, 1, 16}, {36, 2, 1, 20}, {39, 2, 1, 20}, {42, 0, 2, 20},
+                          {48, 0, 2, 20}, {64, 1, 2, 32}, {72, 2, 2, 40}, {96, 2, 3, 60}};
+  for (const auto& c : cases) {
+    const zh::RubyStyle st = zh::rubyStyle(c[0]);
+    EXPECT_EQ(st.set, c[1]) << c[0];
+    EXPECT_EQ(st.scale, c[2]) << c[0];
+    EXPECT_EQ(zh::rubyWidth(c[0]), c[3]) << c[0];
+  }
 }
 
 }  // namespace

@@ -52,6 +52,7 @@ class ZhLookupActivity final : public Activity {
   struct CharBox {
     int16_t x = -1, y = 0, w = 0, h = 0;  // x < 0: context from a neighbouring page, not drawn
     int16_t charW = 0;
+    int16_t em = 0;  // sizes the ruby (zh::rubyStyle); set only when ruby != 0
     uint16_t line = 0xFFFF;
     uint32_t cp = 0;
     uint32_t ruby = 0;        // packed zhuyin drawn beside it, 0 = none

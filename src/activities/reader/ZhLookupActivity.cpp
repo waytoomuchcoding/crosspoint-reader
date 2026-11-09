@@ -168,8 +168,10 @@ bool ZhLookupActivity::extractChars(const Page& src, const bool visible, std::ve
         c.ruby = i < rubyTexts.size() ? zh::decodeRubyCode(rubyTexts[i].c_str()) : 0;
         c.x = static_cast<int16_t>(marginLeft + line.xPos + block->wordXpos(i) + prefixW);
         c.y = static_cast<int16_t>(marginTop + line.yPos);
-        c.w = static_cast<int16_t>(c.charW + (c.ruby ? zh::RUBY_WIDTH : 0));
         c.h = static_cast<int16_t>(renderer.getLineHeight(font));
+        if (c.ruby)
+          c.em = static_cast<int16_t>(renderer.getTextAdvanceX(font, zh::EM_PROBE, EpdFontFamily::REGULAR, 0));
+        c.w = static_cast<int16_t>(c.charW + (c.ruby ? zh::rubyWidth(c.em) : 0));
         c.line = lineIndex;
       }
       out.push_back(c);
@@ -618,7 +620,7 @@ void ZhLookupActivity::drawHighlight(const size_t first, const size_t len) {
     renderer.drawText(c.font, c.x, c.y, buf, false);
     if (c.ruby) {
       const int rx = c.x + c.charW;
-      zh::forEachRubyPixel(c.ruby, c.h, [&](int px, int py) { renderer.drawPixel(rx + px, c.y + py, false); });
+      zh::forEachRubyPixel(c.ruby, c.em, c.h, [&](int px, int py) { renderer.drawPixel(rx + px, c.y + py, false); });
     }
   }
 }
@@ -703,6 +705,7 @@ void ZhLookupActivity::drawPopup() {
   // the traditional form and HSK band.
   int tx = textX;
   const int wordLen = matchCount > 0 ? matches[matchIndex].len : 1;
+  const int em = renderer.getTextAdvanceX(fontId, zh::EM_PROBE, EpdFontFamily::REGULAR, 0);
   for (int k = 0; k < wordLen && selStart + k < cps.size(); ++k) {
     char ch[5] = {};
     utf8AppendCodepoint(ch, cps[selStart + k]);
@@ -710,8 +713,9 @@ void ZhLookupActivity::drawPopup() {
     tx += renderer.getTextAdvanceX(fontId, ch, EpdFontFamily::REGULAR, 0);
     if (k < rd.syllables && rd.zhuyin[k]) {
       const int rx = tx;
-      zh::forEachRubyPixel(rd.zhuyin[k], lineHeight, [&](int px, int py) { renderer.drawPixel(rx + px, innerY + py); });
-      tx += zh::RUBY_WIDTH;
+      zh::forEachRubyPixel(rd.zhuyin[k], em, lineHeight,
+                           [&](int px, int py) { renderer.drawPixel(rx + px, innerY + py); });
+      tx += zh::rubyWidth(em);
     }
   }
   if (!rd.trad.empty()) {

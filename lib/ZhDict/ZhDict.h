@@ -161,8 +161,20 @@ bool segmentRun(Dict& dict, const uint32_t* cps, size_t n, F&& onSegment);
 // Ruby setting: words whose rank is above the threshold get ruby.
 // 0 = ruby off, RUBY_ALL = every character with a reading.
 constexpr uint32_t RUBY_ALL = 0xFFFFFFFF;
-// Ruby block to the right of a character (DESIGN 7.2): gap, 9 px column, gap, tone.
-constexpr int RUBY_WIDTH = 16;
+// Ruby block to the right of a character (DESIGN 7.2): gap, bopomofo column, gap,
+// tone column. The glyph set (5x7, 9x9 or 11x11) and an integer scale follow the
+// character's em (the advance of a full-width Han character, which can be less than
+// the line height); see RUBY_STEPS_BY_EM in ZhDictImpl.h.
+// 32 px text gets the 9x9 set at 1x, a 16 px wide block.
+struct RubyStyle {
+  uint8_t set;    // index into the glyph sets in ZhDictImpl.h
+  uint8_t scale;  // integer pixel scale
+};
+RubyStyle rubyStyle(int em);
+// Width of the ruby block beside a character of this em.
+int rubyWidth(int em);
+// Text measured for a font's em: CJK fonts give 一 a full-width advance.
+constexpr const char* EM_PROBE = "\xE4\xB8\x80";
 
 // Reader setting steps: off, all, then "words rarer than the top N".
 constexpr uint32_t RUBY_STEPS[] = {0, RUBY_ALL, 500, 1000, 2000, 3000, 5000, 8000, 12000, 20000, 35000, 60000};
@@ -175,9 +187,10 @@ inline bool wantsRuby(const Segment& seg, uint32_t threshold) {
 }
 
 // Calls plot(x, y) for each black pixel of the ruby for `code`, relative to the
-// top-left of a ruby block beside a character of height charHeight.
+// top-left of a ruby block beside a character of this em, centred on a line
+// lineHeight tall.
 template <typename F>
-void forEachRubyPixel(uint32_t code, int charHeight, F&& plot);
+void forEachRubyPixel(uint32_t code, int em, int lineHeight, F&& plot);
 
 // Ruby strings stored per word in the page cache: "\x1B" + 6 hex digits.
 constexpr char RUBY_MARK = '\x1B';

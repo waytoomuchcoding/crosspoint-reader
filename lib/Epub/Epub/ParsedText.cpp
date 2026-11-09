@@ -1040,9 +1040,16 @@ std::vector<uint16_t> ParsedText::calculateWordWidths(const GfxRenderer& rendere
                                                wordFocusBoundary[i], blockStyle.characterSpacing, wordSpacingPercent));
   }
 
-  // Zhuyin ruby sits in a column to the right of its character.
+  // Zhuyin ruby sits in a column to the right of its character, sized by the em.
+  int emFont = -1, rubyW = 0;
   for (size_t i = 0; i < rubyTexts.size() && i < wordWidths.size(); ++i) {
-    if (zh::isRubyCode(rubyTexts[i].c_str())) wordWidths[i] += zh::RUBY_WIDTH;
+    if (!zh::isRubyCode(rubyTexts[i].c_str())) continue;
+    const int font = wordFontId(i, fontId);
+    if (font != emFont) {
+      emFont = font;
+      rubyW = zh::rubyWidth(renderer.getTextAdvanceX(font, zh::EM_PROBE, EpdFontFamily::REGULAR, 0));
+    }
+    wordWidths[i] += rubyW;
   }
 
   // Adjust widths for ruby groups to comply with JLReq standards

@@ -396,15 +396,15 @@ void TextBlock::render(const GfxRenderer& renderer, const int sectionFontId, con
       head[headLen] = '\0';
       renderer.drawText(wordFont, drawX, wordY, head, true, currentStyle, baseDir, tracking);
       const int headWidth = renderer.getTextAdvanceX(wordFont, head, currentStyle, tracking);
+      // Sized by the em as in layout (ParsedText::calculateWordWidths).
+      const int em = renderer.getTextAdvanceX(wordFont, zh::EM_PROBE, EpdFontFamily::REGULAR, 0);
       if (split < len) {
-        renderer.drawText(wordFont, drawX + headWidth + zh::RUBY_WIDTH, wordY, word + split, true, currentStyle,
+        renderer.drawText(wordFont, drawX + headWidth + zh::rubyWidth(em), wordY, word + split, true, currentStyle,
                           baseDir, tracking);
       }
       if (!scanning) {
         const int rubyX = drawX + headWidth;
-        // Line height is the em for CJK pixel fonts, so the column centres on the glyph.
-        const int charHeight = renderer.getLineHeight(wordFont);
-        zh::forEachRubyPixel(zhCode, charHeight,
+        zh::forEachRubyPixel(zhCode, em, renderer.getLineHeight(wordFont),
                              [&](int px, int py) { renderer.drawPixel(rubyX + px, wordY + py, true); });
       }
     } else {

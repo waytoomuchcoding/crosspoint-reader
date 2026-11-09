@@ -19,14 +19,55 @@ inline float wordCost(uint32_t rank) { return WORD_COST + (rank == NO_RANK ? UNR
 // Tone marks drawn by hand (DESIGN 7.1): rows top to bottom, MSB = leftmost of `w` bits.
 struct ToneMark {
   uint8_t w, h;
-  uint8_t rows[4];
+  uint8_t rows[5];
 };
-constexpr ToneMark TONE_MARKS[4] = {
-    {4, 4, {0b0001, 0b0010, 0b0100, 0b1000}},  // ˊ tone 2
-    {5, 3, {0b10001, 0b01010, 0b00100, 0}},    // ˇ tone 3
-    {4, 4, {0b1000, 0b0100, 0b0010, 0b0001}},  // ˋ tone 4
-    {2, 2, {0b11, 0b11, 0, 0}},                // ˙ neutral
+// Per glyph set, tones 2, 3, 4 and neutral.
+constexpr ToneMark TONE_MARKS_5X7[4] = {
+    {3, 3, {0b001, 0b010, 0b100}},  // ˊ
+    {3, 2, {0b101, 0b010}},         // ˇ
+    {3, 3, {0b100, 0b010, 0b001}},  // ˋ
+    {2, 2, {0b11, 0b11}},           // ˙
 };
+constexpr ToneMark TONE_MARKS_9X9[4] = {
+    {4, 4, {0b0001, 0b0010, 0b0100, 0b1000}},  // ˊ
+    {5, 3, {0b10001, 0b01010, 0b00100}},       // ˇ
+    {4, 4, {0b1000, 0b0100, 0b0010, 0b0001}},  // ˋ
+    {2, 2, {0b11, 0b11}},                      // ˙
+};
+constexpr ToneMark TONE_MARKS_11X11[4] = {
+    {5, 5, {0b00001, 0b00010, 0b00100, 0b01000, 0b10000}},  // ˊ
+    {7, 4, {0b1000001, 0b0100010, 0b0010100, 0b0001000}},   // ˇ
+    {5, 5, {0b10000, 0b01000, 0b00100, 0b00010, 0b00001}},  // ˋ
+    {2, 2, {0b11, 0b11}},                                   // ˙
+};
+
+struct GlyphSet {
+  uint8_t w, h;           // symbol size; symbols stack at a pitch of h + 1
+  const uint16_t* rows;   // ZHUYIN_GLYPH_COUNT glyphs of h rows each
+  const ToneMark* tones;  // TONE_MARKS_*
+  uint8_t toneW;          // widest tone mark beside the column
+  uint8_t lift;           // tone raised this much beside a 2-3 symbol column
+};
+constexpr GlyphSet GLYPH_SETS[3] = {
+    {5, 7, &ZHUYIN_GLYPHS_5X7[0][0], TONE_MARKS_5X7, 3, 1},
+    {9, 9, &ZHUYIN_GLYPHS_9X9[0][0], TONE_MARKS_9X9, 5, 2},
+    {11, 11, &ZHUYIN_GLYPHS_11X11[0][0], TONE_MARKS_11X11, 7, 2},
+};
+
+// Styles by the smallest em that uses them. At 1x the three-symbol column (23, 29,
+// 35 px) fits the em. Scaled sets start while their column (46, 58, 70, 87, 105 px)
+// is still up to ~15% taller than the em, so stroke weight keeps up with large
+// pixel-font text (3x text has 3 px strokes) instead of staying 1 px thin.
+struct RubyStep {
+  uint8_t minEm;
+  RubyStyle style;
+};
+constexpr RubyStep RUBY_STEPS_BY_EM[] = {{0, {0, 1}},  {29, {1, 1}}, {35, {2, 1}}, {40, {0, 2}},
+                                         {54, {1, 2}}, {66, {2, 2}}, {80, {1, 3}}, {96, {2, 3}}};
+
+constexpr int columnHeight(const RubyStyle& st, int symbols) {
+  return (symbols * (GLYPH_SETS[st.set].h + 1) - 1) * st.scale;
+}
 }  // namespace detail
 
 template <typename F>
@@ -73,8 +114,22 @@ bool segmentRun(Dict& dict, const uint32_t* cps, size_t n, F&& onSegment) {
   return true;
 }
 
+inline RubyStyle rubyStyle(int em) {
+  RubyStyle best = detail::RUBY_STEPS_BY_EM[0].style;
+  for (const detail::RubyStep& step : detail::RUBY_STEPS_BY_EM) {
+    if (em >= step.minEm) best = step.style;
+  }
+  return best;
+}
+
+inline int rubyWidth(int em) {
+  const RubyStyle st = rubyStyle(em);
+  const detail::GlyphSet& g = detail::GLYPH_SETS[st.set];
+  return (1 + g.w + 1 + g.toneW) * st.scale;
+}
+
 template <typename F>
-void forEachRubyPixel(uint32_t code, int charHeight, F&& plot) {
+void forEachRubyPixel(uint32_t code, int em, int lineHeight, F&& plot) {
   if (code == 0) return;
   int symbols[3];
   int count = 0;
@@ -83,36 +138,45 @@ void forEachRubyPixel(uint32_t code, int charHeight, F&& plot) {
     if (sym >= 1 && sym <= ZHUYIN_GLYPH_COUNT) symbols[count++] = sym - 1;
   }
   if (count == 0) return;
-  // DESIGN 7.2: 9x9 symbols at a 10 px pitch in a column centred on the
+  const RubyStyle st = rubyStyle(em);
+  const detail::GlyphSet& g = detail::GLYPH_SETS[st.set];
+  const int s = st.scale;
+  // Fills one design pixel, s x s screen pixels.
+  auto dot = [&](int x, int y) {
+    for (int dy = 0; dy < s; ++dy) {
+      for (int dx = 0; dx < s; ++dx) plot(x + dx, y + dy);
+    }
+  };
+  // DESIGN 7.2: symbols at a pitch of h + 1 in a column centred on the
   // character, starting 1 px into the block; tone column to its right.
-  constexpr int COLUMN_X = 1;
-  constexpr int TONE_X = 11;
-  const int columnHeight = count * 10 - 1;
-  const int top = (charHeight - columnHeight) / 2;
+  const int columnX = s;
+  const int toneX = (1 + g.w + 1) * s;
+  const int pitch = (g.h + 1) * s;
+  const int top = (lineHeight - detail::columnHeight(st, count)) / 2;
   for (int k = 0; k < count; ++k) {
-    const uint16_t* rows = ZHUYIN_GLYPHS[symbols[k]];
-    for (int y = 0; y < 9; ++y) {
-      for (int x = 0; x < 9; ++x) {
-        if (rows[y] & (0x100 >> x)) plot(COLUMN_X + x, top + 10 * k + y);
+    const uint16_t* rows = g.rows + symbols[k] * g.h;
+    for (int y = 0; y < g.h; ++y) {
+      for (int x = 0; x < g.w; ++x) {
+        if (rows[y] & (1 << (g.w - 1 - x))) dot(columnX + x * s, top + pitch * k + y * s);
       }
     }
   }
   const int tone = zhuyinTone(code);
   if (tone < 2 || tone > 5) return;
-  const detail::ToneMark& t = detail::TONE_MARKS[tone - 2];
+  const detail::ToneMark& t = g.tones[tone - 2];
   int tx, ty;
   if (tone == 5) {
     // Neutral tone sits above the first symbol, centred on the column.
-    tx = COLUMN_X + (9 - t.w) / 2;
-    ty = top - t.h - 1;
+    tx = columnX + (g.w - t.w) / 2 * s;
+    ty = top - (t.h + 1) * s;
   } else {
-    // Beside the last symbol, 2 px higher when the column has 2-3 symbols.
-    tx = TONE_X;
-    ty = top + 10 * (count - 1) + (9 - t.h) / 2 - (count >= 2 ? 2 : 0);
+    // Beside the last symbol, raised a little when the column has 2-3 symbols.
+    tx = toneX;
+    ty = top + pitch * (count - 1) + ((g.h - t.h) / 2 - (count >= 2 ? g.lift : 0)) * s;
   }
   for (int y = 0; y < t.h; ++y) {
     for (int x = 0; x < t.w; ++x) {
-      if (t.rows[y] & (1 << (t.w - 1 - x))) plot(tx + x, ty + y);
+      if (t.rows[y] & (1 << (t.w - 1 - x))) dot(tx + x * s, ty + y * s);
     }
   }
 }

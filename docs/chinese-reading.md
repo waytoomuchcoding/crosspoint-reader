@@ -3,7 +3,10 @@
 This fork adds three things for reading Chinese books:
 
 - **Zhuyin ruby**: bopomofo (ㄅㄆㄇㄈ) drawn in a small column to the right of
-  each character of words rarer than a frequency threshold you choose.
+  each character of words rarer than a frequency threshold you choose. The
+  column follows the text size: 5x7 symbols below 29 px, 9x9 up to 34 px,
+  11x11 up to 39 px, then the same sets doubled or tripled (5x7 at 2x for
+  40-53 px, and so on), so its strokes keep pace with scaled pixel fonts.
 - **Word lookup**: a cursor that moves word by word over the page, with a
   CC-CEDICT pop-up showing pinyin, zhuyin, HSK band and definitions.
 - **Pixel-exact CJK font**: GNU Unifont at 2x (32 px), sharp on 1-bit e-ink.
