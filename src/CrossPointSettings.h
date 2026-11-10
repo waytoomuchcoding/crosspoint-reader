@@ -375,6 +375,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Zhuyin ruby placement: 0 = Beside character, 1 = Under character.
   enum ZH_RUBY_STYLE { ZH_RUBY_BESIDE = 0, ZH_RUBY_UNDER = 1 };
   uint8_t zhRubyStyle = ZH_RUBY_BESIDE;
+  // Dead-space procedural page ornament theme (see page_ornament::Theme, 0 = Off .. 6 = AutoCycle).
+  uint8_t deadSpaceOrnamentTheme = 0;
   uint8_t readerMenuStyle = READER_MENU_LIST;
   // SD card font family name (empty = use built-in fontFamily)
   char sdFontFamilyName[32] = "";

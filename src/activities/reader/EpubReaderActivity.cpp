@@ -13,6 +13,7 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <PageOrnament.h>
 #include <TrustedTime.h>
 #include <Txt.h>
 #include <Utf8.h>
@@ -2297,6 +2298,25 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   drawClippingHighlights(*page, fontId, orientedMarginTop, orientedMarginLeft);
   page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
   renderStatusBar();
+  if (SETTINGS.deadSpaceOrnamentTheme != 0) {
+    uint32_t bookHash = 2166136261u;
+    if (epub) {
+      for (const char c : epub->getPath()) {
+        bookHash = (bookHash ^ static_cast<uint8_t>(c)) * 16777619u;
+      }
+    }
+    page_ornament::RenderContext ornCtx;
+    ornCtx.bookSeed = bookHash;
+    ornCtx.spineIndex = static_cast<uint16_t>(std::max(0, currentSpineIndex));
+    ornCtx.pageIndex = static_cast<uint16_t>(section ? std::max(0, section->currentPage) : 0);
+    ornCtx.fontId = fontId;
+    ornCtx.marginTop = orientedMarginTop;
+    ornCtx.marginRight = orientedMarginRight;
+    ornCtx.marginBottom = orientedMarginBottom;
+    ornCtx.marginLeft = orientedMarginLeft;
+    ornCtx.theme = static_cast<page_ornament::Theme>(SETTINGS.deadSpaceOrnamentTheme);
+    page_ornament::renderDeadSpaceOrnaments(renderer, *page, ornCtx);
+  }
   const auto tBwRender = millis();
 
   if (absoluteImageGrayscale) {
