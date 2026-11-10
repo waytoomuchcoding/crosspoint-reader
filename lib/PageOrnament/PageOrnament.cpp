@@ -517,7 +517,8 @@ std::vector<DeadRegion> extractDeadRegions(const ClearanceField& field, int cont
     }
   }
 
-  std::sort(regions.begin(), regions.end(), [](const DeadRegion& a, const DeadRegion& b) { return a.areaPx > b.areaPx; });
+  std::sort(regions.begin(), regions.end(),
+            [](const DeadRegion& a, const DeadRegion& b) { return a.areaPx > b.areaPx; });
   if (regions.size() > 4) regions.resize(4);
   return regions;
 }
@@ -539,12 +540,17 @@ enum class PetalShape : uint8_t {
   CosmosFluted = 2,
   PlumRound = 3,
   SakuraCleft = 4,
+  BellCorolla = 5,
+  TrumpetCorolla = 6,
+  DaisyOblong = 7,
 };
 
 enum class LeafStyle : uint8_t {
   WoodcutHalfShade = 0,
   SolidInkBamboo = 1,
   InkWashBamboo = 2,
+  HeartCordate = 3,
+  ScallopedOak = 4,
 };
 
 enum class DiscKind : uint8_t {
@@ -555,6 +561,15 @@ enum class DiscKind : uint8_t {
   StippledBud = 4,
   SeigaihaScale = 5,
   FacetedCompassStar = 6,
+  SeedheadDome = 7,
+  CelestialStar4 = 8,
+  RingedStar = 9,
+  RingedPlanet = 10,
+};
+
+enum class CreatureKind : uint8_t {
+  Hummingbird = 0,
+  TreeFrog = 1,
 };
 
 struct PrimBBox {
@@ -567,6 +582,7 @@ enum class PrimType : uint8_t {
   Leaf = 2,
   Disc = 3,
   Wash = 4,
+  Creature = 5,
 };
 
 struct ScenePrim {
@@ -617,7 +633,7 @@ struct SceneGraph {
 
   void addPetal(uint8_t z, float cx, float cy, float angle, float len, float wid, PetalShape shape, uint8_t throatLum,
                 uint8_t tipLum, uint32_t seed = 0) {
-    const float reach = len + wid * 0.6f + 4.0f;
+    const float reach = len + wid * 0.7f + 5.0f;
     ScenePrim p;
     p.type = PrimType::Petal;
     p.zLayer = z;
@@ -638,7 +654,7 @@ struct SceneGraph {
 
   void addLeaf(uint8_t z, float bx, float by, float angle, float len, float wid, float bend, LeafStyle style,
                bool serrated, uint32_t seed = 0) {
-    const float reach = len + std::fabs(bend) * len + wid + 4.0f;
+    const float reach = len + std::fabs(bend) * len + wid + 5.0f;
     ScenePrim p;
     p.type = PrimType::Leaf;
     p.zLayer = z;
@@ -656,9 +672,9 @@ struct SceneGraph {
     prims.push_back(p);
   }
 
-  void addDisc(uint8_t z, float cx, float cy, float radius, DiscKind kind, float phaseAngle = 0.0f,
-               uint8_t lumA = 80, uint8_t lumB = 248, uint32_t seed = 0) {
-    const float reach = radius * 1.45f + 5.0f;
+  void addDisc(uint8_t z, float cx, float cy, float radius, DiscKind kind, float phaseAngle = 0.0f, uint8_t lumA = 80,
+               uint8_t lumB = 248, uint32_t seed = 0) {
+    const float reach = radius * (kind == DiscKind::RingedPlanet ? 2.35f : 1.55f) + 5.0f;
     ScenePrim p;
     p.type = PrimType::Disc;
     p.zLayer = z;
@@ -669,6 +685,24 @@ struct SceneGraph {
     p.subKind = static_cast<uint8_t>(kind);
     p.lumA = lumA;
     p.lumB = lumB;
+    p.seed = seed;
+    p.box = {static_cast<int16_t>(std::floor(cx - reach)), static_cast<int16_t>(std::floor(cy - reach)),
+             static_cast<int16_t>(std::ceil(cx + reach)), static_cast<int16_t>(std::ceil(cy + reach))};
+    prims.push_back(p);
+  }
+
+  void addCreature(uint8_t z, CreatureKind kind, float cx, float cy, float scale, float angle, float facing,
+                   uint32_t seed = 0) {
+    const float reach = scale * (kind == CreatureKind::Hummingbird ? 1.48f : 1.15f) + 6.0f;
+    ScenePrim p;
+    p.type = PrimType::Creature;
+    p.zLayer = z;
+    p.x0 = cx;
+    p.y0 = cy;
+    p.r0 = scale;
+    p.angle = angle;
+    p.curvature = facing;
+    p.subKind = static_cast<uint8_t>(kind);
     p.seed = seed;
     p.box = {static_cast<int16_t>(std::floor(cx - reach)), static_cast<int16_t>(std::floor(cy - reach)),
              static_cast<int16_t>(std::ceil(cx + reach)), static_cast<int16_t>(std::ceil(cy + reach))};
@@ -695,6 +729,47 @@ struct SceneGraph {
 // ============================================================================
 // High-Craft Botanical & Geometric Motif Builders
 // ============================================================================
+
+// Ensures a circular motif (like a 5-petal blossom) has positive clearance around its ENTIRE perimeter
+// so no single petal is ever clipped off by the sacred text halo!
+bool fitSafeBloomRadius(const ClearanceField& field, float& ioX, float& ioY, float desiredR, float minR,
+                        float& outSafeR) {
+  float cx = ioX;
+  float cy = ioY;
+  for (int step = 0; step < 3; ++step) {
+    float minPerim = field.clearanceAt(cx, cy) - desiredR;
+    for (int k = 0; k < 8; ++k) {
+      const float a = (kTwoPi * k) / 8.0f;
+      const float c = field.clearanceAt(cx + std::cos(a) * (desiredR + 2.0f), cy + std::sin(a) * (desiredR + 2.0f));
+      minPerim = std::min(minPerim, c);
+    }
+    if (minPerim >= 2.5f) {
+      ioX = cx;
+      ioY = cy;
+      outSafeR = desiredR;
+      return true;
+    }
+    float gx = 0.0f, gy = 0.0f;
+    field.gradientAt(cx, cy, gx, gy);
+    cx += gx * 3.5f;
+    cy += gy * 3.5f;
+    desiredR *= 0.88f;
+    if (desiredR < minR) break;
+  }
+  const float cCenter = field.clearanceAt(cx, cy);
+  float safeR = std::min(desiredR, cCenter - 3.5f);
+  for (int k = 0; k < 8; ++k) {
+    const float a = (kTwoPi * k) / 8.0f;
+    if (field.clearanceAt(cx + std::cos(a) * (safeR + 2.0f), cy + std::sin(a) * (safeR + 2.0f)) < 2.2f) {
+      safeR *= 0.82f;
+    }
+  }
+  if (safeR < minR) return false;
+  ioX = cx;
+  ioY = cy;
+  outSafeR = safeR;
+  return true;
+}
 
 void emitCurvedPolyline(SceneGraph& sg, uint8_t z, const std::vector<std::pair<float, float>>& pts, float rStart,
                         float rEnd, bool whiteHalo, bool dryBrush = false, uint32_t seed = 0) {
@@ -731,59 +806,199 @@ void emitSpiralTendril(SceneGraph& sg, const ClearanceField& field, float sx, fl
   emitCurvedPolyline(sg, z, pts, 0.85f, 0.48f, false);
 }
 
-void emitBotanicalFlower(SceneGraph& sg, float cx, float cy, float radius, int species, Rng& rng) {
+// Compound bilateral pinnate fern frond with opposite leaflet pairs on BOTH sides of a curved rachis!
+void emitFernFrond(SceneGraph& sg, const ClearanceField& field, float bx, float by, float startAngle, float totalLen,
+                   float bendSign, Rng& rng) {
+  std::vector<std::pair<float, float>> rachis;
+  const int steps = 9;
+  float x = bx, y = by, ang = startAngle;
+  rachis.push_back({x, y});
+  for (int i = 1; i <= steps; ++i) {
+    const float stepL = totalLen / static_cast<float>(steps);
+    ang += bendSign * 0.065f;
+    const float nx = x + std::cos(ang) * stepL;
+    const float ny = y + std::sin(ang) * stepL;
+    if (field.clearanceAt(nx, ny) < 4.5f) break;
+    x = nx;
+    y = ny;
+    rachis.push_back({x, y});
+
+    if (i >= 2 && i <= steps - 1) {
+      const float t = static_cast<float>(i) / static_cast<float>(steps);
+      const float pinnaLen = clampf(totalLen * 0.32f * std::sin(std::pow(t, 0.65f) * kPi), 5.5f, 13.5f);
+      for (int s = -1; s <= 1; s += 2) {
+        const float pa = ang + s * 0.96f;
+        if (field.clearanceAt(x + std::cos(pa) * pinnaLen, y + std::sin(pa) * pinnaLen) >= 3.0f) {
+          const bool useCrisp = (pinnaLen < 8.5f);
+          sg.addLeaf(3, x, y, pa, pinnaLen, pinnaLen * (useCrisp ? 0.28f : 0.38f), s * 0.10f,
+                     useCrisp ? LeafStyle::SolidInkBamboo : LeafStyle::WoodcutHalfShade, false, rng.nextU32());
+        }
+      }
+    }
+  }
+  emitCurvedPolyline(sg, 2, rachis, 0.92f, 0.45f, false, false, rng.nextU32());
+  if (rachis.size() >= 5) {
+    emitSpiralTendril(sg, field, rachis.back().first, rachis.back().second, ang, 7.5f, bendSign, 2);
+  }
+}
+
+// Botanical berry cluster (3-4 round glossy berries on short forked pedicels).
+void emitBerryCluster(SceneGraph& sg, const ClearanceField& field, float bx, float by, float baseAng, float scale,
+                      Rng& rng) {
+  const int nBerries = 3;
+  for (int k = -1; k <= 1; ++k) {
+    const float a = baseAng + k * 0.46f + rng.range(-0.06f, 0.06f);
+    const float stemL = scale * (k == 0 ? 1.05f : 0.85f);
+    const float cx = bx + std::cos(a) * stemL;
+    const float cy = by + std::sin(a) * stemL;
+    if (field.clearanceAt(cx, cy) < 5.5f) continue;
+    sg.addStroke(2, bx, by, cx, cy, 0.72f, 0.55f, false);
+    const float br = clampf(scale * 0.34f, 3.2f, 5.2f);
+    sg.addDisc(6, cx, cy, br, DiscKind::StippledBud, a, 72, 250, rng.nextU32());
+    // Tiny blossom-end crown tick at tip of berry.
+    sg.addStroke(7, cx + std::cos(a) * (br - 0.5f), cy + std::sin(a) * (br - 0.5f), cx + std::cos(a) * (br + 1.4f),
+                 cy + std::sin(a) * (br + 1.4f), 0.55f, 0.55f, false);
+  }
+}
+
+// Pendulous side-profile Bellflower / Foxglove / Lily-of-the-Valley dangling from an arched stem!
+bool emitBellFlower(SceneGraph& sg, const ClearanceField& field, float stemX, float stemY, float outAng, float bellLen,
+                    Rng& rng) {
+  // Arch the slender pedicel outward and gently downward so the bell hangs naturally under gravity!
+  const float midAng = std::atan2(std::sin(outAng) * 0.55f - 0.35f, std::cos(outAng));
+  const float capX = stemX + std::cos(midAng) * (bellLen * 0.52f);
+  const float capY = stemY + std::sin(midAng) * (bellLen * 0.52f) + 2.5f;
+  const float hangAng = kPi * 0.5f + (std::cos(outAng) >= 0.0f ? -0.28f : 0.28f) + rng.range(-0.10f, 0.10f);
+  const float mouthX = capX + std::cos(hangAng) * bellLen;
+  const float mouthY = capY + std::sin(hangAng) * bellLen;
+
+  if (field.clearanceAt(capX, capY) < bellLen * 0.45f || field.clearanceAt(mouthX, mouthY) < bellLen * 0.48f) {
+    return false;
+  }
+
+  std::vector<std::pair<float, float>> pedicel = {
+      {stemX, stemY}, {(stemX + capX) * 0.5f, std::min(stemY, capY) - 2.5f}, {capX, capY}};
+  emitCurvedPolyline(sg, 2, pedicel, 0.85f, 0.65f, false);
+
+  // Two delicate protruding stamen clappers hanging just past the scalloped bell mouth!
+  for (int s = -1; s <= 1; s += 2) {
+    const float sa = hangAng + s * 0.14f;
+    const float sx = capX + std::cos(sa) * (bellLen * 1.14f);
+    const float sy = capY + std::sin(sa) * (bellLen * 1.14f);
+    sg.addStroke(4, capX + std::cos(sa) * (bellLen * 0.78f), capY + std::sin(sa) * (bellLen * 0.78f), sx, sy, 0.52f,
+                 0.52f, false);
+    sg.addDisc(5, sx, sy, 1.35f, DiscKind::StippledBud, 0.0f, 0, 10);
+  }
+
+  // Flared bell corolla + crisp ink calyx cap at top!
+  sg.addPetal(5, capX, capY, hangAng, bellLen, bellLen * 0.86f, PetalShape::BellCorolla, 68, 242, rng.nextU32());
+  sg.addLeaf(6, capX, capY, hangAng + 0.52f, bellLen * 0.36f, bellLen * 0.14f, -0.15f, LeafStyle::SolidInkBamboo, false,
+             rng.nextU32());
+  sg.addLeaf(6, capX, capY, hangAng - 0.52f, bellLen * 0.36f, bellLen * 0.14f, 0.15f, LeafStyle::SolidInkBamboo, false,
+             rng.nextU32());
+  return true;
+}
+
+// Side-profile Nectar Trumpet / Honeysuckle / Morning Glory (ideal partner for a hovering hummingbird!).
+bool emitTrumpetFlower(SceneGraph& sg, const ClearanceField& field, float baseX, float baseY, float aimAng, float len,
+                       float& outMouthX, float& outMouthY, Rng& rng) {
+  const float mx = baseX + std::cos(aimAng) * len;
+  const float my = baseY + std::sin(aimAng) * len;
+  if (field.clearanceAt(mx, my) < len * 0.45f || field.clearanceAt((baseX + mx) * 0.5f, (baseY + my) * 0.5f) < 7.0f) {
+    return false;
+  }
+  outMouthX = mx;
+  outMouthY = my;
+
+  // Protruding curved nectar stamens extending slightly past the trumpet rim!
+  for (int s = -1; s <= 1; s += 2) {
+    const float sa = aimAng + s * 0.11f;
+    const float ax = baseX + std::cos(sa) * (len * 1.15f);
+    const float ay = baseY + std::sin(sa) * (len * 1.15f);
+    if (field.clearanceAt(ax, ay) >= 4.0f) {
+      sg.addStroke(6, baseX + std::cos(sa) * (len * 0.82f), baseY + std::sin(sa) * (len * 0.82f), ax, ay, 0.52f, 0.52f,
+                   false);
+      sg.addDisc(7, ax, ay, 1.4f, DiscKind::StippledBud, 0.0f, 0, 10);
+    }
+  }
+
+  sg.addPetal(5, baseX, baseY, aimAng, len, len * 0.88f, PetalShape::TrumpetCorolla, 58, 245, rng.nextU32());
+  // Embracing sepal cup at base of floral tube.
+  sg.addLeaf(6, baseX, baseY, aimAng + 0.38f, len * 0.32f, len * 0.12f, -0.10f, LeafStyle::SolidInkBamboo, false,
+             rng.nextU32());
+  sg.addLeaf(6, baseX, baseY, aimAng - 0.38f, len * 0.32f, len * 0.12f, 0.10f, LeafStyle::SolidInkBamboo, false,
+             rng.nextU32());
+  return true;
+}
+
+void emitBotanicalFlower(SceneGraph& sg, float cx, float cy, float radius, int species, float orientAng, Rng& rng) {
   const float baseRot = rng.range(0.0f, kTwoPi);
-  if (species == 0) {
-    // Species 0: 5-Petal Tudor / Wild Botanical Rose (outer 5 notched petals + inner 5 cupped petals + stamen crown)
+  const int sp = species % 5;
+  if (sp == 0) {
+    // Species 0: Plump Round-Petaled Wild Dog-Rose / Eglantine (broad soft rounded petals, not spiky!)
     const int nOuter = 5;
     for (int i = 0; i < nOuter; ++i) {
-      const float a = baseRot + (kTwoPi * i) / nOuter + rng.range(-0.05f, 0.05f);
-      sg.addPetal(4, cx, cy, a, radius * rng.range(0.95f, 1.04f), radius * 0.68f, PetalShape::WildRoseNotched, 54, 240,
-                  rng.nextU32());
+      const float a = baseRot + (kTwoPi * i) / nOuter + rng.range(-0.04f, 0.04f);
+      sg.addPetal((i % 2 == 0) ? 4 : 5, cx, cy, a, radius * rng.range(0.95f, 1.02f), radius * 0.82f,
+                  PetalShape::PlumRound, 82, 248, rng.nextU32());
+    }
+    sg.addDisc(7, cx, cy, radius * 0.34f, DiscKind::StamenCrown, baseRot, 55, 250, rng.nextU32());
+  } else if (sp == 1) {
+    // Species 1: Botanical Sunflower / Coneflower Daisy (large cross-hatched seedhead dome + 10 broad rounded rays)
+    const int nRay = 10;
+    for (int i = 0; i < nRay; ++i) {
+      const float a = baseRot + (kTwoPi * i) / nRay + rng.range(-0.03f, 0.03f);
+      sg.addPetal((i % 2 == 0) ? 4 : 5, cx, cy, a, radius * rng.range(0.95f, 1.03f), radius * 0.42f,
+                  PetalShape::DaisyOblong, 108, 252, rng.nextU32());
+    }
+    sg.addDisc(7, cx, cy, radius * 0.41f, DiscKind::SeedheadDome, baseRot, 48, 225, rng.nextU32());
+  } else if (sp == 2) {
+    // Species 2: Upright 3-Petal Cupped Goblet Tulip / Magnolia in side profile!
+    const float upAng = (std::sin(orientAng) > 0.35f) ? (-kPi * 0.5f + rng.range(-0.35f, 0.35f)) : orientAng;
+    const float bx = cx - std::cos(upAng) * (radius * 0.45f);
+    const float by = cy - std::sin(upAng) * (radius * 0.45f);
+    // Two curving outer side petals + central cupped front petal!
+    sg.addPetal(4, bx, by, upAng - 0.36f, radius * 1.18f, radius * 0.62f, PetalShape::PeonyRuffled, 72, 244,
+                rng.nextU32());
+    sg.addPetal(4, bx, by, upAng + 0.36f, radius * 1.18f, radius * 0.62f, PetalShape::PeonyRuffled, 72, 244,
+                rng.nextU32());
+    sg.addPetal(5, bx, by, upAng, radius * 1.24f, radius * 0.72f, PetalShape::PlumRound, 64, 248, rng.nextU32());
+    sg.addLeaf(6, bx, by, upAng + 0.62f, radius * 0.52f, radius * 0.16f, -0.14f, LeafStyle::SolidInkBamboo, false,
+               rng.nextU32());
+    sg.addLeaf(6, bx, by, upAng - 0.62f, radius * 0.52f, radius * 0.16f, 0.14f, LeafStyle::SolidInkBamboo, false,
+               rng.nextU32());
+  } else if (sp == 3) {
+    // Species 3: Layered Ruffled Camellia / Peony (lush concentric rounded-ruffled rings)
+    const int nBack = 6;
+    for (int i = 0; i < nBack; ++i) {
+      const float a = baseRot + (kTwoPi * i) / nBack;
+      sg.addPetal(4, cx, cy, a, radius * 0.98f, radius * 0.68f, PetalShape::PeonyRuffled, 68, 244, rng.nextU32());
+    }
+    const int nMid = 5;
+    for (int i = 0; i < nMid; ++i) {
+      const float a = baseRot + 0.42f + (kTwoPi * i) / nMid;
+      sg.addPetal(5, cx, cy, a, radius * 0.68f, radius * 0.54f, PetalShape::PlumRound, 56, 240, rng.nextU32());
+    }
+    sg.addDisc(7, cx, cy, radius * 0.23f, DiscKind::StamenCrown, baseRot, 48, 248, rng.nextU32());
+  } else {
+    // Species 4: Heart-Notched Tudor Rose
+    const int nOuter = 5;
+    for (int i = 0; i < nOuter; ++i) {
+      const float a = baseRot + (kTwoPi * i) / nOuter;
+      sg.addPetal(4, cx, cy, a, radius, radius * 0.74f, PetalShape::WildRoseNotched, 62, 244, rng.nextU32());
     }
     for (int i = 0; i < nOuter; ++i) {
-      const float a = baseRot + (kTwoPi * (i + 0.5f)) / nOuter + rng.range(-0.06f, 0.06f);
-      sg.addPetal(5, cx, cy, a, radius * rng.range(0.62f, 0.70f), radius * 0.48f, PetalShape::WildRoseNotched, 42, 232,
-                  rng.nextU32());
+      const float a = baseRot + (kTwoPi * (i + 0.5f)) / nOuter;
+      sg.addPetal(5, cx, cy, a, radius * 0.64f, radius * 0.50f, PetalShape::WildRoseNotched, 48, 236, rng.nextU32());
     }
-    sg.addDisc(7, cx, cy, radius * 0.27f, DiscKind::StamenCrown, baseRot, 55, 250, rng.nextU32());
-  } else if (species == 1) {
-    // Species 1: Layered Ruffled Peony / Camellia (3 lush concentric petal rings)
-    const int nBack = 7;
-    for (int i = 0; i < nBack; ++i) {
-      const float a = baseRot + (kTwoPi * i) / nBack + rng.range(-0.06f, 0.06f);
-      sg.addPetal(4, cx, cy, a, radius * rng.range(0.96f, 1.05f), radius * 0.56f, PetalShape::PeonyRuffled, 52, 242,
-                  rng.nextU32());
-    }
-    const int nMid = 6;
-    for (int i = 0; i < nMid; ++i) {
-      const float a = baseRot + 0.35f + (kTwoPi * i) / nMid + rng.range(-0.06f, 0.06f);
-      sg.addPetal(5, cx, cy, a, radius * rng.range(0.70f, 0.78f), radius * 0.46f, PetalShape::PeonyRuffled, 46, 236,
-                  rng.nextU32());
-    }
-    const int nFront = 5;
-    for (int i = 0; i < nFront; ++i) {
-      const float a = baseRot + 0.72f + (kTwoPi * i) / nFront;
-      sg.addPetal(6, cx, cy, a, radius * 0.48f, radius * 0.34f, PetalShape::PeonyRuffled, 38, 228, rng.nextU32());
-    }
-    sg.addDisc(7, cx, cy, radius * 0.21f, DiscKind::StamenCrown, baseRot, 48, 248, rng.nextU32());
-  } else {
-    // Species 2: 8-Petal Fluted Botanical Cosmos / Aster with Fibonacci seedhead disk
-    const int nRay = 8;
-    for (int i = 0; i < nRay; ++i) {
-      const float a = baseRot + (kTwoPi * i) / nRay + rng.range(-0.04f, 0.04f);
-      const uint8_t z = (i % 2 == 0) ? 4 : 5;
-      sg.addPetal(z, cx, cy, a, radius * rng.range(0.94f, 1.04f), radius * 0.36f, PetalShape::CosmosFluted, 50, 242,
-                  rng.nextU32());
-    }
-    sg.addDisc(7, cx, cy, radius * 0.29f, DiscKind::StamenCrown, baseRot + 1.0f, 45, 242, rng.nextU32());
+    sg.addDisc(7, cx, cy, radius * 0.26f, DiscKind::StamenCrown, baseRot, 55, 250, rng.nextU32());
   }
 }
 
 void emitRoseBud(SceneGraph& sg, float bx, float by, float angle, float size, Rng& rng) {
   const float ux = std::cos(angle);
   const float uy = std::sin(angle);
-  sg.addPetal(5, bx, by, angle, size, size * 0.56f, PetalShape::PlumRound, 85, 246, rng.nextU32());
+  sg.addPetal(5, bx, by, angle, size, size * 0.58f, PetalShape::PlumRound, 85, 246, rng.nextU32());
   // Two embracing outer sepals in crisp ink.
   sg.addLeaf(6, bx - ux * 1.5f, by - uy * 1.5f, angle + 0.42f, size * 0.72f, size * 0.18f, -0.18f,
              LeafStyle::SolidInkBamboo, false, rng.nextU32());
@@ -791,25 +1006,37 @@ void emitRoseBud(SceneGraph& sg, float bx, float by, float angle, float size, Rn
              LeafStyle::SolidInkBamboo, false, rng.nextU32());
 }
 
-void emitPlumBlossom(SceneGraph& sg, float cx, float cy, float radius, bool sideCupView, Rng& rng) {
+// Full 5-petal classical plum blossom — always renders all 5 complete round petals!
+void emitPlumBlossom(SceneGraph& sg, float cx, float cy, float radius, Rng& rng) {
   const float rot = rng.range(0.0f, kTwoPi);
-  if (!sideCupView) {
-    for (int i = 0; i < 5; ++i) {
-      const float a = rot + (kTwoPi * i) / 5.0f + rng.range(-0.04f, 0.04f);
-      sg.addPetal((i % 2 == 0) ? 5 : 6, cx, cy, a, radius, radius * 0.72f, PetalShape::PlumRound, 145, 254,
-                  rng.nextU32());
-    }
-    sg.addDisc(7, cx, cy, radius * 0.36f, DiscKind::PlumCalyxPins, rot, 40, 255, rng.nextU32());
-  } else {
-    // 3/4 cupped view with 4 foreshortened petals and crisp 3-dot calyx base.
-    for (int i = -1; i <= 2; ++i) {
-      const float a = rot + i * 0.52f;
-      sg.addPetal(5 + (i == 0 ? 1 : 0), cx, cy, a, radius * 0.90f, radius * 0.55f, PetalShape::PlumRound, 138, 253,
-                  rng.nextU32());
-    }
-    sg.addDisc(7, cx - std::cos(rot + 0.25f) * radius * 0.18f, cy - std::sin(rot + 0.25f) * radius * 0.18f,
-               radius * 0.22f, DiscKind::StippledBud, rot, 35, 110, rng.nextU32());
+  for (int i = 0; i < 5; ++i) {
+    const float a = rot + (kTwoPi * i) / 5.0f + rng.range(-0.03f, 0.03f);
+    sg.addPetal((i % 2 == 0) ? 5 : 6, cx, cy, a, radius, radius * 0.74f, PetalShape::PlumRound, 148, 254,
+                rng.nextU32());
   }
+  sg.addDisc(7, cx, cy, radius * 0.36f, DiscKind::PlumCalyxPins, rot, 40, 255, rng.nextU32());
+}
+
+// Physically attached plum pearl bud: draws a crisp ink pedicel stem + 3-prong ink calyx cup + round pearl bud
+// so zero floating dots ever appear around plum blossoms!
+void emitAttachedPlumBud(SceneGraph& sg, const ClearanceField& field, float branchX, float branchY, float budAng,
+                         float stemLen, float budR, Rng& rng) {
+  const float bx = branchX + std::cos(budAng) * stemLen;
+  const float by = branchY + std::sin(budAng) * stemLen;
+  if (field.clearanceAt(bx, by) < budR + 3.0f) return;
+
+  // Crisp ink twig pedicel connecting branch directly into the bud calyx!
+  sg.addStroke(3, branchX, branchY, bx, by, 0.88f, 0.70f, false);
+  // Pearl bud seated at tip of pedicel.
+  const float cx = bx + std::cos(budAng) * (budR * 0.72f);
+  const float cy = by + std::sin(budAng) * (budR * 0.72f);
+  if (field.clearanceAt(cx, cy) < budR + 2.5f) return;
+  sg.addDisc(5, cx, cy, budR, DiscKind::StippledBud, budAng, 108, 252, rng.nextU32());
+  // Crisp 2-sepal dark ink calyx cup embracing the base of the pearl bud!
+  sg.addLeaf(6, bx, by, budAng + 0.55f, budR * 1.15f, budR * 0.42f, -0.22f, LeafStyle::SolidInkBamboo, false,
+             rng.nextU32());
+  sg.addLeaf(6, bx, by, budAng - 0.55f, budR * 1.15f, budR * 0.42f, 0.22f, LeafStyle::SolidInkBamboo, false,
+             rng.nextU32());
 }
 
 void emitSakuraFlowerOrPetal(SceneGraph& sg, float cx, float cy, float radius, bool fullBloom, Rng& rng) {
@@ -839,37 +1066,119 @@ void buildBotanicalFloral(SceneGraph& sg, const ClearanceField& field, const Dea
 
   if (reg.kind == RegionKind::SceneBreakCorridor) {
     const float cy = mainPole.y;
-    const float cx = (reg.x0 + reg.x1) * 0.5f;
-    const float flowerR = clampf(mainPole.clearance * 0.78f, 8.5f, 15.5f);
-    const float halfSpan = std::min(155.0f, (reg.x1 - reg.x0) * 0.40f);
+    const float span = std::min(170.0f, (reg.x1 - reg.x0) * 0.42f);
+    // Start from left or right end of the corridor and grow organically across!
+    const float dir = rng.chance(0.5f) ? 1.0f : -1.0f;
+    const float sx = (reg.x0 + reg.x1) * 0.5f - dir * span;
+    const float flowerR = clampf(mainPole.clearance * 0.72f, 8.5f, 14.5f);
 
-    for (int dir = -1; dir <= 1; dir += 2) {
-      std::vector<std::pair<float, float>> stem;
-      const int nPts = 14;
-      for (int i = 0; i <= nPts; ++i) {
-        const float t = static_cast<float>(i) / nPts;
-        const float px = cx + dir * t * halfSpan;
-        const float py = cy + std::sin(t * kPi * 1.6f) * std::min(5.5f, mainPole.clearance * 0.30f) * dir;
-        if (field.clearanceAt(px, py) < 2.5f) break;
-        stem.push_back({px, py});
-        if (i >= 3 && i <= 10 && i % 3 == 0) {
-          const float leafAng = (dir > 0 ? 0.0f : kPi) + ((i % 2 == 0) ? -0.68f : 0.68f);
-          const float leafLen = clampf(flowerR * (1.25f - 0.45f * t), 8.0f, 16.0f);
-          sg.addLeaf(3, px, py, leafAng, leafLen, leafLen * 0.42f, (i % 2 == 0) ? 0.14f : -0.14f,
-                     LeafStyle::WoodcutHalfShade, true, rng.nextU32());
-        }
-      }
-      emitCurvedPolyline(sg, 2, stem, 1.35f, 0.65f, true, false, rng.nextU32());
-      if (stem.size() >= 4) {
-        const auto& tip = stem.back();
-        emitRoseBud(sg, tip.first, tip.second, dir > 0 ? 0.0f : kPi, flowerR * 0.68f, rng);
+    std::vector<std::pair<float, float>> stem;
+    const int nPts = 22;
+    int leafParity = 1;
+    for (int i = 0; i <= nPts; ++i) {
+      const float t = static_cast<float>(i) / nPts;
+      const float px = sx + dir * t * (2.0f * span);
+      const float py = cy + std::sin(t * kPi * 2.2f) * std::min(5.0f, mainPole.clearance * 0.28f);
+      if (field.clearanceAt(px, py) < 3.0f) break;
+      stem.push_back({px, py});
+      if (i >= 2 && i <= nPts - 2 && i % 2 == 0) {
+        const float side = static_cast<float>(leafParity);
+        leafParity = -leafParity;
+        const float leafAng = (dir > 0 ? 0.0f : kPi) + side * 0.72f;
+        const float leafLen = clampf(flowerR * (1.15f - 0.30f * t), 8.5f, 15.5f);
+        const LeafStyle ls = (i % 4 == 0) ? LeafStyle::HeartCordate : LeafStyle::WoodcutHalfShade;
+        sg.addLeaf(3, px, py, leafAng, leafLen, leafLen * (ls == LeafStyle::HeartCordate ? 0.58f : 0.42f), side * 0.14f,
+                   ls, ls == LeafStyle::WoodcutHalfShade, rng.nextU32());
       }
     }
-    emitBotanicalFlower(sg, cx, cy, flowerR, 0, rng);
+    emitCurvedPolyline(sg, 2, stem, 1.55f, 0.58f, true, false, rng.nextU32());
+    if (stem.size() >= 6) {
+      const auto& tip = stem.back();
+      emitRoseBud(sg, tip.first, tip.second, dir > 0 ? 0.0f : kPi, flowerR * 0.68f, rng);
+    }
+    float fx = (reg.x0 + reg.x1) * 0.5f - dir * span * 0.22f;
+    float fy = cy;
+    float safeR = flowerR;
+    if (fitSafeBloomRadius(field, fx, fy, flowerR, 8.0f, safeR)) {
+      emitBotanicalFlower(sg, fx, fy, safeR, rng.rangeInt(0, 2), -kPi * 0.5f, rng);
+    }
+    float bx = (reg.x0 + reg.x1) * 0.5f + dir * span * 0.35f;
+    emitBellFlower(sg, field, bx, cy - 2.0f, dir > 0 ? 0.2f : (kPi - 0.2f), safeR * 0.85f, rng);
     return;
   }
 
-  // Major Expanse: Space-colonization botanical vine skeleton + hero blooms at clearance poles!
+  // 1. Choose a grounded plant root along the BOTTOM of the dead space (random bottom corner or bottom edge)!
+  struct BottomCand {
+    float x, y, c;
+  };
+  std::vector<BottomCand> bottomCands;
+  const int gMinX = std::max(0, reg.x0 / kCellPx);
+  const int gMaxX = std::min(field.gw - 1, reg.x1 / kCellPx);
+  const int gMinY = std::max(0, reg.y0 / kCellPx);
+  const int gMaxY = std::min(field.gh - 1, reg.y1 / kCellPx);
+  const float bottomBandTop = static_cast<float>(reg.y1) - std::max(44.0f, (reg.y1 - reg.y0) * 0.28f);
+
+  for (int gy = gMinY; gy <= gMaxY; ++gy) {
+    const float py = (gy + 0.5f) * kCellPx;
+    if (py < bottomBandTop) continue;
+    for (int gx = gMinX; gx <= gMaxX; ++gx) {
+      if (cellComp[gy * field.gw + gx] != reg.componentId) continue;
+      const float px = (gx + 0.5f) * kCellPx;
+      const float c = field.clearanceAt(px, py);
+      if (c >= 11.5f) {
+        bottomCands.push_back({px, py, c});
+      }
+    }
+  }
+
+  float rootX = mainPole.x;
+  float rootY = mainPole.y;
+  if (!bottomCands.empty()) {
+    // 70% chance: sprout from a random bottom-left or bottom-right corner; 30% chance: random bottom spot!
+    const int mode = rng.rangeInt(0, 9);
+    float bestScore = -1e9f;
+    for (const auto& bc : bottomCands) {
+      const float uX = (bc.x - reg.x0) / std::max(1.0f, static_cast<float>(reg.x1 - reg.x0));
+      const float uY = (bc.y - reg.y0) / std::max(1.0f, static_cast<float>(reg.y1 - reg.y0));
+      float score = uY * 32.0f + std::min(bc.c, 24.0f) * 0.45f + rng.range(-4.5f, 4.5f);
+      if (mode < 4) {
+        // Bottom-left corner bias
+        score += (1.0f - uX) * 38.0f;
+      } else if (mode < 7) {
+        // Bottom-right corner bias
+        score += uX * 38.0f;
+      } else {
+        // Random grounded position along the bottom edge
+        score += rng.range(0.0f, 18.0f);
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        rootX = bc.x;
+        rootY = bc.y;
+      }
+    }
+  }
+
+  // Initial upward-and-inward shoot momentum from the bottom root toward the open interior!
+  float initDX = mainPole.x - rootX;
+  float initDY = std::min(-18.0f, mainPole.y - rootY - 12.0f);
+  const float initLen = std::max(1.0f, std::hypot(initDX, initDY));
+  initDX /= initLen;
+  initDY /= initLen;
+
+  // Anchor the plant's base with a lush basal crown (2-3 arching basal leaves / fern frond at root)!
+  const float rootBaseAng = std::atan2(initDY, initDX);
+  for (int b = -1; b <= 1; ++b) {
+    const float ba = rootBaseAng + b * 0.62f + rng.range(-0.10f, 0.10f);
+    const float bLen = clampf(field.clearanceAt(rootX, rootY) * rng.range(0.85f, 1.15f), 14.0f, 28.0f);
+    if (b != 0 && rng.chance(0.55f)) {
+      emitFernFrond(sg, field, rootX, rootY, ba, bLen * 1.12f, (b > 0) ? 1.0f : -1.0f, rng);
+    } else if (field.clearanceAt(rootX + std::cos(ba) * bLen, rootY + std::sin(ba) * bLen) >= 4.0f) {
+      sg.addLeaf(3, rootX, rootY, ba, bLen, bLen * 0.48f, b * 0.16f, LeafStyle::ScallopedOak, false, rng.nextU32());
+    }
+  }
+
+  // 2. Space-colonization vine skeleton growing organically UPWARD & ACROSS from (rootX, rootY)!
   struct VineNode {
     float x, y;
     int parent;
@@ -878,19 +1187,20 @@ void buildBotanicalFloral(SceneGraph& sg, const ClearanceField& field, const Dea
   };
 
   std::vector<VineNode> nodes;
-  nodes.reserve(120);
-  nodes.push_back({mainPole.x, mainPole.y, -1, 0, 0.0f, -1.0f});
+  nodes.reserve(240);
+  nodes.push_back({rootX, rootY, -1, 0, initDX, initDY});
 
-  // Sample Poisson-like attractor cloud inside this connected component (seeding secondary poles first!).
   struct Attractor {
     float x, y;
     bool active;
   };
   std::vector<Attractor> attractors;
-  const int targetAttr = std::clamp(reg.areaPx / 850, 36, 165);
+  const int targetAttr = std::clamp(reg.areaPx / 820, 40, 175);
   attractors.reserve(targetAttr + reg.poles.size());
-  for (size_t p = 1; p < reg.poles.size(); ++p) {
-    attractors.push_back({reg.poles[p].x, reg.poles[p].y, true});
+  for (const auto& pole : reg.poles) {
+    if (std::hypot(pole.x - rootX, pole.y - rootY) > 22.0f) {
+      attractors.push_back({pole.x, pole.y, true});
+    }
   }
   for (int attempt = 0; attempt < targetAttr * 8 && static_cast<int>(attractors.size()) < targetAttr; ++attempt) {
     const float ax = rng.range(static_cast<float>(reg.x0 + 8), static_cast<float>(reg.x1 - 8));
@@ -904,7 +1214,7 @@ void buildBotanicalFloral(SceneGraph& sg, const ClearanceField& field, const Dea
     for (const auto& ex : attractors) {
       const float dx = ax - ex.x;
       const float dy = ay - ex.y;
-      if (dx * dx + dy * dy < 24.0f * 24.0f) {
+      if (dx * dx + dy * dy < 23.0f * 23.0f) {
         tooClose = true;
         break;
       }
@@ -912,16 +1222,15 @@ void buildBotanicalFloral(SceneGraph& sg, const ClearanceField& field, const Dea
     if (!tooClose) attractors.push_back({ax, ay, true});
   }
 
-  // Space colonization iterations with clearance-gradient steering.
-  constexpr float kStepLen = 15.0f;
-  constexpr float kKillDist = 20.0f;
-  constexpr float kInfluenceDist = 115.0f;
+  constexpr float kStepLen = 14.5f;
+  constexpr float kKillDist = 19.5f;
+  constexpr float kInfluenceDist = 145.0f;
 
-  std::vector<float> pullX(nodes.size(), 0.0f);
-  std::vector<float> pullY(nodes.size(), 0.0f);
-  std::vector<int> pullCount(nodes.size(), 0);
+  std::vector<float> pullX;
+  std::vector<float> pullY;
+  std::vector<int> pullCount;
 
-  for (int iter = 0; iter < 48 && nodes.size() < 210; ++iter) {
+  for (int iter = 0; iter < 56 && nodes.size() < 225; ++iter) {
     pullX.assign(nodes.size(), 0.0f);
     pullY.assign(nodes.size(), 0.0f);
     pullCount.assign(nodes.size(), 0);
@@ -957,17 +1266,16 @@ void buildBotanicalFloral(SceneGraph& sg, const ClearanceField& field, const Dea
     if (activeRemaining == 0) break;
 
     const size_t curCount = nodes.size();
-    for (size_t ni = 0; ni < curCount && nodes.size() < 210; ++ni) {
+    for (size_t ni = 0; ni < curCount && nodes.size() < 225; ++ni) {
       if (pullCount[ni] == 0) continue;
       float dx = pullX[ni] / static_cast<float>(pullCount[ni]);
       float dy = pullY[ni] / static_cast<float>(pullCount[ni]);
-      // Blend parent momentum + clearance gradient so vines curve organically away from text!
       float gx = 0.0f, gy = 0.0f;
       field.gradientAt(nodes[ni].x, nodes[ni].y, gx, gy);
       const float cHere = field.clearanceAt(nodes[ni].x, nodes[ni].y);
-      const float wallPush = (cHere < 24.0f) ? 0.52f : 0.12f;
-      dx = dx * 0.72f + nodes[ni].dirX * 0.28f + gx * wallPush;
-      dy = dy * 0.72f + nodes[ni].dirY * 0.28f + gy * wallPush;
+      const float wallPush = (cHere < 24.0f) ? 0.54f : 0.14f;
+      dx = dx * 0.68f + nodes[ni].dirX * 0.32f + gx * wallPush;
+      dy = dy * 0.68f + nodes[ni].dirY * 0.32f + gy * wallPush;
       const float len = std::sqrt(dx * dx + dy * dy);
       if (len < 1e-3f) continue;
       dx /= len;
@@ -981,7 +1289,7 @@ void buildBotanicalFloral(SceneGraph& sg, const ClearanceField& field, const Dea
       for (const auto& existing : nodes) {
         const float ex = nx - existing.x;
         const float ey = ny - existing.y;
-        if (ex * ex + ey * ey < (kStepLen * 0.68f) * (kStepLen * 0.68f)) {
+        if (ex * ex + ey * ey < (kStepLen * 0.66f) * (kStepLen * 0.66f)) {
           crowd = true;
           break;
         }
@@ -992,98 +1300,383 @@ void buildBotanicalFloral(SceneGraph& sg, const ClearanceField& field, const Dea
     }
   }
 
-  // Count children per node so we know tips vs internal branches.
+  // Compute subtree weight & child counts so main trunks are thick and twigs taper gracefully!
   std::vector<int> childCount(nodes.size(), 0);
-  int maxDepth = 1;
-  for (size_t i = 1; i < nodes.size(); ++i) {
-    childCount[nodes[i].parent]++;
-    maxDepth = std::max(maxDepth, nodes[i].depth);
+  std::vector<int> subtreeWeight(nodes.size(), 1);
+  for (size_t i = nodes.size() - 1; i >= 1; --i) {
+    const int p = nodes[i].parent;
+    childCount[p]++;
+    subtreeWeight[p] += subtreeWeight[i];
   }
 
-  // Emit smooth quadratic-subdivided stem segments, alternating serrated botanical leaves, buds & tendrils!
+  // Smooth interior non-branching vine vertices so stems flow in sinuous S-curves instead of stiff polygons!
+  for (int pass = 0; pass < 2; ++pass) {
+    std::vector<std::pair<float, float>> nextPos(nodes.size());
+    for (size_t i = 0; i < nodes.size(); ++i) nextPos[i] = {nodes[i].x, nodes[i].y};
+    for (size_t i = 1; i < nodes.size(); ++i) {
+      if (childCount[i] != 1) continue;
+      int onlyChild = -1;
+      for (size_t j = i + 1; j < nodes.size(); ++j) {
+        if (nodes[j].parent == static_cast<int>(i)) {
+          onlyChild = static_cast<int>(j);
+          break;
+        }
+      }
+      if (onlyChild > 0) {
+        const auto& par = nodes[nodes[i].parent];
+        const auto& ch = nodes[onlyChild];
+        const float sx = 0.25f * par.x + 0.50f * nodes[i].x + 0.25f * ch.x;
+        const float sy = 0.25f * par.y + 0.50f * nodes[i].y + 0.25f * ch.y;
+        if (field.clearanceAt(sx, sy) >= 8.5f) {
+          nextPos[i] = {sx, sy};
+        }
+      }
+    }
+    for (size_t i = 1; i < nodes.size(); ++i) {
+      nodes[i].x = nextPos[i].first;
+      nodes[i].y = nextPos[i].second;
+    }
+  }
+
+  // Track occupied focal zones (flowers & fauna) so nothing overlaps messily!
+  struct OccupiedZone {
+    float x, y, r;
+  };
+  std::vector<OccupiedZone> zones;
+  auto isZoneFree = [&](float x, float y, float r, float pad = 4.0f) {
+    for (const auto& z : zones) {
+      if (std::hypot(x - z.x, y - z.y) < z.r + r + pad) return false;
+    }
+    return true;
+  };
+
+  // 3. Place Hero Blossoms at sunlit interior/canopy vine nodes (away from the grounded root)!
+  int heroPlaced = 0;
+  for (size_t p = 0; p < reg.poles.size() && heroPlaced < 3; ++p) {
+    const auto& rawPole = reg.poles[p];
+    size_t bestIdx = 0;
+    float bestD = 1e9f;
+    for (size_t ni = 1; ni < nodes.size(); ++ni) {
+      if (std::hypot(nodes[ni].x - rootX, nodes[ni].y - rootY) < 28.0f) continue;
+      const float d = std::hypot(nodes[ni].x - rawPole.x, nodes[ni].y - rawPole.y);
+      if (d < bestD) {
+        bestD = d;
+        bestIdx = ni;
+      }
+    }
+    if (bestIdx == 0 || bestD > 68.0f) continue;
+
+    float fx = nodes[bestIdx].x;
+    float fy = nodes[bestIdx].y;
+    const float desiredR =
+        clampf(field.clearanceAt(fx, fy) * (heroPlaced == 0 ? 0.48f : 0.42f), 14.5f, heroPlaced == 0 ? 31.0f : 23.0f);
+    float safeR = desiredR;
+    if (!fitSafeBloomRadius(field, fx, fy, desiredR, 13.5f, safeR)) continue;
+    if (!isZoneFree(fx, fy, safeR, 6.0f)) continue;
+
+    // Connect vine node cleanly to nudged bloom center if needed.
+    if (std::hypot(fx - nodes[bestIdx].x, fy - nodes[bestIdx].y) > 1.5f) {
+      sg.addStroke(2, nodes[bestIdx].x, nodes[bestIdx].y, fx, fy, 1.2f, 0.9f, true);
+    }
+
+    // Backing guard leaves around hero bloom.
+    const int nGuard = (heroPlaced == 0) ? 3 : 2;
+    const float gRot = rng.range(0.0f, kTwoPi);
+    for (int k = 0; k < nGuard; ++k) {
+      const float la = gRot + (kTwoPi * k) / nGuard + rng.range(-0.2f, 0.2f);
+      const float lx = fx + std::cos(la) * (safeR * 0.52f);
+      const float ly = fy + std::sin(la) * (safeR * 0.52f);
+      const float lLen = safeR * rng.range(0.62f, 0.80f);
+      if (field.clearanceAt(lx + std::cos(la) * lLen, ly + std::sin(la) * lLen) >= 4.5f) {
+        sg.addLeaf(3, lx, ly, la, lLen, lLen * 0.46f, (k % 2 == 0) ? 0.14f : -0.14f,
+                   (k % 2 == 0) ? LeafStyle::WoodcutHalfShade : LeafStyle::HeartCordate, k % 2 == 0, rng.nextU32());
+      }
+    }
+
+    // Distinct flower species for every hero bloom (dog-rose, daisy seedhead, peony, goblet tulip)!
+    const int sp = (heroPlaced == 0) ? rng.rangeInt(0, 1) : ((heroPlaced + rng.rangeInt(1, 3)) % 5);
+    const auto& par = nodes[nodes[bestIdx].parent];
+    const float stemAng = std::atan2(nodes[bestIdx].y - par.y, nodes[bestIdx].x - par.x);
+    emitBotanicalFlower(sg, fx, fy, safeR, sp, stemAng, rng);
+    zones.push_back({fx, fy, safeR});
+    ++heroPlaced;
+  }
+
+  // Helper: minimum distance from point (qx, qy) to any vine segment in the skeleton
+  // (optionally skipping segments incident to excluded node indices aExcl / bExcl).
+  auto minDistToVine = [&](float qx, float qy, int aExcl = -1, int bExcl = -1) {
+    float bestD2 = 1e9f;
+    for (size_t k = 1; k < nodes.size(); ++k) {
+      const int pk = nodes[k].parent;
+      if (static_cast<int>(k) == aExcl || static_cast<int>(k) == bExcl || pk == aExcl || pk == bExcl) continue;
+      const float vx = nodes[k].x - nodes[pk].x;
+      const float vy = nodes[k].y - nodes[pk].y;
+      const float len2 = vx * vx + vy * vy;
+      const float t =
+          (len2 > 1e-5f) ? clampf(((qx - nodes[pk].x) * vx + (qy - nodes[pk].y) * vy) / len2, 0.0f, 1.0f) : 0.0f;
+      const float dx = qx - (nodes[pk].x + t * vx);
+      const float dy = qy - (nodes[pk].y + t * vy);
+      const float d2 = dx * dx + dy * dy;
+      if (d2 < bestD2) bestD2 = d2;
+    }
+    return std::sqrt(bestD2);
+  };
+
+  const bool isDeepRegion = (reg.y1 - reg.y0) >= 96 && reg.areaPx >= 20000;
+
+  // 4. Garden Fauna #1: Hovering Hummingbird sipping from a side-facing Nectar Trumpet in clean open air!
+  bool placedHummingbird = false;
+  if (reg.areaPx >= 15000 && (reg.y1 - reg.y0) >= 68) {
+    // Search vine nodes for a blossom attachment where open air beside it can host a hovering hummingbird!
+    float bestBirdScore = -1.0f;
+    size_t bestFlowerNode = 0;
+    float bestBirdX = 0.0f, bestBirdY = 0.0f, bestScale = 26.0f, bestFacing = 1.0f;
+    float bestTrBaseX = 0.0f, bestTrBaseY = 0.0f, bestTrAng = 0.0f, bestTrLen = 21.0f;
+
+    const float tiltOffsets[3] = {-0.18f, 0.04f, -0.34f};
+    for (size_t ni = 1; ni < nodes.size(); ++ni) {
+      if (childCount[ni] > 1) continue;
+      const float fx = nodes[ni].x;
+      const float fy = nodes[ni].y;
+      if (!isZoneFree(fx, fy, 11.0f, 2.0f)) continue;
+
+      for (int sideDir = -1; sideDir <= 1; sideDir += 2) {
+        for (float tilt : tiltOffsets) {
+          // Trumpet aims outward toward open air; hummingbird faces back (-sideDir) into its corolla!
+          const float trAng = (sideDir > 0) ? tilt : (kPi - tilt);
+          const float trLen = 21.0f;
+          const float mouthX = fx + std::cos(trAng) * trLen;
+          const float mouthY = fy + std::sin(trAng) * trLen;
+
+          const float birdScale =
+              clampf(field.clearanceAt(mouthX + sideDir * 30.0f, mouthY - 5.0f) * 0.86f, 24.0f, 32.0f);
+          const float facing = static_cast<float>(-sideDir);  // Bird faces toward the trumpet mouth!
+          // Beak tip in local coords is at (+1.24 * S * facing, -0.20 * S); place bird so beak tip meets mouth!
+          const float bx = mouthX - facing * (1.27f * birdScale);
+          const float by = mouthY + 0.18f * birdScale;
+          const float wingX = bx - facing * (0.82f * birdScale);
+          const float wingY = by - 0.82f * birdScale;
+          const float tailX = bx - facing * (0.78f * birdScale);
+          const float tailY = by + 0.64f * birdScale;
+
+          // Verify page/text clearance across the entire hummingbird silhouette!
+          const float cCenter = field.clearanceAt(bx, by);
+          const float cWing = field.clearanceAt(wingX, wingY);
+          const float cTail = field.clearanceAt(tailX, tailY);
+          const float cHead = field.clearanceAt(bx + facing * (0.40f * birdScale), by - 0.28f * birdScale);
+          const float minC = std::min({cCenter - 7.5f, cWing - 2.5f, cTail - 2.5f, cHead - 3.5f});
+          if (minC < 1.5f) continue;
+          if (!isZoneFree(bx, by, birdScale * 0.96f, 4.0f)) continue;
+
+          // Guarantee the hummingbird hovers in OPEN AIR — never impaled/crossed by a vine branch!
+          const float stemDistBody = minDistToVine(bx, by);
+          const float stemDistHead = minDistToVine(bx + facing * (0.36f * birdScale), by - 0.16f * birdScale);
+          const float stemDistWing = minDistToVine(wingX, wingY);
+          const float stemDistTail = minDistToVine(tailX, tailY);
+          if (stemDistBody < birdScale * 0.56f || stemDistHead < birdScale * 0.44f || stemDistWing < 7.5f ||
+              stemDistTail < 7.5f) {
+            continue;
+          }
+
+          const float score = minC + std::min(stemDistBody, 28.0f) * 0.8f + birdScale * 0.5f + (reg.y1 - by) * 0.04f +
+                              rng.range(0.0f, 3.5f);
+          if (score > bestBirdScore) {
+            bestBirdScore = score;
+            bestFlowerNode = ni;
+            bestBirdX = bx;
+            bestBirdY = by;
+            bestScale = birdScale;
+            bestFacing = facing;
+            bestTrBaseX = fx;
+            bestTrBaseY = fy;
+            bestTrAng = trAng;
+            bestTrLen = trLen;
+          }
+        }
+      }
+    }
+
+    if (bestFlowerNode > 0) {
+      float mx = 0.0f, my = 0.0f;
+      if (emitTrumpetFlower(sg, field, bestTrBaseX, bestTrBaseY, bestTrAng, bestTrLen, mx, my, rng)) {
+        sg.addCreature(8, CreatureKind::Hummingbird, bestBirdX, bestBirdY, bestScale, -0.06f * bestFacing, bestFacing,
+                       rng.nextU32());
+        zones.push_back({bestBirdX, bestBirdY, bestScale * 1.12f});
+        zones.push_back({(bestTrBaseX + mx) * 0.5f, (bestTrBaseY + my) * 0.5f, bestTrLen * 0.72f});
+        zones.push_back({bestTrBaseX, bestTrBaseY, 4.0f});
+        placedHummingbird = true;
+      }
+    }
+  }
+
+  // 5. Garden Fauna #2: Tree Frog resting on a sturdy gently-sloping interior vine branch!
+  if (reg.areaPx >= 14000 && (isDeepRegion || !placedHummingbird)) {
+    float bestFrogScore = -1.0f;
+    float frogX = 0.0f, frogY = 0.0f, frogScale = 26.0f, frogAng = 0.0f, frogFacing = 1.0f;
+    bool foundFrogPerch = false;
+
+    for (size_t ni = 2; ni < nodes.size(); ++ni) {
+      if (childCount[ni] == 0) continue;  // Prefer sturdy interior vine limbs, not thin tips!
+      const auto& cur = nodes[ni];
+      const auto& par = nodes[cur.parent];
+      float dx = cur.x - par.x;
+      float dy = cur.y - par.y;
+      if (std::hypot(dx, dy) < 10.5f) continue;
+
+      // Orient segment left-to-right so 'angle' is in [-pi/2, +pi/2] and -v always points UPWARD above the vine!
+      if (dx < 0.0f) {
+        dx = -dx;
+        dy = -dy;
+      }
+      const float slopeAng = std::atan2(dy, dx);
+      if (std::fabs(slopeAng) > 0.62f) continue;  // Frog wants a comfortable horizontal/gently-sloping perch!
+
+      const float px = 0.5f * (par.x + cur.x);
+      const float py = 0.5f * (par.y + cur.y);
+      const float upX = px + std::sin(slopeAng) * 12.5f;
+      const float upY = py - std::cos(slopeAng) * 12.5f;
+      const float cAbove = field.clearanceAt(upX, upY);
+      if (cAbove < 17.0f) continue;
+
+      const float fScale = clampf(cAbove * 0.96f, 23.0f, 30.5f);
+      if (!isZoneFree(upX, upY, fScale * 0.82f, 6.0f)) continue;
+      // Ensure no overhead vine branch slices across the frog's back!
+      if (minDistToVine(upX, upY, static_cast<int>(ni), cur.parent) < fScale * 0.42f) continue;
+      // Ensure raised head/snout and rump also have comfortable clearance!
+      if (field.clearanceAt(upX + fScale * 0.55f, upY - fScale * 0.25f) < 5.5f ||
+          field.clearanceAt(upX - fScale * 0.55f, upY - fScale * 0.15f) < 5.5f) {
+        continue;
+      }
+
+      const float score = cAbove * 1.2f + subtreeWeight[ni] * 0.35f + rng.range(0.0f, 5.0f);
+      if (score > bestFrogScore) {
+        bestFrogScore = score;
+        frogX = px;
+        frogY = py;
+        frogScale = fScale;
+        frogAng = slopeAng;
+        frogFacing = (px < (reg.x0 + reg.x1) * 0.5f) ? 1.0f : -1.0f;
+        foundFrogPerch = true;
+      }
+    }
+
+    if (foundFrogPerch) {
+      sg.addCreature(8, CreatureKind::TreeFrog, frogX, frogY, frogScale, frogAng, frogFacing, rng.nextU32());
+      zones.push_back({frogX, frogY - frogScale * 0.36f, frogScale * 1.08f});
+    }
+  }
+
+  // 6. Emit tapered woody-to-slender stems, BILATERAL leaves (both sides of the vine!), diverse flowers, ferns &
+  // berries!
+  const float maxW = std::sqrt(static_cast<float>(std::max(1, subtreeWeight[0])));
+  std::vector<int> nodeLeafSign(nodes.size(), 1);
+  nodeLeafSign[0] = rng.chance(0.5f) ? 1 : -1;
+
   for (size_t i = 1; i < nodes.size(); ++i) {
     const auto& cur = nodes[i];
     const auto& par = nodes[cur.parent];
-    const float t0 = static_cast<float>(par.depth) / static_cast<float>(maxDepth + 1);
-    const float t1 = static_cast<float>(cur.depth) / static_cast<float>(maxDepth + 1);
-    const float r0 = lerpf(1.95f, 0.62f, t0);
-    const float r1 = lerpf(1.95f, 0.55f, t1);
+    // Prune tiny childless stub twigs whose tip pokes into an occupied blossom/creature halo!
+    if (childCount[i] == 0 && static_cast<int>(i) != -1 && !isZoneFree(cur.x, cur.y, 1.0f, 0.0f)) {
+      // Keep the twig only if a flower/trumpet was explicitly attached right at node i!
+      bool isExactAnchor = false;
+      for (const auto& z : zones) {
+        if (std::hypot(cur.x - z.x, cur.y - z.y) < 3.0f) isExactAnchor = true;
+      }
+      if (!isExactAnchor) continue;
+    }
+    const bool placeLeavesHere = (cur.depth % 2 == 1) || (childCount[i] > 1);
+    nodeLeafSign[i] = placeLeavesHere ? -nodeLeafSign[cur.parent] : nodeLeafSign[cur.parent];
+
+    const float w0 = std::sqrt(static_cast<float>(subtreeWeight[cur.parent])) / maxW;
+    const float w1 = std::sqrt(static_cast<float>(subtreeWeight[i])) / maxW;
+    const float r0 = lerpf(0.58f, 2.35f, std::pow(w0, 0.65f));
+    const float r1 = lerpf(0.52f, 2.35f, std::pow(w1, 0.65f));
     sg.addStroke(2, par.x, par.y, cur.x, cur.y, r0, r1, true, false, false, static_cast<uint32_t>(i));
 
     const float segAng = std::atan2(cur.y - par.y, cur.x - par.x);
     const float localClear = field.clearanceAt(cur.x, cur.y);
 
-    // Place woodcut leaves at alternating phyllotaxis angles along stems!
-    if (localClear >= 11.0f && (i % 2 == 1 || childCount[i] == 0)) {
-      const float side = (i % 2 == 0) ? 1.0f : -1.0f;
-      const float leafAng = segAng + side * rng.range(0.58f, 1.02f);
-      const float leafLen = clampf(localClear * rng.range(0.68f, 0.92f), 11.0f, 27.0f);
-      const float tipX = cur.x + std::cos(leafAng) * leafLen;
-      const float tipY = cur.y + std::sin(leafAng) * leafLen;
-      if (field.clearanceAt(tipX, tipY) >= 4.0f) {
-        sg.addLeaf(3, cur.x, cur.y, leafAng, leafLen, leafLen * rng.range(0.38f, 0.48f), side * 0.16f,
-                   LeafStyle::WoodcutHalfShade, true, rng.nextU32());
-      }
-    }
+    // Emit airy foliage on BOTH sides of the vine (alternating Left/Right + 58% paired opposite leaves)!
+    if (placeLeavesHere && localClear >= 11.0f && isZoneFree(cur.x, cur.y, 7.5f, 1.0f)) {
+      const bool oppositePair = rng.chance(0.58f);
+      const int passes = oppositePair ? 2 : 1;
+      for (int k = 0; k < passes; ++k) {
+        const float side = static_cast<float>((k == 0) ? nodeLeafSign[i] : -nodeLeafSign[i]);
+        const float leafAng = segAng + side * rng.range(0.62f, 1.05f);
+        const float leafLen = clampf(localClear * rng.range(0.62f, 0.86f), 10.5f, 24.0f);
+        // Short curved petiole stem connecting vine to leaf base!
+        const float petLen = clampf(leafLen * 0.20f, 2.5f, 4.5f);
+        const float lx = cur.x + std::cos(leafAng - side * 0.18f) * petLen;
+        const float ly = cur.y + std::sin(leafAng - side * 0.18f) * petLen;
+        const float tipX = lx + std::cos(leafAng) * leafLen;
+        const float tipY = ly + std::sin(leafAng) * leafLen;
+        if (field.clearanceAt(tipX, tipY) < 4.0f) continue;
 
-    // Terminal shoot accents: spiral tendrils, rosebuds, or small secondary wildflowers!
-    if (childCount[i] == 0) {
-      if (localClear >= 19.0f && rng.chance(0.42f)) {
-        const float subR = clampf(localClear * 0.58f, 12.0f, 21.0f);
-        emitBotanicalFlower(sg, cur.x, cur.y, subR, rng.rangeInt(0, 2), rng);
-      } else if (localClear >= 12.0f && rng.chance(0.55f)) {
-        emitRoseBud(sg, cur.x, cur.y, segAng, clampf(localClear * 0.65f, 9.0f, 15.0f), rng);
-      } else if (localClear >= 9.0f) {
-        emitSpiralTendril(sg, field, cur.x, cur.y, segAng, clampf(localClear * 0.85f, 9.0f, 18.0f),
-                          (i % 2 == 0) ? 1.0f : -1.0f, 2);
-      }
-    }
-  }
-
-  // Hero blossoms anchored directly on the closest vine node to each clearance pole!
-  const size_t bloomCount = std::min<size_t>(reg.poles.size(), 3);
-  for (size_t p = 0; p < bloomCount; ++p) {
-    const auto& rawPole = reg.poles[p];
-    Pole pole = rawPole;
-    if (p > 0 && !nodes.empty()) {
-      size_t bestIdx = 0;
-      float bestD = 1e9f;
-      for (size_t ni = 0; ni < nodes.size(); ++ni) {
-        const float d = std::hypot(nodes[ni].x - rawPole.x, nodes[ni].y - rawPole.y);
-        if (d < bestD) {
-          bestD = d;
-          bestIdx = ni;
+        if (!oppositePair && localClear >= 16.0f && rng.chance(0.14f)) {
+          emitFernFrond(sg, field, cur.x, cur.y, leafAng, leafLen * 1.15f, side, rng);
+        } else {
+          sg.addStroke(2, cur.x, cur.y, lx, ly, 0.65f, 0.52f, false);
+          const int styleRoll = rng.rangeInt(0, 9);
+          LeafStyle ls = LeafStyle::WoodcutHalfShade;
+          float widMul = rng.range(0.38f, 0.46f);
+          bool serr = true;
+          if (styleRoll < 3) {
+            ls = LeafStyle::HeartCordate;
+            widMul = rng.range(0.56f, 0.68f);
+            serr = false;
+          } else if (styleRoll < 5) {
+            ls = LeafStyle::ScallopedOak;
+            widMul = rng.range(0.46f, 0.56f);
+            serr = false;
+          }
+          sg.addLeaf(3, lx, ly, leafAng, leafLen, leafLen * widMul, side * 0.15f, ls, serr, rng.nextU32());
         }
       }
-      if (bestD < 64.0f) {
-        pole.x = nodes[bestIdx].x;
-        pole.y = nodes[bestIdx].y;
-        pole.clearance = field.clearanceAt(pole.x, pole.y);
-      } else {
-        continue;
-      }
-    }
-    const float maxR = (p == 0) ? 44.0f : 29.0f;
-    const float bloomR = clampf(pole.clearance * (p == 0 ? 0.54f : 0.46f), 15.0f, maxR);
-    if (p > 0 && bloomR < 15.5f) continue;
-
-    // Frame the hero bloom with 3 radial backing leaves before drawing petals!
-    const int nGuardLeaves = (p == 0) ? 4 : 2;
-    const float guardRot = rng.range(0.0f, kTwoPi);
-    for (int k = 0; k < nGuardLeaves; ++k) {
-      const float la = guardRot + (kTwoPi * k) / nGuardLeaves + rng.range(-0.22f, 0.22f);
-      const float lx = pole.x + std::cos(la) * (bloomR * 0.58f);
-      const float ly = pole.y + std::sin(la) * (bloomR * 0.58f);
-      const float lLen = bloomR * rng.range(0.68f, 0.86f);
-      if (field.clearanceAt(lx + std::cos(la) * lLen, ly + std::sin(la) * lLen) >= 5.0f) {
-        sg.addLeaf(3, lx, ly, la, lLen, lLen * 0.44f, (k % 2 == 0) ? 0.14f : -0.14f, LeafStyle::WoodcutHalfShade,
-                   true, rng.nextU32());
-      }
     }
 
-    const int species = (p == 0) ? rng.rangeInt(0, 2) : static_cast<int>((p + rng.nextU32()) % 3);
-    emitBotanicalFlower(sg, pole.x, pole.y, bloomR, species, rng);
+    // Terminal shoot accents: diverse side bellflowers, trumpets, wildflower species, berry clusters, buds & tendrils!
+    if (childCount[i] == 0 && isZoneFree(cur.x, cur.y, 10.0f, 2.0f)) {
+      const int accentRoll = rng.rangeInt(0, 99);
+      if (localClear >= 16.0f && accentRoll < 26) {
+        // Pendulous hanging Bellflower!
+        const float bellL = clampf(localClear * 0.68f, 12.0f, 19.0f);
+        if (emitBellFlower(sg, field, cur.x, cur.y, segAng, bellL, rng)) {
+          zones.push_back({cur.x, cur.y + bellL * 0.5f, bellL * 0.65f});
+          continue;
+        }
+      }
+      if (localClear >= 16.5f && accentRoll < 44) {
+        // Side-facing Nectar Trumpet blossom!
+        float mx = 0.0f, my = 0.0f;
+        const float trL = clampf(localClear * 0.72f, 13.0f, 19.5f);
+        if (emitTrumpetFlower(sg, field, cur.x, cur.y, segAng, trL, mx, my, rng)) {
+          zones.push_back({(cur.x + mx) * 0.5f, (cur.y + my) * 0.5f, trL * 0.60f});
+          continue;
+        }
+      }
+      if (localClear >= 17.5f && accentRoll < 68) {
+        float fx = cur.x, fy = cur.y, safeR = 14.0f;
+        const float wantR = clampf(localClear * 0.54f, 12.0f, 19.5f);
+        if (fitSafeBloomRadius(field, fx, fy, wantR, 11.5f, safeR) && isZoneFree(fx, fy, safeR, 3.0f)) {
+          if (std::hypot(fx - cur.x, fy - cur.y) > 1.2f) {
+            sg.addStroke(2, cur.x, cur.y, fx, fy, 0.85f, 0.65f, false);
+          }
+          emitBotanicalFlower(sg, fx, fy, safeR, rng.rangeInt(0, 4), segAng, rng);
+          zones.push_back({fx, fy, safeR});
+          continue;
+        }
+      }
+      if (localClear >= 12.5f && accentRoll < 80) {
+        emitBerryCluster(sg, field, cur.x, cur.y, segAng, clampf(localClear * 0.58f, 8.5f, 12.5f), rng);
+      } else if (localClear >= 11.5f && accentRoll < 90) {
+        emitRoseBud(sg, cur.x, cur.y, segAng, clampf(localClear * 0.62f, 8.5f, 14.0f), rng);
+      } else if (localClear >= 8.5f) {
+        emitSpiralTendril(sg, field, cur.x, cur.y, segAng, clampf(localClear * 0.85f, 9.0f, 17.5f),
+                          static_cast<float>(nodeLeafSign[i]), 2);
+      }
+    }
   }
+  (void)placedHummingbird;
 }
 
 // ============================================================================
@@ -1098,17 +1691,26 @@ void buildPlumAndBamboo(SceneGraph& sg, const ClearanceField& field, const DeadR
     const float cy = mainPole.y;
     const float cx = (reg.x0 + reg.x1) * 0.5f;
     const float span = std::min(165.0f, (reg.x1 - reg.x0) * 0.42f);
-    const float blossomR = clampf(mainPole.clearance * 0.72f, 8.0f, 13.5f);
+    const float blossomR = clampf(mainPole.clearance * 0.66f, 8.0f, 13.0f);
 
     // Calligraphic angular plum twig across the scene break.
-    std::vector<std::pair<float, float>> twig = {
-        {cx - span, cy + 3.0f},   {cx - span * 0.45f, cy - 2.5f}, {cx - span * 0.1f, cy + 2.0f},
-        {cx + span * 0.38f, cy - 3.0f}, {cx + span * 0.92f, cy + 1.5f}};
+    std::vector<std::pair<float, float>> twig = {{cx - span, cy + 3.0f},
+                                                 {cx - span * 0.45f, cy - 2.5f},
+                                                 {cx - span * 0.1f, cy + 2.0f},
+                                                 {cx + span * 0.38f, cy - 3.0f},
+                                                 {cx + span * 0.92f, cy + 1.5f}};
     emitCurvedPolyline(sg, 2, twig, 2.1f, 0.7f, true, true, rng.nextU32());
-    emitPlumBlossom(sg, cx - span * 0.18f, cy + 1.0f, blossomR, false, rng);
-    emitPlumBlossom(sg, cx + span * 0.34f, cy - 2.5f, blossomR * 0.84f, true, rng);
-    sg.addDisc(6, cx - span * 0.56f, cy - 4.0f, blossomR * 0.34f, DiscKind::StippledBud, 0.0f, 95, 248, rng.nextU32());
-    sg.addDisc(6, cx + span * 0.68f, cy - 2.0f, blossomR * 0.30f, DiscKind::StippledBud, 0.0f, 105, 248, rng.nextU32());
+    float b1x = cx - span * 0.14f, b1y = cy + 1.5f, r1 = blossomR;
+    if (fitSafeBloomRadius(field, b1x, b1y, blossomR, 7.5f, r1)) {
+      emitPlumBlossom(sg, b1x, b1y, r1, rng);
+    }
+    float b2x = cx + span * 0.36f, b2y = cy - 2.0f, r2 = blossomR * 0.86f;
+    if (fitSafeBloomRadius(field, b2x, b2y, blossomR * 0.86f, 7.5f, r2)) {
+      emitPlumBlossom(sg, b2x, b2y, r2, rng);
+    }
+    // Attached plum buds with ink pedicels + calyx cups (no floating dots!).
+    emitAttachedPlumBud(sg, field, cx - span * 0.45f, cy - 2.5f, -2.35f, 5.0f, blossomR * 0.32f, rng);
+    emitAttachedPlumBud(sg, field, cx + span * 0.65f, cy - 0.8f, -0.55f, 5.0f, blossomR * 0.30f, rng);
     return;
   }
 
@@ -1117,15 +1719,34 @@ void buildPlumAndBamboo(SceneGraph& sg, const ClearanceField& field, const DeadR
     sg.addWash(reg.x0, reg.y0 + (reg.y1 - reg.y0) / 3, reg.x1, reg.y1, 0, 178, rng.nextU32());
   }
 
+  // Track placed plum blossoms so overlapping clusters keep clean petal readability!
+  struct PlacedPlum {
+    float x, y, r;
+  };
+  std::vector<PlacedPlum> placedBlossoms;
+  auto canPlacePlum = [&](float x, float y, float r) {
+    for (const auto& pb : placedBlossoms) {
+      if (std::hypot(x - pb.x, y - pb.y) < (pb.r + r) * 0.72f) return false;
+    }
+    return true;
+  };
+
   // Choose an anchor side to launch the gnarled calligraphic plum trunk toward mainPole!
   const bool fromLeft = rng.chance(0.55f);
   float startX = fromLeft ? static_cast<float>(reg.x0 + 18) : static_cast<float>(reg.x1 - 18);
-  float startY = clampf(mainPole.y + (reg.y1 - mainPole.y) * 0.45f, static_cast<float>(reg.y0 + 22),
+  float startY = clampf(mainPole.y + (reg.y1 - mainPole.y) * 0.48f, static_cast<float>(reg.y0 + 22),
                         static_cast<float>(reg.y1 - 22));
-  // Snap start point inward until clearance >= 12.
   for (int s = 0; s < 16 && field.clearanceAt(startX, startY) < 12.0f; ++s) {
     startX = lerpf(startX, mainPole.x, 0.18f);
     startY = lerpf(startY, mainPole.y, 0.18f);
+  }
+
+  // Reserve mainPole hero blossom first so every petal has guaranteed clearance!
+  float heroX = mainPole.x, heroY = mainPole.y, heroR = 18.0f;
+  const bool hasHero =
+      fitSafeBloomRadius(field, heroX, heroY, clampf(mainPole.clearance * 0.42f, 13.5f, 23.0f), 11.0f, heroR);
+  if (hasHero) {
+    placedBlossoms.push_back({heroX, heroY, heroR});
   }
 
   // Recursive angular brush branch builder ("iron-wire" calligraphy kinks + feibai dry brush).
@@ -1134,60 +1755,66 @@ void buildPlumAndBamboo(SceneGraph& sg, const ClearanceField& field, const DeadR
     float nx = x + std::cos(ang) * segLen;
     float ny = y + std::sin(ang) * segLen;
     float c = field.clearanceAt(nx, ny);
-    if (c < 7.0f) {
+    if (c < 8.0f) {
       float gx = 0.0f, gy = 0.0f;
       field.gradientAt(x, y, gx, gy);
       ang = std::atan2(std::sin(ang) * 0.45f + gy * 0.55f, std::cos(ang) * 0.45f + gx * 0.55f);
       nx = x + std::cos(ang) * (segLen * 0.72f);
       ny = y + std::sin(ang) * (segLen * 0.72f);
       c = field.clearanceAt(nx, ny);
-      if (c < 6.5f) return;
+      if (c < 7.5f) return;
     }
 
     const float nextR = std::max(0.65f, radius * 0.74f);
     sg.addStroke(2, x, y, nx, ny, radius, nextR, true, radius >= 2.1f, false, rng.nextU32());
 
-    // Blossoms and pearl buds at branch joints & slender twigs!
-    if (depth >= 2 && c >= 14.0f && rng.chance(depth >= 3 ? 0.68f : 0.42f)) {
-      const float bR = clampf(c * rng.range(0.36f, 0.52f), 10.5f, 22.0f);
-      emitPlumBlossom(sg, nx, ny, bR, rng.chance(0.35f), rng);
-    } else if (depth >= 2 && c >= 8.0f && rng.chance(0.55f)) {
-      const float budAng = ang + (rng.chance(0.5f) ? 0.6f : -0.6f);
-      const float bx = nx + std::cos(budAng) * 5.5f;
-      const float by = ny + std::sin(budAng) * 5.5f;
-      if (field.clearanceAt(bx, by) >= 6.0f) {
-        sg.addDisc(6, bx, by, rng.range(3.6f, 5.4f), DiscKind::StippledBud, budAng, 92, 248, rng.nextU32());
+    // Complete 5-petal blossoms (verified around full perimeter so zero petals are ever clipped!)
+    // and physically attached pedicel+calyx pearl buds (zero floating dots!).
+    bool spawnedBloom = false;
+    if (depth >= 2 && c >= 15.5f && rng.chance(depth >= 3 ? 0.68f : 0.45f)) {
+      float bx = nx, by = ny, safeR = 12.0f;
+      const float wantR = clampf(c * rng.range(0.36f, 0.48f), 10.5f, 19.5f);
+      if (fitSafeBloomRadius(field, bx, by, wantR, 10.0f, safeR) && canPlacePlum(bx, by, safeR)) {
+        if (std::hypot(bx - nx, by - ny) > 1.2f) {
+          sg.addStroke(2, nx, ny, bx, by, 0.85f, 0.70f, false);
+        }
+        emitPlumBlossom(sg, bx, by, safeR, rng);
+        placedBlossoms.push_back({bx, by, safeR});
+        spawnedBloom = true;
       }
+    }
+    if (!spawnedBloom && depth >= 2 && c >= 10.5f && rng.chance(0.58f)) {
+      const float budAng = ang + (rng.chance(0.5f) ? 0.68f : -0.68f);
+      emitAttachedPlumBud(sg, field, nx, ny, budAng, rng.range(4.8f, 6.8f), rng.range(3.6f, 4.9f), rng);
     }
 
     // Calligraphic angular bend + fork!
-    const float kink = (depth % 2 == 0 ? 1.0f : -1.0f) * rng.range(0.24f, 0.48f);
+    const float kink = (depth % 2 == 0 ? 1.0f : -1.0f) * rng.range(0.24f, 0.46f);
     self(self, nx, ny, ang + kink, segLen * rng.range(0.78f, 0.88f), nextR, depth + 1);
-    if (depth <= 4 && rng.chance(0.72f)) {
-      const float forkAng = ang - kink * rng.range(1.4f, 2.1f);
+    if (depth <= 4 && rng.chance(0.70f)) {
+      const float forkAng = ang - kink * rng.range(1.4f, 2.0f);
       self(self, nx, ny, forkAng, segLen * rng.range(0.62f, 0.78f), nextR * 0.82f, depth + 2);
     }
   };
 
-  const float mainAng = std::atan2(mainPole.y - startY, mainPole.x - startX);
-  const float trunkDist = std::hypot(mainPole.x - startX, mainPole.y - startY);
-  const float trunkLen = clampf(trunkDist * 0.42f, 24.0f, 56.0f);
-  // First reach mainPole with a 2-segment gnarled trunk so the hero blossom always sits right on a branch!
-  const float midX = lerpf(startX, mainPole.x, 0.52f) + (fromLeft ? 8.0f : -8.0f);
-  const float midY = lerpf(startY, mainPole.y, 0.52f) + 10.0f;
-  if (field.clearanceAt(midX, midY) >= 8.0f) {
+  const float mainAng = std::atan2(heroY - startY, heroX - startX);
+  const float trunkDist = std::hypot(heroX - startX, heroY - startY);
+  const float trunkLen = clampf(trunkDist * 0.42f, 24.0f, 54.0f);
+  const float midX = lerpf(startX, heroX, 0.52f) + (fromLeft ? 8.0f : -8.0f);
+  const float midY = lerpf(startY, heroY, 0.52f) + 10.0f;
+  if (field.clearanceAt(midX, midY) >= 8.5f) {
     sg.addStroke(2, startX, startY, midX, midY, 3.6f, 2.7f, true, true, false, rng.nextU32());
-    sg.addStroke(2, midX, midY, mainPole.x, mainPole.y, 2.7f, 2.0f, true, true, false, rng.nextU32());
+    sg.addStroke(2, midX, midY, heroX, heroY, 2.7f, 2.0f, true, true, false, rng.nextU32());
     growPlumBranch(growPlumBranch, midX, midY, mainAng - 0.52f, trunkLen * 0.72f, 2.1f, 2);
   } else {
-    sg.addStroke(2, startX, startY, mainPole.x, mainPole.y, 3.3f, 2.1f, true, true, false, rng.nextU32());
+    sg.addStroke(2, startX, startY, heroX, heroY, 3.3f, 2.1f, true, true, false, rng.nextU32());
   }
-  growPlumBranch(growPlumBranch, mainPole.x, mainPole.y, mainAng + 0.22f, trunkLen * 0.82f, 2.1f, 1);
-  growPlumBranch(growPlumBranch, mainPole.x, mainPole.y, mainAng - 0.58f, trunkLen * 0.68f, 1.7f, 2);
+  growPlumBranch(growPlumBranch, heroX, heroY, mainAng + 0.22f, trunkLen * 0.82f, 2.1f, 1);
+  growPlumBranch(growPlumBranch, heroX, heroY, mainAng - 0.58f, trunkLen * 0.68f, 1.7f, 2);
 
-  // Focal plum blossom directly on the gnarled main joint!
-  const float heroR = clampf(mainPole.clearance * 0.44f, 14.0f, 25.0f);
-  emitPlumBlossom(sg, mainPole.x, mainPole.y, heroR, false, rng);
+  if (hasHero) {
+    emitPlumBlossom(sg, heroX, heroY, heroR, rng);
+  }
 
   // Add graceful segmented Ink Bamboo (墨竹) stalk + swept leaf clusters on secondary pole or tall bay!
   const Pole& bambooPole = (reg.poles.size() >= 2) ? reg.poles[1] : mainPole;
@@ -1205,17 +1832,14 @@ void buildPlumAndBamboo(SceneGraph& sg, const ClearanceField& field, const DeadR
       if (field.clearanceAt(nx, ny) < 8.0f) break;
 
       const float rCulm = lerpf(2.2f, 1.05f, static_cast<float>(s) / nSegs);
-      // Leave a crisp 2.2px white node gap between bamboo segments!
       const float gapRatio = 2.4f / segH;
       const float sx1 = lerpf(bx, nx, 1.0f - gapRatio);
       const float sy1 = lerpf(by, ny, 1.0f - gapRatio);
       sg.addStroke(2, bx, by, sx1, sy1, rCulm, rCulm * 0.92f, true, false, false, rng.nextU32());
-      // Crisp horizontal bamboo node tick!
       const float px = -std::sin(curAng) * (rCulm + 2.2f);
       const float py = std::cos(curAng) * (rCulm + 2.2f);
       sg.addStroke(3, sx1 - px, sy1 - py, sx1 + px, sy1 + py, 0.85f, 0.85f, false);
 
-      // Classic '个' (3-4 leaf) swept bamboo clusters: foreground solid black + background Atkinson ink-wash!
       if (s >= 1 && field.clearanceAt(sx1, sy1) >= 14.0f) {
         const float side = (s % 2 == 0) ? 1.0f : -1.0f;
         const float baseLeafAng = (side > 0 ? 0.32f : (kPi - 0.32f));
@@ -1237,7 +1861,7 @@ void buildPlumAndBamboo(SceneGraph& sg, const ClearanceField& field, const DeadR
 }
 
 // ============================================================================
-// Theme 3: Celestial Astrolabe (3D Dithered Moon, Degree Rings & Constellations)
+// Theme 3: Celestial Astrolabe & Antique Star Atlas (Refined Open Asterisms)
 // ============================================================================
 
 void buildCelestialAstrolabe(SceneGraph& sg, const ClearanceField& field, const DeadRegion& reg,
@@ -1248,30 +1872,29 @@ void buildCelestialAstrolabe(SceneGraph& sg, const ClearanceField& field, const 
   if (reg.kind == RegionKind::SceneBreakCorridor) {
     const float cy = mainPole.y;
     const float cx = (reg.x0 + reg.x1) * 0.5f;
-    const float moonR = clampf(mainPole.clearance * 0.65f, 7.0f, 12.0f);
-    const float spacing = moonR * 3.1f;
-    const float phases[5] = {-2.15f, -1.15f, 0.0f, 1.15f, 2.15f};
+    const float moonR = clampf(mainPole.clearance * 0.65f, 7.0f, 11.5f);
+    const float spacing = moonR * 3.3f;
+    const float phases[5] = {-2.15f, -1.10f, 0.0f, 1.10f, 2.15f};
     const float axisHalf = std::min(165.0f, (reg.x1 - reg.x0) * 0.42f);
-    sg.addStroke(1, cx - axisHalf, cy, cx + axisHalf, cy, 0.55f, 0.55f, false, false, true);
+    sg.addStroke(1, cx - axisHalf, cy, cx + axisHalf, cy, 0.52f, 0.52f, false, false, true);
     for (int i = 0; i < 5; ++i) {
       const float mx = cx + (i - 2) * spacing;
-      if (field.clearanceAt(mx, cy) >= moonR + 2.0f) {
-        const float rHere = (i == 2) ? moonR * 1.15f : moonR * 0.88f;
+      if (field.clearanceAt(mx, cy) >= moonR + 2.5f) {
+        const float rHere = (i == 2) ? moonR * 1.15f : moonR * 0.86f;
         sg.addDisc(6, mx, cy, rHere, DiscKind::Moon3D, phases[i], 30, 250, rng.nextU32());
       }
     }
-    sg.addDisc(7, cx - axisHalf, cy, 5.5f, DiscKind::FacetedCompassStar, 0.0f);
-    sg.addDisc(7, cx + axisHalf, cy, 5.5f, DiscKind::FacetedCompassStar, 0.0f);
+    sg.addDisc(7, cx - axisHalf, cy, 6.5f, DiscKind::CelestialStar4, 0.0f);
+    sg.addDisc(7, cx + axisHalf, cy, 6.5f, DiscKind::CelestialStar4, 0.0f);
     return;
   }
 
-  // Soft Milky Way stardust nebula across the dead space!
-  sg.addWash(reg.x0, reg.y0, reg.x1, reg.y1, 1, 188, rng.nextU32());
+  // Smooth subtle Milky Way stardust sweep behind the star chart!
+  sg.addWash(reg.x0, reg.y0, reg.x1, reg.y1, 1, 198, rng.nextU32());
 
-  const float astroR = clampf(mainPole.clearance * 0.62f, 20.0f, 54.0f);
+  const float astroR = clampf(mainPole.clearance * 0.58f, 19.0f, 48.0f);
 
-  // Outer graduated astrolabe degree rings + ticks.
-  auto emitClippedCircle = [&](float cx, float cy, float r, float strokeR, bool dotted, int segs = 72) {
+  auto emitClippedCircle = [&](float cx, float cy, float r, float strokeR, bool dotted, int segs = 84) {
     for (int i = 0; i < segs; ++i) {
       if (dotted && (i % 2 == 1)) continue;
       const float a0 = (kTwoPi * i) / segs;
@@ -1280,103 +1903,247 @@ void buildCelestialAstrolabe(SceneGraph& sg, const ClearanceField& field, const 
       const float y0 = cy + std::sin(a0) * r;
       const float x1 = cx + std::cos(a1) * r;
       const float y1 = cy + std::sin(a1) * r;
-      if (field.clearanceAt(x0, y0) >= 5.0f && field.clearanceAt(x1, y1) >= 5.0f) {
+      if (field.clearanceAt(x0, y0) >= 6.0f && field.clearanceAt(x1, y1) >= 6.0f) {
         sg.addStroke(2, x0, y0, x1, y1, strokeR, strokeR, false);
       }
     }
   };
 
+  // Graduated outer & inner astrolabe degree rings + single outer celestial equator arc.
   emitClippedCircle(mainPole.x, mainPole.y, astroR, 1.05f, false, 84);
-  emitClippedCircle(mainPole.x, mainPole.y, astroR * 0.86f, 0.65f, false, 72);
-  // Wide orbital arcs extending into surrounding dead space (clipped smoothly by clearance!).
-  emitClippedCircle(mainPole.x, mainPole.y, astroR * 1.38f, 0.60f, true, 96);
-  emitClippedCircle(mainPole.x, mainPole.y, astroR * 1.78f, 0.55f, true, 120);
-
+  emitClippedCircle(mainPole.x, mainPole.y, astroR * 0.86f, 0.62f, false, 72);
+  emitClippedCircle(mainPole.x, mainPole.y, astroR * 1.48f, 0.52f, true, 108);
   // Off-center ecliptic ring inside astrolabe.
-  emitClippedCircle(mainPole.x + astroR * 0.14f, mainPole.y - astroR * 0.10f, astroR * 0.64f, 0.60f, false, 60);
+  emitClippedCircle(mainPole.x + astroR * 0.13f, mainPole.y - astroR * 0.10f, astroR * 0.65f, 0.58f, false, 64);
 
   // 36 degree graduation ticks around the astrolabe bezel.
   for (int i = 0; i < 36; ++i) {
     const float a = (kTwoPi * i) / 36.0f;
     const float innerR = (i % 3 == 0) ? astroR * 0.80f : astroR * 0.88f;
     sg.addStroke(3, mainPole.x + std::cos(a) * innerR, mainPole.y + std::sin(a) * innerR,
-                 mainPole.x + std::cos(a) * astroR, mainPole.y + std::sin(a) * astroR, 0.6f, 0.6f, false);
+                 mainPole.x + std::cos(a) * astroR, mainPole.y + std::sin(a) * astroR, 0.58f, 0.58f, false);
   }
 
-  // 4 cardinal compass-rose faceted pointers.
+  // Diagonal engraved Alidade sight-rule across the astrolabe!
+  const float alidadeAng = -0.58f;
+  const float alR = astroR * 1.14f;
+  if (field.clearanceAt(mainPole.x + std::cos(alidadeAng) * alR, mainPole.y + std::sin(alidadeAng) * alR) >= 5.0f &&
+      field.clearanceAt(mainPole.x - std::cos(alidadeAng) * alR, mainPole.y - std::sin(alidadeAng) * alR) >= 5.0f) {
+    sg.addStroke(5, mainPole.x - std::cos(alidadeAng) * alR, mainPole.y - std::sin(alidadeAng) * alR,
+                 mainPole.x + std::cos(alidadeAng) * alR, mainPole.y + std::sin(alidadeAng) * alR, 0.68f, 0.68f, true);
+  }
+
+  // 4 cardinal needle pointers.
   for (int k = 0; k < 4; ++k) {
     const float a = k * kPi * 0.5f;
-    const float sx = mainPole.x + std::cos(a) * (astroR * 1.04f);
-    const float sy = mainPole.y + std::sin(a) * (astroR * 1.04f);
+    const float sx = mainPole.x + std::cos(a) * (astroR * 1.05f);
+    const float sy = mainPole.y + std::sin(a) * (astroR * 1.05f);
     if (field.clearanceAt(sx, sy) >= 8.0f) {
-      sg.addDisc(7, sx, sy, clampf(astroR * 0.19f, 5.5f, 9.5f), DiscKind::FacetedCompassStar, a);
+      sg.addDisc(7, sx, sy, clampf(astroR * 0.18f, 5.5f, 8.5f), DiscKind::FacetedCompassStar, a);
     }
   }
 
   // Focal 3D Lambertian cratered Moon at center of astrolabe!
-  const float phaseChoices[4] = {-1.25f, -0.55f, 0.65f, 1.35f};
-  const float moonPhase = phaseChoices[rng.rangeInt(0, 3)];
-  sg.addDisc(6, mainPole.x, mainPole.y, astroR * 0.45f, DiscKind::Moon3D, moonPhase, 25, 252, rng.nextU32());
+  const float phaseChoices[4] = {-1.20f, -0.60f, 0.65f, 1.30f};
+  sg.addDisc(6, mainPole.x, mainPole.y, astroR * 0.44f, DiscKind::Moon3D, phaseChoices[rng.rangeInt(0, 3)], 25, 252,
+             rng.nextU32());
 
-  // Constellation star graph filling the rest of the irregular dead space!
+  // Place a miniature ringed Saturn along the outer orbital arc if clearance allows!
+  float saturnX = -999.0f, saturnY = -999.0f;
+  for (int k = 0; k < 10; ++k) {
+    const float sa = rng.range(0.0f, kTwoPi);
+    const float sx = mainPole.x + std::cos(sa) * (astroR * 1.48f);
+    const float sy = mainPole.y + std::sin(sa) * (astroR * 1.48f);
+    if (field.clearanceAt(sx, sy) >= 19.0f) {
+      sg.addDisc(7, sx, sy, 6.8f, DiscKind::RingedPlanet, -0.38f, 45, 245, rng.nextU32());
+      saturnX = sx;
+      saturnY = sy;
+      break;
+    }
+  }
+
+  // Subtle wide celestial declination coordinate arc sweeping across open sky!
+  for (int i = 0; i < 144; ++i) {
+    if (i % 3 != 0) continue;
+    const float rDecl = astroR * 2.65f;
+    const float a0 = (kTwoPi * i) / 144.0f;
+    const float a1 = (kTwoPi * (i + 0.85f)) / 144.0f;
+    const float x0 = mainPole.x + std::cos(a0) * rDecl;
+    const float y0 = mainPole.y + std::sin(a0) * rDecl;
+    const float x1 = mainPole.x + std::cos(a1) * rDecl;
+    const float y1 = mainPole.y + std::sin(a1) * rDecl;
+    const int gx = std::clamp(static_cast<int>(x0) / kCellPx, 0, field.gw - 1);
+    const int gy = std::clamp(static_cast<int>(y0) / kCellPx, 0, field.gh - 1);
+    if (cellComp[gy * field.gw + gx] == reg.componentId && field.clearanceAt(x0, y0) >= 10.0f &&
+        field.clearanceAt(x1, y1) >= 10.0f) {
+      sg.addStroke(1, x0, y0, x1, y1, 0.45f, 0.45f, false);
+    }
+  }
+
+  // Build 2 to 6 DISTINCT Open Constellation Asterisms (dipper / kite / cross / arc figures via Prim's MST,
+  // NEVER a messy triangulated cobweb!).
   struct StarPt {
     float x, y;
     float mag;
   };
-  std::vector<StarPt> stars;
-  const int targetStars = std::clamp(reg.areaPx / 2200, 10, 42);
-  for (int attempt = 0; attempt < targetStars * 8 && static_cast<int>(stars.size()) < targetStars; ++attempt) {
-    const float sx = rng.range(static_cast<float>(reg.x0 + 10), static_cast<float>(reg.x1 - 10));
-    const float sy = rng.range(static_cast<float>(reg.y0 + 10), static_cast<float>(reg.y1 - 10));
+  std::vector<std::vector<StarPt>> constellations;
+  const int wantClusters = std::clamp(reg.areaPx / 15000, 2, 6);
+
+  auto isSkySpotValid = [&](float sx, float sy, float minClear) {
     const int gx = std::clamp(static_cast<int>(sx) / kCellPx, 0, field.gw - 1);
     const int gy = std::clamp(static_cast<int>(sy) / kCellPx, 0, field.gh - 1);
-    if (cellComp[gy * field.gw + gx] != reg.componentId) continue;
-    if (field.clearanceAt(sx, sy) < 9.0f) continue;
-    if (std::hypot(sx - mainPole.x, sy - mainPole.y) < astroR * 1.18f) continue;
+    if (cellComp[gy * field.gw + gx] != reg.componentId) return false;
+    if (field.clearanceAt(sx, sy) < minClear) return false;
+    // Keep stars cleanly outside the outer dashed orbital ring (astroR * 1.48)!
+    if (std::hypot(sx - mainPole.x, sy - mainPole.y) < astroR * 1.66f) return false;
+    if (std::hypot(sx - saturnX, sy - saturnY) < 26.0f) return false;
+    return true;
+  };
 
-    bool tooClose = false;
-    for (const auto& st : stars) {
-      if (std::hypot(sx - st.x, sy - st.y) < 26.0f) {
-        tooClose = true;
-        break;
-      }
-    }
-    if (!tooClose) stars.push_back({sx, sy, rng.nextFloat()});
-  }
+  for (int c = 0; c < wantClusters * 12 && static_cast<int>(constellations.size()) < wantClusters; ++c) {
+    const float seedX = rng.range(static_cast<float>(reg.x0 + 18), static_cast<float>(reg.x1 - 18));
+    const float seedY = rng.range(static_cast<float>(reg.y0 + 18), static_cast<float>(reg.y1 - 18));
+    if (!isSkySpotValid(seedX, seedY, 13.0f)) continue;
 
-  // Relative-neighborhood / Gabriel graph edges for crisp planar constellations!
-  for (size_t i = 0; i < stars.size(); ++i) {
-    for (size_t j = i + 1; j < stars.size(); ++j) {
-      const float d = std::hypot(stars[j].x - stars[i].x, stars[j].y - stars[i].y);
-      if (d < 26.0f || d > 82.0f) continue;
-      const float mx = 0.5f * (stars[i].x + stars[j].x);
-      const float my = 0.5f * (stars[i].y + stars[j].y);
-      if (field.clearanceAt(mx, my) < 7.0f) continue;
-      if (std::hypot(mx - mainPole.x, my - mainPole.y) < astroR * 1.10f) continue;
-
-      bool gabriel = true;
-      for (size_t k = 0; k < stars.size(); ++k) {
-        if (k == i || k == j) continue;
-        if (std::hypot(stars[k].x - mx, stars[k].y - my) < d * 0.52f) {
-          gabriel = false;
+    bool nearOtherCluster = false;
+    for (const auto& prevC : constellations) {
+      for (const auto& st : prevC) {
+        if (std::hypot(seedX - st.x, seedY - st.y) < 54.0f) {
+          nearOtherCluster = true;
           break;
         }
       }
-      if (gabriel) {
-        const float ux = (stars[j].x - stars[i].x) / d;
-        const float uy = (stars[j].y - stars[i].y) / d;
-        const float gap = 5.5f;
-        sg.addStroke(2, stars[i].x + ux * gap, stars[i].y + uy * gap, stars[j].x - ux * gap, stars[j].y - uy * gap,
-                     0.58f, 0.58f, false);
+      if (nearOtherCluster) break;
+    }
+    if (nearOtherCluster) continue;
+
+    // Grow an articulated 4-to-6 star asterism around (seedX, seedY)!
+    std::vector<StarPt> group;
+    group.push_back({seedX, seedY, 0.95f});  // Alpha star of constellation!
+    const int wantStars = rng.rangeInt(4, 6);
+    float walkAng = rng.range(0.0f, kTwoPi);
+
+    for (int s = 1; s < wantStars; ++s) {
+      bool added = false;
+      const StarPt& anchor = group[rng.chance(0.75f) ? (group.size() - 1) : 0];
+      for (int tries = 0; tries < 14; ++tries) {
+        const float stepD = rng.range(24.0f, 44.0f);
+        const float a = walkAng + rng.range(-0.95f, 0.95f);
+        const float nx = anchor.x + std::cos(a) * stepD;
+        const float ny = anchor.y + std::sin(a) * stepD;
+        if (!isSkySpotValid(nx, ny, 9.5f)) continue;
+        if (!isSkySpotValid(0.5f * (anchor.x + nx), 0.5f * (anchor.y + ny), 7.5f)) continue;
+
+        bool clash = false;
+        for (const auto& g : group) {
+          if (std::hypot(nx - g.x, ny - g.y) < 21.0f) clash = true;
+        }
+        for (const auto& prevC : constellations) {
+          for (const auto& g : prevC) {
+            if (std::hypot(nx - g.x, ny - g.y) < 42.0f) clash = true;
+          }
+        }
+        if (!clash) {
+          walkAng = a;
+          group.push_back({nx, ny, (s == 1) ? 0.72f : rng.range(0.25f, 0.62f)});
+          added = true;
+          break;
+        }
+      }
+      if (!added) break;
+    }
+
+    if (group.size() >= 3) {
+      constellations.push_back(std::move(group));
+    }
+  }
+
+  // Connect each constellation cleanly via Prim's Minimum Spanning Tree (degree <= 3) + optional dipper bowl edge!
+  for (const auto& group : constellations) {
+    const size_t n = group.size();
+    std::vector<bool> inTree(n, false);
+    std::vector<int> degree(n, 0);
+    inTree[0] = true;
+    std::vector<std::pair<size_t, size_t>> edges;
+
+    for (size_t step = 1; step < n; ++step) {
+      float bestD = 1e9f;
+      size_t bestU = 0, bestV = 0;
+      bool found = false;
+      for (size_t u = 0; u < n; ++u) {
+        if (!inTree[u] || degree[u] >= 3) continue;
+        for (size_t v = 0; v < n; ++v) {
+          if (inTree[v]) continue;
+          const float d = std::hypot(group[v].x - group[u].x, group[v].y - group[u].y);
+          if (d < bestD) {
+            bestD = d;
+            bestU = u;
+            bestV = v;
+            found = true;
+          }
+        }
+      }
+      if (!found) break;
+      inTree[bestV] = true;
+      degree[bestU]++;
+      degree[bestV]++;
+      edges.push_back({bestU, bestV});
+    }
+
+    // Emit crisp fine ray lines with generous breathing gaps around each star symbol!
+    for (const auto& e : edges) {
+      const auto& a = group[e.first];
+      const auto& b = group[e.second];
+      const float d = std::hypot(b.x - a.x, b.y - a.y);
+      if (d < 12.0f) continue;
+      const float ux = (b.x - a.x) / d;
+      const float uy = (b.y - a.y) / d;
+      const float gapA = (a.mag > 0.8f) ? 7.5f : 5.0f;
+      const float gapB = (b.mag > 0.8f) ? 7.5f : 5.0f;
+      if (d > gapA + gapB + 3.0f) {
+        sg.addStroke(2, a.x + ux * gapA, a.y + uy * gapA, b.x - ux * gapB, b.y - uy * gapB, 0.52f, 0.52f, false);
+      }
+    }
+
+    // Emit hierarchical star symbols (Alpha 4-point needle star, Beta ringed star, Gamma ink star).
+    for (const auto& st : group) {
+      if (st.mag > 0.82f && field.clearanceAt(st.x, st.y) >= 11.0f) {
+        sg.addDisc(7, st.x, st.y, rng.range(7.2f, 9.5f), DiscKind::CelestialStar4, 0.0f);
+      } else if (st.mag > 0.55f) {
+        sg.addDisc(7, st.x, st.y, 3.6f, DiscKind::RingedStar, 0.0f);
+      } else {
+        sg.addDisc(7, st.x, st.y, 2.0f, DiscKind::StippledBud, 0.0f, 0, 15);
       }
     }
   }
 
-  for (const auto& st : stars) {
-    if (st.mag > 0.72f && field.clearanceAt(st.x, st.y) >= 12.0f) {
-      sg.addDisc(7, st.x, st.y, rng.range(5.5f, 8.5f), DiscKind::FacetedCompassStar, rng.range(0.0f, 0.4f));
-    } else {
-      sg.addDisc(7, st.x, st.y, (st.mag > 0.35f) ? 2.1f : 1.3f, DiscKind::StippledBud, 0.0f, 0, 20);
+  // Scatter delicate unconnected pinpoint field stars & 1 shooting star / comet across open sky pockets!
+  const int nFieldStars = std::clamp(reg.areaPx / 2600, 10, 32);
+  bool placedComet = false;
+  for (int i = 0; i < nFieldStars * 4 && i < 96; ++i) {
+    const float fx = rng.range(static_cast<float>(reg.x0 + 10), static_cast<float>(reg.x1 - 10));
+    const float fy = rng.range(static_cast<float>(reg.y0 + 10), static_cast<float>(reg.y1 - 10));
+    if (!isSkySpotValid(fx, fy, 8.0f)) continue;
+    bool nearConst = false;
+    for (const auto& c : constellations) {
+      for (const auto& st : c) {
+        if (std::hypot(fx - st.x, fy - st.y) < 16.0f) nearConst = true;
+      }
+    }
+    if (nearConst) continue;
+
+    if (!placedComet && field.clearanceAt(fx, fy) >= 18.0f && isSkySpotValid(fx + 28.0f, fy - 12.0f, 10.0f)) {
+      // Graceful copperplate shooting comet!
+      sg.addDisc(7, fx, fy, 6.2f, DiscKind::CelestialStar4, 0.22f);
+      for (int t = -1; t <= 1; ++t) {
+        const float ta = -0.36f + t * 0.08f;
+        const float tl = (t == 0) ? 32.0f : 24.0f;
+        sg.addStroke(3, fx + std::cos(ta) * 5.5f, fy + std::sin(ta) * 5.5f, fx + std::cos(ta) * tl,
+                     fy + std::sin(ta) * tl, 0.58f, 0.42f, false, false, t != 0);
+      }
+      placedComet = true;
+    } else if (rng.chance(0.45f)) {
+      sg.addDisc(4, fx, fy, rng.chance(0.25f) ? 1.6f : 1.05f, DiscKind::StippledBud, 0.0f, 0, 15);
     }
   }
 }
@@ -1439,8 +2206,8 @@ void buildMorrisFiligree(SceneGraph& sg, const ClearanceField& field, const Dead
     return;
   }
 
-  const bool symmetric = (reg.kind != RegionKind::MarginalBay) &&
-                         (std::fabs(mainPole.x - field.screenW * 0.5f) < field.screenW * 0.18f);
+  const bool symmetric =
+      (reg.kind != RegionKind::MarginalBay) && (std::fabs(mainPole.x - field.screenW * 0.5f) < field.screenW * 0.18f);
   const float cx = symmetric ? field.screenW * 0.5f : mainPole.x;
   const float cy = mainPole.y;
   const float medR = clampf(mainPole.clearance * 0.48f, 16.0f, 36.0f);
@@ -1520,8 +2287,8 @@ void buildWavesAndPetals(SceneGraph& sg, const ClearanceField& field, const Dead
   const float scaleR = clampf(mainPole.clearance * 0.38f, 16.0f, 27.0f);
   const float colStep = scaleR * 1.72f;
   const float rowStep = scaleR * 0.86f;
-  const float waterTopBase =
-      lerpf(static_cast<float>(reg.y0), static_cast<float>(reg.y1), (reg.kind == RegionKind::MarginalBay) ? 0.48f : 0.38f);
+  const float waterTopBase = lerpf(static_cast<float>(reg.y0), static_cast<float>(reg.y1),
+                                   (reg.kind == RegionKind::MarginalBay) ? 0.48f : 0.38f);
   const float swellPhase = rng.range(0.0f, kTwoPi);
 
   int rowIdx = 0;
@@ -1640,17 +2407,16 @@ void rasterizePetalInStrip(const ScenePrim& p, int stripY0, int stripH, int W, u
       const float perp = -rx * sa + ry * ca;
 
       const float u = along / p.length;
-      if (u < -0.06f || u > 1.12f) continue;
+      if (u < -0.08f || u > 1.14f) continue;
 
-      // Parametric botanical lamina silhouette half-width(u).
       const float uc = clampf(u, 0.0f, 1.0f);
       float profile = 0.0f;
       float tipLimit = 1.0f;
       switch (shape) {
         case PetalShape::WildRoseNotched: {
-          profile = std::sin(std::pow(uc, 0.72f) * kPi) * (0.62f + 0.55f * uc);
+          profile = std::sin(std::pow(uc, 0.72f) * kPi) * (0.66f + 0.52f * uc);
           const float vNormEst = std::fabs(perp) / std::max(1.0f, p.width * 0.5f);
-          tipLimit = 1.0f - 0.11f * std::exp(-vNormEst * vNormEst * 9.0f);  // Gentle heart notch at tip
+          tipLimit = 1.0f - 0.11f * std::exp(-vNormEst * vNormEst * 9.0f);
           break;
         }
         case PetalShape::PeonyRuffled: {
@@ -1666,7 +2432,6 @@ void rasterizePetalInStrip(const ScenePrim& p, int stripY0, int stripH, int W, u
           break;
         }
         case PetalShape::PlumRound: {
-          // Nearly circular overlapping Song-dynasty plum petal.
           const float du = (u - 0.54f) / 0.54f;
           profile = (std::fabs(du) < 1.0f) ? std::sqrt(std::max(0.0f, 1.0f - du * du)) : 0.0f;
           tipLimit = 1.04f;
@@ -1675,14 +2440,36 @@ void rasterizePetalInStrip(const ScenePrim& p, int stripY0, int stripH, int W, u
         case PetalShape::SakuraCleft: {
           profile = std::sin(std::pow(uc, 0.74f) * kPi) * (0.65f + 0.48f * uc);
           const float vNormEst = std::fabs(perp) / std::max(1.0f, p.width * 0.5f);
-          // Classic sharp V-shaped sakura petal notch (欠け) at tip!
           tipLimit = 1.02f - 0.22f * std::max(0.0f, 1.0f - vNormEst * 3.2f);
+          break;
+        }
+        case PetalShape::BellCorolla: {
+          // Side-view hanging bellflower: rounded dome neck swelling and flaring at scalloped bell rim!
+          const float dome = std::sqrt(std::max(0.0f, clampf(uc * 3.2f, 0.0f, 1.0f)));
+          const float flare = std::pow(clampf((uc - 0.55f) / 0.45f, 0.0f, 1.0f), 2.0f) * 0.34f;
+          profile = dome * (0.58f + 0.14f * uc) + flare;
+          const float vRelEst = clampf(perp / std::max(1.0f, p.width * 0.5f), -1.0f, 1.0f);
+          tipLimit = 0.94f + 0.075f * std::cos(vRelEst * kPi * 2.5f);  // 3 scalloped bell lobes!
+          break;
+        }
+        case PetalShape::TrumpetCorolla: {
+          // Side-profile nectar trumpet: slender tube expanding into a wide fluted trumpet mouth!
+          const float tube = 0.18f + 0.14f * uc;
+          const float horn = std::pow(clampf((uc - 0.32f) / 0.68f, 0.0f, 1.0f), 2.1f) * 0.78f;
+          profile = std::sqrt(clampf(uc * 8.0f, 0.0f, 1.0f)) * (tube + horn);
+          const float vRelEst = clampf(perp / std::max(1.0f, p.width * 0.5f), -1.0f, 1.0f);
+          tipLimit = 0.95f + 0.06f * std::cos(vRelEst * kPi * 3.0f);
+          break;
+        }
+        case PetalShape::DaisyOblong: {
+          // Smooth strap-shaped ray petal with rounded semicircular tip!
+          profile = std::sin(std::pow(uc, 0.52f) * kPi) * 0.96f;
+          tipLimit = 1.0f;
           break;
         }
       }
 
       const float halfW = p.width * 0.5f * profile;
-      // Approximate signed Euclidean distance to petal margin (negative inside, positive outside).
       const float dSide = std::fabs(perp) - halfW;
       const float dTip = (u - tipLimit) * p.length;
       const float dBase = -u * p.length;
@@ -1691,25 +2478,40 @@ void rasterizePetalInStrip(const ScenePrim& p, int stripY0, int stripH, int W, u
       if (sdf > 1.55f) continue;
 
       if (sdf > 0.0f) {
-        // Crisp white paper knockout separation halo so overlapping petals never turn into black blobs!
         lumBuf[rowOff + x] = 255;
         modeBuf[rowOff + x] = PM_SOLID_WHITE;
       } else if (sdf >= -1.18f) {
-        // Razor-sharp 1-bit black ink contour!
         lumBuf[rowOff + x] = 0;
         modeBuf[rowOff + x] = PM_SOLID_INK;
+      } else if (shape == PetalShape::BellCorolla || shape == PetalShape::TrumpetCorolla) {
+        // Side-profile bell/trumpet: crisp longitudinal corolla lobe creases + deep shaded throat!
+        const float vRel = perp / std::max(1.5f, halfW);
+        const bool lobeSeam = (uc > 0.25f && uc < 0.92f) && (std::fabs(std::fabs(vRel) - 0.38f) < 0.055f);
+        if (lobeSeam) {
+          lumBuf[rowOff + x] = 0;
+          modeBuf[rowOff + x] = PM_SOLID_INK;
+        } else if (sdf >= -2.2f) {
+          lumBuf[rowOff + x] = 255;
+          modeBuf[rowOff + x] = PM_SOLID_WHITE;
+        } else {
+          float lum = lerpf(static_cast<float>(p.lumA), static_cast<float>(p.lumB), uc);
+          // Darker cylindrical side-wall shading + dark nectar opening near mouth of trumpet!
+          lum -= 42.0f * (vRel * vRel);
+          if (shape == PetalShape::TrumpetCorolla && uc > 0.78f && std::fabs(vRel) < 0.55f) {
+            lum -= 65.0f * (1.0f - std::fabs(vRel) / 0.55f);
+          }
+          lumBuf[rowOff + x] = static_cast<uint8_t>(clampf(lum, 28.0f, 255.0f));
+          modeBuf[rowOff + x] = PM_ATKINSON;
+        }
       } else if (sdf >= -2.35f) {
-        // Crisp 1px sunlit white paper rim just inside the ink contour so dithered shading pops cleanly!
         lumBuf[rowOff + x] = 255;
         modeBuf[rowOff + x] = PM_SOLID_WHITE;
       } else {
-        // Interior tonal cup shading + delicate botanical petal venation!
         const float vRel = perp / std::max(1.5f, halfW);
         float tCup = std::pow(clampf(u / std::max(0.2f, tipLimit), 0.0f, 1.0f), 0.92f);
         float lum = lerpf(static_cast<float>(p.lumA), static_cast<float>(p.lumB), tCup);
         lum += 10.0f * (vRel * vRel);
 
-        // Delicate radiating botanical veins in the basal 72% of the petal!
         if (u > 0.08f && u < 0.74f) {
           const float veinWave = std::fabs(std::sin(vRel * (shape == PetalShape::CosmosFluted ? 4.8f : 6.2f)));
           if (veinWave < 0.15f) {
@@ -1743,21 +2545,35 @@ void rasterizeLeafInStrip(const ScenePrim& p, int stripY0, int stripH, int W, ui
       const float rx = static_cast<float>(x) - p.x0;
       const float along = rx * ca + ry * sa;
       const float u = along / p.length;
-      if (u < -0.04f || u > 1.06f) continue;
+      if (u < -0.18f || u > 1.06f) continue;
 
       const float uc = clampf(u, 0.0f, 1.0f);
       const float spineOffset = p.curvature * p.length * uc * uc;
       const float perp = (-rx * sa + ry * ca) - spineOffset;
 
-      // Lanceolate / ovate leaf blade envelope with pointed acuminate tip.
-      float env = std::sin(std::pow(uc, 0.68f) * kPi) * (1.0f - 0.25f * uc);
-      if (serrated && uc > 0.16f && uc < 0.92f) {
-        env *= (1.0f + 0.085f * std::sin(uc * 34.0f));
+      float env = 0.0f;
+      float baseCut = 0.0f;
+      if (style == LeafStyle::HeartCordate) {
+        // Broad heart-shaped ivy / morning-glory leaf with twin basal auricle lobes!
+        const float uShift = clampf((u + 0.14f) / 1.14f, 0.0f, 1.0f);
+        env = std::sin(std::pow(uShift, 0.52f) * kPi) * (1.08f - 0.36f * uShift);
+        const float vAbs = std::fabs(perp) / std::max(1.0f, p.width * 0.5f);
+        baseCut = -0.13f * std::sin(clampf(vAbs * 1.4f, 0.0f, 1.0f) * kPi);  // Cordate basal notch!
+      } else if (style == LeafStyle::ScallopedOak) {
+        // Multi-lobed scalloped oak / acanthus leaf!
+        env = std::sin(std::pow(uc, 0.62f) * kPi) * (0.76f + 0.28f * std::fabs(std::cos(uc * kPi * 3.5f)));
+      } else {
+        // Lanceolate / ovate leaf blade envelope with pointed acuminate tip.
+        env = std::sin(std::pow(uc, 0.68f) * kPi) * (1.0f - 0.25f * uc);
+        if (serrated && uc > 0.16f && uc < 0.92f) {
+          env *= (1.0f + 0.085f * std::sin(uc * 34.0f));
+        }
       }
+
       const float halfW = p.width * 0.5f * env;
       const float dSide = std::fabs(perp) - halfW;
       const float dTip = (u - 1.0f) * p.length;
-      const float dBase = -u * p.length;
+      const float dBase = (baseCut - u) * p.length;
       const float sdf = std::max({dSide, dTip, dBase});
 
       if (sdf > 1.35f) continue;
@@ -1771,7 +2587,6 @@ void rasterizeLeafInStrip(const ScenePrim& p, int stripY0, int stripH, int W, ui
       }
 
       if (style == LeafStyle::SolidInkBamboo) {
-        // Pure crisp 1-bit ink silhouette with slender midrib highlight on wide blades.
         if (p.width >= 6.5f && std::fabs(perp) < 0.55f && uc > 0.12f && uc < 0.72f) {
           lumBuf[rowOff + x] = 255;
           modeBuf[rowOff + x] = PM_SOLID_WHITE;
@@ -1780,23 +2595,20 @@ void rasterizeLeafInStrip(const ScenePrim& p, int stripY0, int stripH, int W, ui
           modeBuf[rowOff + x] = PM_SOLID_INK;
         }
       } else if (style == LeafStyle::InkWashBamboo) {
-        // Background 50% Atkinson ink-wash bamboo leaf for classical brush depth!
         lumBuf[rowOff + x] = static_cast<uint8_t>(lerpf(118.0f, 175.0f, uc));
         modeBuf[rowOff + x] = PM_ATKINSON;
       } else {
-        // WoodcutHalfShade: crisp ink margin + central midrib + bilateral shaded/sunlit halves!
-        if (sdf >= -1.12f || (std::fabs(perp) <= 0.68f && uc < 0.88f)) {
+        // WoodcutHalfShade / HeartCordate / ScallopedOak: crisp ink margin + midrib + bilateral woodcut shading!
+        if (sdf >= -1.12f || (std::fabs(perp) <= 0.68f && uc > 0.0f && uc < 0.88f)) {
           lumBuf[rowOff + x] = 0;
           modeBuf[rowOff + x] = PM_SOLID_INK;
         } else if (perp > 0.0f) {
-          // Shaded half of leaf: Atkinson midtone + diagonal lateral woodcut veins!
           const float diagVein = std::sin((uc * p.length - perp * 0.85f) * 1.15f);
           float lum = lerpf(118.0f, 205.0f, uc * 0.65f + (perp / std::max(1.0f, halfW)) * 0.35f);
           if (diagVein > 0.78f) lum -= 52.0f;
           lumBuf[rowOff + x] = static_cast<uint8_t>(clampf(lum, 30.0f, 245.0f));
           modeBuf[rowOff + x] = PM_ATKINSON;
         } else {
-          // Sunlit half of leaf: crisp bright paper with sparse rim stipple!
           const float rim = clampf(-sdf / std::max(1.5f, halfW), 0.0f, 1.0f);
           lumBuf[rowOff + x] = (rim < 0.24f) ? 212 : 255;
           modeBuf[rowOff + x] = (rim < 0.24f) ? PM_ATKINSON : PM_SOLID_WHITE;
@@ -1817,7 +2629,6 @@ void rasterizeDiscInStrip(const ScenePrim& p, int stripY0, int stripH, int W, ui
   const auto kind = static_cast<DiscKind>(p.subKind);
 
   if (kind == DiscKind::StamenCrown || kind == DiscKind::PlumCalyxPins) {
-    // Receptacle center + radiating filament hairlines + crisp black anther dots!
     const float coreR = p.r0 * (kind == DiscKind::PlumCalyxPins ? 0.36f : 0.56f);
     for (int y = yStart; y <= yEnd; ++y) {
       const int rowOff = (y - stripY0) * W;
@@ -1865,27 +2676,111 @@ void rasterizeDiscInStrip(const ScenePrim& p, int stripY0, int stripH, int W, ui
     return;
   }
 
-  if (kind == DiscKind::FacetedCompassStar) {
-    // Classic 4-point faceted compass star with alternating black & white bevels!
+  if (kind == DiscKind::FacetedCompassStar || kind == DiscKind::CelestialStar4) {
+    const bool needle = (kind == DiscKind::CelestialStar4);
     for (int y = yStart; y <= yEnd; ++y) {
       const int rowOff = (y - stripY0) * W;
       const float dy = static_cast<float>(y) - p.y0;
       for (int x = xStart; x <= xEnd; ++x) {
         const float dx = static_cast<float>(x) - p.x0;
         const float r = std::hypot(dx, dy);
-        if (r > p.r0 + 1.5f) continue;
+        if (r > p.r0 + 1.6f) continue;
         const float theta = std::atan2(dy, dx) - p.angle;
-        const float starProfile = p.r0 * (0.24f + 0.76f * std::pow(std::fabs(std::cos(2.0f * theta)), 2.6f));
+        float starProfile = 0.0f;
+        if (needle) {
+          // Slender copperplate celestial needle star: 4 long primary rays + 4 short diagonal glints!
+          const float mainRay = std::pow(std::fabs(std::cos(2.0f * theta)), 6.0f);
+          const float diagRay = 0.42f * std::pow(std::fabs(std::sin(2.0f * theta)), 8.0f);
+          starProfile = p.r0 * (0.14f + 0.86f * std::max(mainRay, diagRay));
+        } else {
+          starProfile = p.r0 * (0.24f + 0.76f * std::pow(std::fabs(std::cos(2.0f * theta)), 2.6f));
+        }
         if (r <= starProfile) {
-          const int octant = static_cast<int>(std::floor(((theta + kTwoPi) / (kPi * 0.25f)))) & 1;
-          if (r >= starProfile - 0.95f || octant == 0) {
-            lumBuf[rowOff + x] = 0;
-            modeBuf[rowOff + x] = PM_SOLID_INK;
+          if (needle) {
+            if (r < p.r0 * 0.16f) {
+              lumBuf[rowOff + x] = 255;
+              modeBuf[rowOff + x] = PM_SOLID_WHITE;
+            } else {
+              lumBuf[rowOff + x] = 0;
+              modeBuf[rowOff + x] = PM_SOLID_INK;
+            }
           } else {
+            const int octant = static_cast<int>(std::floor(((theta + kTwoPi) / (kPi * 0.25f)))) & 1;
+            if (r >= starProfile - 0.95f || octant == 0) {
+              lumBuf[rowOff + x] = 0;
+              modeBuf[rowOff + x] = PM_SOLID_INK;
+            } else {
+              lumBuf[rowOff + x] = 255;
+              modeBuf[rowOff + x] = PM_SOLID_WHITE;
+            }
+          }
+        } else if (r <= starProfile + 1.35f && modeBuf[rowOff + x] != PM_SOLID_INK) {
+          lumBuf[rowOff + x] = 255;
+          modeBuf[rowOff + x] = PM_SOLID_WHITE;
+        }
+      }
+    }
+    return;
+  }
+
+  if (kind == DiscKind::RingedStar) {
+    // 2nd-magnitude Uranometria bullseye star: solid core + white moat + fine ink ring!
+    for (int y = yStart; y <= yEnd; ++y) {
+      const int rowOff = (y - stripY0) * W;
+      for (int x = xStart; x <= xEnd; ++x) {
+        const float r = std::hypot(static_cast<float>(x) - p.x0, static_cast<float>(y) - p.y0);
+        if (r > p.r0 + 1.3f) continue;
+        if (r > p.r0) {
+          if (modeBuf[rowOff + x] != PM_SOLID_INK) {
             lumBuf[rowOff + x] = 255;
             modeBuf[rowOff + x] = PM_SOLID_WHITE;
           }
-        } else if (r <= starProfile + 1.35f && modeBuf[rowOff + x] != PM_SOLID_INK) {
+        } else if (r >= p.r0 - 0.85f || r <= p.r0 * 0.38f) {
+          lumBuf[rowOff + x] = 0;
+          modeBuf[rowOff + x] = PM_SOLID_INK;
+        } else {
+          lumBuf[rowOff + x] = 255;
+          modeBuf[rowOff + x] = PM_SOLID_WHITE;
+        }
+      }
+    }
+    return;
+  }
+
+  if (kind == DiscKind::RingedPlanet) {
+    // Miniature Saturn: tilted elliptical ring + 3D shaded planet globe!
+    const float ca = std::cos(p.angle);
+    const float sa = std::sin(p.angle);
+    for (int y = yStart; y <= yEnd; ++y) {
+      const int rowOff = (y - stripY0) * W;
+      const float dy = static_cast<float>(y) - p.y0;
+      for (int x = xStart; x <= xEnd; ++x) {
+        const float dx = static_cast<float>(x) - p.x0;
+        const float rx = dx * ca + dy * sa;
+        const float ry = -dx * sa + dy * ca;
+        const float dist = std::hypot(dx, dy);
+        const float ellR = std::hypot(rx / 2.15f, ry / 0.58f);
+        const bool inRing = (ellR >= p.r0 * 0.68f && ellR <= p.r0 * 1.02f);
+        const bool frontRing = inRing && (ry >= 0.0f);
+
+        if (frontRing || (inRing && dist > p.r0 + 1.0f)) {
+          if (std::fabs(ellR - p.r0 * 0.85f) < p.r0 * 0.06f) {
+            lumBuf[rowOff + x] = 255;
+            modeBuf[rowOff + x] = PM_SOLID_WHITE;  // Cassini division highlight!
+          } else {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_SOLID_INK;
+          }
+        } else if (dist <= p.r0) {
+          if (dist >= p.r0 - 1.0f) {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_SOLID_INK;
+          } else {
+            const float lit = clampf(0.55f - 0.45f * (dx / p.r0) - 0.35f * (dy / p.r0), 0.08f, 1.0f);
+            lumBuf[rowOff + x] = static_cast<uint8_t>(lerpf(45.0f, 248.0f, lit));
+            modeBuf[rowOff + x] = PM_ATKINSON;
+          }
+        } else if (dist <= p.r0 + 1.3f && modeBuf[rowOff + x] != PM_SOLID_INK) {
           lumBuf[rowOff + x] = 255;
           modeBuf[rowOff + x] = PM_SOLID_WHITE;
         }
@@ -1907,7 +2802,6 @@ void rasterizeDiscInStrip(const ScenePrim& p, int stripY0, int stripH, int W, ui
       const float dist = std::hypot(dx, dy);
 
       if (kind == DiscKind::SeigaihaScale) {
-        // Woodblock scalloped Seigaiha (青海波) upper semicircle wave scale!
         if (dy > p.r0 * 0.55f || dist > p.r0 + 1.4f) continue;
         if (dist > p.r0) {
           lumBuf[rowOff + x] = 255;
@@ -1915,13 +2809,11 @@ void rasterizeDiscInStrip(const ScenePrim& p, int stripY0, int stripH, int W, ui
           continue;
         }
         const float uRad = dist / p.r0;
-        // 4 concentric crisp woodblock crest arcs + radial indigo-to-foam Atkinson tonal wash!
         const float ringWave = std::fabs(std::sin(uRad * kPi * 4.0f));
         if (dist >= p.r0 - 1.15f || (ringWave < 0.14f && uRad > 0.18f)) {
           lumBuf[rowOff + x] = 0;
           modeBuf[rowOff + x] = PM_SOLID_INK;
         } else if (uRad > 0.88f) {
-          // Crisp white foam highlight just inside outer wave crest!
           lumBuf[rowOff + x] = 255;
           modeBuf[rowOff + x] = PM_SOLID_WHITE;
         } else {
@@ -1944,7 +2836,19 @@ void rasterizeDiscInStrip(const ScenePrim& p, int stripY0, int stripH, int W, ui
         continue;
       }
 
-      if (kind == DiscKind::Moon3D) {
+      if (kind == DiscKind::SeedheadDome) {
+        // Convex cross-hatched sunflower / daisy seedhead dome!
+        const float hatchA = std::fabs(std::sin((dx + dy) * 0.88f));
+        const float hatchB = std::fabs(std::sin((dx - dy) * 0.88f));
+        if (hatchA < 0.22f || hatchB < 0.22f) {
+          lumBuf[rowOff + x] = 0;
+          modeBuf[rowOff + x] = PM_SOLID_INK;
+        } else {
+          const float domeLit = std::sqrt(std::max(0.0f, 1.0f - (dist * dist) / (p.r0 * p.r0)));
+          lumBuf[rowOff + x] = static_cast<uint8_t>(lerpf(95.0f, 245.0f, domeLit));
+          modeBuf[rowOff + x] = PM_ATKINSON;
+        }
+      } else if (kind == DiscKind::Moon3D) {
         const float nx = dx / p.r0;
         const float ny = dy / p.r0;
         const float nz = std::sqrt(std::max(0.0f, 1.0f - nx * nx - ny * ny));
@@ -1952,7 +2856,6 @@ void rasterizeDiscInStrip(const ScenePrim& p, int stripY0, int stripH, int W, ui
         const float maria = fbm2D((nx + 1.5f) * 3.2f, (ny + 1.5f) * 3.2f, p.seed);
         float lum = 0.0f;
         if (ndotl <= -0.06f) {
-          // Earthshine shadow side: deep velvety dark stipple with subtle limb glow.
           lum = 22.0f + 26.0f * (1.0f - nz);
         } else {
           const float lit = smoothstepf(-0.06f, 0.82f, ndotl);
@@ -1975,7 +2878,6 @@ void rasterizeDiscInStrip(const ScenePrim& p, int stripY0, int stripH, int W, ui
           modeBuf[rowOff + x] = PM_ATKINSON;
         }
       } else {
-        // StippledBud / Berry / Star dot
         if (p.lumB <= 30) {
           lumBuf[rowOff + x] = 0;
           modeBuf[rowOff + x] = PM_SOLID_INK;
@@ -1984,6 +2886,245 @@ void rasterizeDiscInStrip(const ScenePrim& p, int stripY0, int stripH, int W, ui
           const float lum = lerpf(255.0f, static_cast<float>(p.lumA), clampf(spec * 0.78f, 0.0f, 1.0f));
           lumBuf[rowOff + x] = static_cast<uint8_t>(lum);
           modeBuf[rowOff + x] = PM_ATKINSON;
+        }
+      }
+    }
+  }
+}
+
+// Smooth polynomial union + tapered 2D capsule distance helpers for woodcut Garden Fauna!
+inline float smin2D(float a, float b, float k) {
+  const float h = clampf(0.5f + 0.5f * (b - a) / k, 0.0f, 1.0f);
+  return lerpf(b, a, h) - k * h * (1.0f - h);
+}
+
+inline float sdCapsuleTapered(float px, float py, float ax, float ay, float bx, float by, float ra, float rb) {
+  const float vx = bx - ax;
+  const float vy = by - ay;
+  const float len2 = vx * vx + vy * vy;
+  const float t = (len2 > 1e-5f) ? clampf(((px - ax) * vx + (py - ay) * vy) / len2, 0.0f, 1.0f) : 0.0f;
+  return std::hypot(px - (ax + t * vx), py - (ay + t * vy)) - lerpf(ra, rb, t);
+}
+
+void rasterizeCreatureInStrip(const ScenePrim& p, int stripY0, int stripH, int W, uint8_t* lumBuf, uint8_t* modeBuf) {
+  const int yStart = std::max<int>(stripY0, p.box.y0);
+  const int yEnd = std::min<int>(stripY0 + stripH - 1, p.box.y1);
+  if (yStart > yEnd) return;
+  const int xStart = std::max<int>(0, p.box.x0);
+  const int xEnd = std::min<int>(W - 1, p.box.x1);
+  if (xStart > xEnd) return;
+
+  const auto kind = static_cast<CreatureKind>(p.subKind);
+  const float S = std::max(12.0f, p.r0);
+  const float invS = 1.0f / S;
+  const float ca = std::cos(p.angle);
+  const float sa = std::sin(p.angle);
+  const float facing = (p.curvature >= 0.0f) ? 1.0f : -1.0f;
+  const float pxOutline = 1.15f * invS;
+  const float pxHalo = 1.40f * invS;
+
+  for (int y = yStart; y <= yEnd; ++y) {
+    const int rowOff = (y - stripY0) * W;
+    const float dy = static_cast<float>(y) - p.y0;
+    for (int x = xStart; x <= xEnd; ++x) {
+      const float dx = static_cast<float>(x) - p.x0;
+      const float rotX = dx * ca + dy * sa;
+      const float rotY = -dx * sa + dy * ca;
+      const float u = (rotX * facing) * invS;
+      const float v = rotY * invS;
+
+      if (kind == CreatureKind::Hummingbird) {
+        if (u < -1.25f || u > 1.42f || v < -1.18f || v > 0.95f) continue;
+
+        // 1. Far background beating wing (tilted slightly forward-upward behind shoulder)
+        const float dFarWing = sdCapsuleTapered(u, v, 0.08f, -0.18f, -0.34f, -0.92f, 0.14f, 0.06f);
+        // 2. Near swept-back primary wing (sweeping from shoulder (0.02, -0.10) to wingtip (-0.98, -0.88))
+        float dNearWing = 10.0f;
+        float wingT = 0.0f;
+        float wingPerp = 0.0f;
+        {
+          const float wx0 = 0.02f, wy0 = -0.10f, wx1 = -0.98f, wy1 = -0.88f;
+          const float wdx = wx1 - wx0, wdy = wy1 - wy0;
+          const float wLen = std::hypot(wdx, wdy);
+          const float ux = wdx / wLen, uy = wdy / wLen;
+          // Trailing edge bulges downward-back (+perp)!
+          const float along = (u - wx0) * ux + (v - wy0) * uy;
+          wingT = clampf(along / wLen, 0.0f, 1.0f);
+          wingPerp = -(u - wx0) * uy + (v - wy0) * ux;  // <0 above leading edge, >0 toward trailing feathers
+          const float chord = 0.34f * std::sin(std::pow(wingT, 0.52f) * kPi) *
+                              (1.0f + 0.08f * std::cos(wingT * kPi * 11.0f));  // 6 scalloped primary feathers!
+          if (along >= -0.04f && along <= wLen + 0.04f) {
+            const float dLead = -wingPerp - 0.035f * (1.0f - 0.5f * wingT);
+            const float dTrail = wingPerp - chord;
+            const float dTips = std::max(-along, along - wLen);
+            dNearWing = std::max({dLead, dTrail, dTips});
+          }
+        }
+
+        // 3. Fanned tail feathers from rump (-0.28, 0.25) to (-0.86, 0.68)
+        float dTail = 10.0f;
+        for (int f = 0; f < 3; ++f) {
+          const float ta = 2.34f + f * 0.19f;
+          const float tl = (f == 1) ? 0.58f : 0.50f;
+          dTail = std::min(dTail, sdCapsuleTapered(u, v, -0.26f, 0.22f, -0.26f + std::cos(ta) * tl,
+                                                   0.22f + std::sin(ta) * tl, 0.065f, 0.045f));
+        }
+
+        // 4. Streamlined Head + Arched Neck + Plump Breast + Rump + Needle Bill
+        const float dHead = std::hypot(u - 0.30f, v + 0.22f) - 0.175f;
+        const float dChest = std::hypot(u - 0.12f, v + 0.04f) - 0.215f;
+        const float dBelly = std::hypot(u + 0.08f, v - 0.11f) - 0.195f;
+        const float dRump = std::hypot(u + 0.26f, v - 0.23f) - 0.125f;
+        const float dTorso = smin2D(smin2D(dHead, dChest, 0.11f), smin2D(dBelly, dRump, 0.11f), 0.11f);
+        // Slightly decurved needle bill reaching forward to (+1.26, -0.18)!
+        const float dBeak = sdCapsuleTapered(u, v + 0.025f * std::sin(clampf((u - 0.44f) / 0.82f, 0.0f, 1.0f) * kPi),
+                                             0.43f, -0.22f, 1.26f, -0.18f, 0.042f, 0.018f);
+
+        const float dAll = std::min({dNearWing, dTorso, dBeak, dTail, dFarWing});
+        if (dAll > pxHalo) continue;
+
+        if (dAll > 0.0f) {
+          if (modeBuf[rowOff + x] != PM_SOLID_INK) {
+            lumBuf[rowOff + x] = 255;
+            modeBuf[rowOff + x] = PM_SOLID_WHITE;
+          }
+          continue;
+        }
+
+        // Foreground priority: 1) Near Wing, 2) Beak, 3) Torso/Head, 4) Tail, 5) Far Wing!
+        if (dNearWing <= 0.0f) {
+          // Feather shaft lines radiating from shoulder to scalloped primaries!
+          const float featherAngle = std::atan2(wingPerp + 0.02f, wingT * 1.1f + 0.05f);
+          const bool shaftLine =
+              (wingT > 0.18f && wingPerp > 0.02f) && (std::fabs(std::sin(featherAngle * 14.0f)) < 0.14f);
+          if (dNearWing >= -pxOutline || shaftLine) {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_SOLID_INK;
+          } else {
+            const float wingLum = lerpf(92.0f, 232.0f, clampf(1.0f - wingPerp * 2.4f, 0.0f, 1.0f));
+            lumBuf[rowOff + x] = static_cast<uint8_t>(wingLum);
+            modeBuf[rowOff + x] = PM_ATKINSON;
+          }
+        } else if (dBeak <= 0.0f) {
+          lumBuf[rowOff + x] = 0;
+          modeBuf[rowOff + x] = PM_SOLID_INK;
+        } else if (dTorso <= 0.0f) {
+          const float dEye = std::hypot(u - 0.32f, v + 0.24f);
+          if (dEye <= 0.055f) {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_SOLID_INK;  // Crisp pupil!
+          } else if (dEye <= 0.095f) {
+            lumBuf[rowOff + x] = 255;
+            modeBuf[rowOff + x] = PM_SOLID_WHITE;  // Sparkling white eye-ring!
+          } else if (dTorso >= -pxOutline) {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_SOLID_INK;
+          } else if (u > 0.14f && v > -0.18f && v < 0.04f) {
+            // Iridescent dark stippled hummingbird gorget throat!
+            lumBuf[rowOff + x] = 68;
+            modeBuf[rowOff + x] = PM_ATKINSON;
+          } else {
+            // Bright sunlit breast + shaded dorsal crown/back!
+            const float bellyBright = clampf((u * 0.6f + v * 1.4f + 0.35f), 0.0f, 1.0f);
+            lumBuf[rowOff + x] = static_cast<uint8_t>(lerpf(108.0f, 245.0f, bellyBright));
+            modeBuf[rowOff + x] = PM_ATKINSON;
+          }
+        } else if (dTail <= 0.0f) {
+          if (dTail >= -pxOutline * 0.9f) {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_SOLID_INK;
+          } else {
+            lumBuf[rowOff + x] = 115;
+            modeBuf[rowOff + x] = PM_ATKINSON;
+          }
+        } else if (dFarWing <= 0.0f) {
+          if (dFarWing >= -pxOutline * 0.9f) {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_SOLID_INK;
+          } else {
+            lumBuf[rowOff + x] = 118;
+            modeBuf[rowOff + x] = PM_ATKINSON;
+          }
+        }
+      } else {
+        // CreatureKind::TreeFrog — alert raised sitting posture resting directly atop a vine (v = 0)!
+        if (u < -0.82f || u > 0.86f || v < -0.92f || v > 0.25f) continue;
+
+        // 1. Alert 30-degree raised amphibian torso + rounded snout + prominent raised frog eye dome!
+        const float bu = (u + 0.02f) * 0.90f - (v + 0.34f) * 0.43f;
+        const float bv = (u + 0.02f) * 0.43f + (v + 0.34f) * 0.90f;
+        const float dBack = (std::hypot(bu / 0.46f, bv / 0.24f) - 1.0f) * 0.24f;
+        const float dSnout = sdCapsuleTapered(u, v, 0.22f, -0.42f, 0.56f, -0.34f, 0.21f, 0.115f);
+        const float dEyeDome = std::hypot(u - 0.30f, v + 0.59f) - 0.145f;
+        const float dVocalSac = std::hypot(u - 0.28f, v + 0.26f) - 0.17f;
+        float dBody = smin2D(smin2D(dBack, dSnout, 0.10f), smin2D(dEyeDome, dVocalSac, 0.09f), 0.08f);
+        dBody = std::max(dBody, v + 0.01f);
+
+        // 2. Bold Z-folded foreground hind leg (thigh + calf) + sturdy front arm + sticky tree-frog toe discs!
+        const float lu = (u + 0.20f) * 0.95f - (v + 0.17f) * 0.30f;
+        const float lv = (u + 0.20f) * 0.30f + (v + 0.17f) * 0.95f;
+        const float dHindLeg = (std::hypot(lu / 0.29f, lv / 0.145f) - 1.0f) * 0.145f;
+        float dToes = sdCapsuleTapered(u, v, 0.19f, -0.26f, 0.34f, 0.02f, 0.082f, 0.060f);  // Sturdy forearm!
+        for (int t = 0; t < 3; ++t) {
+          dToes = std::min(dToes, std::hypot(u - (-0.24f + t * 0.095f), v - 0.03f) - 0.056f);  // Hind toe pads
+          dToes = std::min(dToes, std::hypot(u - (0.29f + t * 0.085f), v - 0.03f) - 0.052f);   // Front toe pads
+        }
+
+        const float dAll = std::min({dHindLeg, dToes, dBody});
+        if (dAll > pxHalo) continue;
+
+        if (dAll > 0.0f) {
+          if (modeBuf[rowOff + x] != PM_SOLID_INK) {
+            lumBuf[rowOff + x] = 255;
+            modeBuf[rowOff + x] = PM_SOLID_WHITE;
+          }
+          continue;
+        }
+
+        if (dToes <= 0.0f) {
+          if (dToes >= -pxOutline * 0.95f) {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_SOLID_INK;
+          } else {
+            lumBuf[rowOff + x] = 172;
+            modeBuf[rowOff + x] = PM_ATKINSON;
+          }
+        } else if (dHindLeg <= 0.0f) {
+          if (dHindLeg >= -pxOutline) {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_SOLID_INK;
+          } else {
+            lumBuf[rowOff + x] = static_cast<uint8_t>(lerpf(122.0f, 224.0f, clampf(-lv * 4.6f + 0.45f, 0.0f, 1.0f)));
+            modeBuf[rowOff + x] = PM_ATKINSON;
+          }
+        } else if (dHindLeg <= pxOutline * 1.25f && v < -0.10f) {
+          lumBuf[rowOff + x] = 255;
+          modeBuf[rowOff + x] = PM_SOLID_WHITE;  // Crisp white separation highlight over tucked thigh!
+        } else {
+          const float dEye = std::hypot(u - 0.31f, v + 0.58f);
+          const bool mouthSmile = (u > 0.28f && u < 0.62f && std::fabs(v + 0.30f - (u - 0.45f) * 0.16f) < 0.025f);
+          const bool dorsalSpot =
+              (std::hypot(u + 0.04f, v + 0.44f) < 0.072f) || (std::hypot(u + 0.22f, v + 0.35f) < 0.060f);
+          if (dEye <= 0.062f && std::fabs(v + 0.58f) < 0.036f) {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_SOLID_INK;  // Horizontal frog pupil!
+          } else if (dEye <= 0.108f) {
+            lumBuf[rowOff + x] = 255;
+            modeBuf[rowOff + x] = PM_SOLID_WHITE;  // Bright iris!
+          } else if (dEye <= 0.142f || dBody >= -pxOutline || mouthSmile) {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_SOLID_INK;
+          } else if (dorsalSpot) {
+            lumBuf[rowOff + x] = 65;
+            modeBuf[rowOff + x] = PM_ATKINSON;
+          } else if (v > -0.32f && u > 0.08f) {
+            lumBuf[rowOff + x] = 246;
+            modeBuf[rowOff + x] = PM_ATKINSON;  // Pale sunlit vocal sac & chest!
+          } else {
+            const float shade = clampf((-v - 0.14f) * 1.45f, 0.0f, 1.0f);
+            lumBuf[rowOff + x] = static_cast<uint8_t>(lerpf(228.0f, 118.0f, shade));
+            modeBuf[rowOff + x] = PM_ATKINSON;
+          }
         }
       }
     }
@@ -2013,7 +3154,6 @@ void rasterizeWashInStrip(const ScenePrim& p, const ClearanceField& field, int s
       const float fade = smoothstepf(14.0f, 34.0f, c);
 
       if (p.subKind == 0) {
-        // Distant Shan-Shui mountain ridge silhouette fading into misty white paper below!
         const float u = (fx - p.x0) / boxW;
         const float ridgeH = p.y0 + boxH * (0.28f + 0.26f * fbm2D(u * 4.2f, 0.5f, p.seed));
         if (fy >= ridgeH) {
@@ -2028,13 +3168,13 @@ void rasterizeWashInStrip(const ScenePrim& p, const ClearanceField& field, int s
           }
         }
       } else {
-        // Soft diagonal Milky Way stardust nebula band!
+        // Smooth subtle Milky Way stardust sweep (no blotchy isolated puddles!)
         const float nx = (fx - 0.5f * (p.x0 + p.x1)) / (boxW * 0.5f);
         const float ny = (fy - 0.5f * (p.y0 + p.y1)) / (boxH * 0.5f);
-        const float bandDist = std::fabs(nx * 0.58f + ny * 0.81f + 0.18f * std::sin(nx * 3.0f));
-        if (bandDist < 0.42f) {
-          const float dust = fbm2D(fx * 0.035f, fy * 0.035f, p.seed);
-          const float strength = (1.0f - bandDist / 0.42f) * dust * fade;
+        const float bandDist = std::fabs(nx * 0.52f + ny * 0.85f + 0.14f * std::sin(nx * 2.4f));
+        if (bandDist < 0.34f) {
+          const float gauss = std::cos((bandDist / 0.34f) * kPi * 0.5f);
+          const float strength = gauss * gauss * fade * 0.72f;
           const float lum = lerpf(255.0f, static_cast<float>(p.lumA), strength);
           if (lum < 244.0f) {
             lumBuf[rowOff + x] = static_cast<uint8_t>(lum);
@@ -2092,6 +3232,9 @@ void compositeAndDitherScene(const GfxRenderer& renderer, const ClearanceField& 
           break;
         case PrimType::Wash:
           rasterizeWashInStrip(prim, field, stripY0, stripH, W, lumBuf.get(), modeBuf.get());
+          break;
+        case PrimType::Creature:
+          rasterizeCreatureInStrip(prim, stripY0, stripH, W, lumBuf.get(), modeBuf.get());
           break;
       }
     }
