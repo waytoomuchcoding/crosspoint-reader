@@ -90,6 +90,26 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
+### Version 76
+
+Version 76 appends `zhRubyStyle` (`u8`) and `zhFontFamilyHash` (`u32`) to the
+section header (before `pageCount`) and rebuilds completed and partial sections.
+Switching between beside-character and under-character zhuyin placement or
+changing the Chinese fallback font family now invalidates cached pages cleanly.
+Book metadata and saved progress are kept.
+
+### Version 75
+
+Version 75 keeps the version 74 binary layout and rebuilds completed and partial
+sections because zhuyin ruby block widths scale with the character em size.
+Book metadata and saved progress are kept.
+
+### Version 74
+
+Version 74 adds `zhRubyThreshold` (`u32`) to the section header and encodes
+zhuyin annotations in per-word ruby strings (`\x1B` + 6 hex digits). Book
+metadata and saved progress are kept.
+
 ### Version 73
 
 Version 73 keeps the binary layout and rebuilds completed and partial sections.

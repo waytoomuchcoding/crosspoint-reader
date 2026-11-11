@@ -321,6 +321,9 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
     requestResave();
   }
 
+  zh::setRubyThreshold(zh::rubyThresholdForStep(zhRuby));
+  zh::setRubyUnderLine(zhRubyStyle != ZH_RUBY_BESIDE);
+
   LOG_DBG("CPS", "Settings loaded from file");
 
   return true;
@@ -360,6 +363,7 @@ ReaderRenderSpec CrossPointSettings::readerRenderSpec(const uint16_t viewportWid
   spec.imageRendering = imageRendering == IMAGES_DISPLAY_BW ? static_cast<uint8_t>(IMAGES_DISPLAY) : imageRendering;
   spec.focusReadingEnabled = focusReadingEnabled != 0;
   spec.zhRubyThreshold = zh::rubyThresholdForStep(zhRuby);
+  spec.zhRubyStyle = spec.zhRubyThreshold != 0 ? zhRubyStyle : 0;
   return spec;
 }
 

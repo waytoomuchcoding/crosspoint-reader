@@ -54,12 +54,17 @@ struct Segment {
 
 constexpr size_t MAX_RUN = 64;
 
-// Working memory for segmentRun, allocated once when the dictionary opens.
+// Working memory for segmentRun and paragraph ruby tagging, allocated once when
+// the dictionary opens so ESP32-C3 layout stacks stay small.
 struct SegmentScratch {
   WordMatch matches[MAX_MATCHES];
   float best[MAX_RUN + 1];
   Segment seg[MAX_RUN + 1];
   uint8_t path[MAX_RUN + 1];
+  uint32_t selfRank[MAX_RUN];
+  uint32_t selfZhuyin[MAX_RUN];
+  uint32_t runCps[MAX_RUN];
+  uint16_t runWord[MAX_RUN];
 };
 
 class Dict {
@@ -150,10 +155,12 @@ Dict& sharedDict();
 bool openSharedDict();
 void resetSharedDict();
 
-// Ruby frequency threshold used by layout, set from the reader settings before
-// a section is laid out.
+// Ruby frequency threshold and placement used by layout, set from the reader
+// settings before a section is laid out.
 uint32_t rubyThreshold();
 void setRubyThreshold(uint32_t threshold);
+bool rubyUnderLine();
+void setRubyUnderLine(bool under);
 
 // Segments cps[0..n) (n <= MAX_RUN, all Han). Calls onSegment for each word in
 // order. Returns false if the dictionary is not open.
@@ -162,7 +169,7 @@ bool segmentRun(Dict& dict, const uint32_t* cps, size_t n, F&& onSegment);
 
 // Ruby setting: words whose rank is above the threshold get ruby.
 // 0 = ruby off, RUBY_ALL = every character with a reading.
-constexpr uint32_t RUBY_ALL = 0xFFFFFFFF;
+constexpr uint32_t RUBY_ALL = 0x3FFFFFFF;
 // Ruby block to the right of a character (DESIGN 7.2): gap, bopomofo column, gap,
 // tone column. The glyph set (5x7, 9x9 or 11x11) and an integer scale follow the
 // character's em (the advance of a full-width Han character, which can be less than
@@ -175,6 +182,10 @@ struct RubyStyle {
 RubyStyle rubyStyle(int em);
 // Width of the ruby block beside a character of this em.
 int rubyWidth(int em);
+// Horizontal width, extra cell advance, and vertical clearance for under-character ruby.
+int rubyUnderWidth(uint32_t code, int em);
+int rubyUnderExtraWidth(uint32_t code, int em);
+int rubyUnderHeight(int em);
 // Text measured for a font's em: CJK fonts give 一 a full-width advance.
 constexpr const char* EM_PROBE = "\xE4\xB8\x80";
 
@@ -188,11 +199,48 @@ inline bool wantsRuby(const Segment& seg, uint32_t threshold) {
   return threshold == RUBY_ALL || seg.rank > threshold;
 }
 
+// Common grammar particles and suffixes whose secondary or neutral-tone readings
+// should not trigger the polyphone exception inside compound words.
+inline bool isGrammarParticle(uint32_t cp) {
+  return cp == 0x4E86 ||  // 了
+         cp == 0x8FC7 ||  // 过
+         cp == 0x7684 ||  // 的
+         cp == 0x5730 ||  // 地
+         cp == 0x5F97 ||  // 得
+         cp == 0x5B50 ||  // 子
+         cp == 0x513F ||  // 儿
+         cp == 0x4EEC;    // 们
+}
+
+// Character-level ruby filter inside an uncommon word: annotates character k if
+// the character itself is rarer than threshold, or if it takes a non-neutral
+// polyphone reading different from its primary reading.
+inline bool wantsCharRuby(Dict& dict, const Segment& seg, uint8_t k, uint32_t cp, uint32_t threshold) {
+  if (!wantsRuby(seg, threshold) || k >= seg.len || seg.zhuyin[k] == 0) return false;
+  if (threshold == RUBY_ALL || seg.len == 1) return true;
+  const SegmentScratch* s = dict.scratch();
+  if (!s) return true;
+  const size_t idx = seg.start + k;
+  const uint32_t cRank = s->selfRank[idx];
+  const uint32_t cZhuyin = s->selfZhuyin[idx];
+  if (cRank > threshold) return true;
+  const uint32_t wZhuyin = seg.zhuyin[k];
+  if (!isGrammarParticle(cp) && cZhuyin != 0 && zhuyinTone(wZhuyin) != 5 && wZhuyin != cZhuyin) {
+    return true;
+  }
+  return false;
+}
+
 // Calls plot(x, y) for each black pixel of the ruby for `code`, relative to the
 // top-left of a ruby block beside a character of this em, centred on a line
 // lineHeight tall.
 template <typename F>
 void forEachRubyPixel(uint32_t code, int em, int lineHeight, F&& plot);
+
+// Calls plot(x, y) for each black pixel of the horizontal under-character ruby
+// for `code`, centred across `cellWidth` and positioned below `lineHeight`.
+template <typename F>
+void forEachRubyUnderPixel(uint32_t code, int em, int cellWidth, int lineHeight, F&& plot);
 
 // One reading of an entries.bin record; the strings point into the record buffer.
 // Record: reading count, then per reading: pinyin and traditional form (length

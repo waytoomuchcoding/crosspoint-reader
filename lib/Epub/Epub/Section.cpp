@@ -84,7 +84,9 @@ namespace {
 // v73: TrueType vector fonts load and advance .notdef for missing glyphs.
 // v74: Zhuyin ruby codes in per-word ruby strings; zhRubyThreshold in the header.
 // v75: Zhuyin ruby width follows the text size (narrower below 29 px, wider above 34 px).
-constexpr uint8_t SECTION_FILE_VERSION = 75;
+// v76: Explicit zhRubyStyle and zhFontFamilyHash in the section header; under-character
+//      zhuyin ruby layout and CJK fallback font changes invalidate cached sections.
+constexpr uint8_t SECTION_FILE_VERSION = 76;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
@@ -102,11 +104,11 @@ constexpr uint8_t SECTION_FILE_INCOMPLETE_VERSION = 0;
 // only fails (noisily, via the block-decode error path) when a page is loaded.
 // Derived so the pairing can't be forgotten: 0xFE for v28, 0xFD for v29, ...
 constexpr uint8_t SECTION_FILE_PARTIAL_VERSION = 0xFE - (SECTION_FILE_VERSION - 28);
-constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(float) + sizeof(bool) + sizeof(uint8_t) +
-                                 sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) + sizeof(bool) +
-                                 sizeof(uint8_t) + sizeof(bool) + sizeof(uint32_t) + sizeof(uint32_t) +
-                                 sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(int8_t) +
-                                 sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint32_t);
+constexpr uint32_t HEADER_SIZE =
+    sizeof(uint8_t) + sizeof(int) + sizeof(float) + sizeof(bool) + sizeof(uint8_t) + sizeof(uint16_t) +
+    sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) + sizeof(bool) + sizeof(uint8_t) + sizeof(bool) +
+    sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(int8_t) +
+    sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint32_t);
 }  // namespace
 
 // Out-of-line so the unique_ptr<ChapterHtmlSlimParser> in BuildContext can be
@@ -155,7 +157,8 @@ void Section::writeSectionFileHeader(const ReaderRenderSpec& spec) {
                                    sizeof(spec.viewportHeight) + sizeof(pageCount) + sizeof(spec.hyphenationEnabled) +
                                    sizeof(spec.embeddedStyle) + sizeof(spec.imageRendering) +
                                    sizeof(spec.focusReadingEnabled) + sizeof(spec.characterSpacing) +
-                                   sizeof(spec.wordSpacingPercent) + sizeof(spec.zhRubyThreshold) + sizeof(uint32_t) +
+                                   sizeof(spec.wordSpacingPercent) + sizeof(spec.zhRubyThreshold) +
+                                   sizeof(spec.zhRubyStyle) + sizeof(spec.zhFontFamilyHash) + sizeof(uint32_t) +
                                    sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t),
                 "Header size mismatch");
   // Written as the incomplete sentinel; finalizeBuild() patches it to
@@ -175,6 +178,8 @@ void Section::writeSectionFileHeader(const ReaderRenderSpec& spec) {
   serialization::writePod(file, spec.characterSpacing);
   serialization::writePod(file, spec.wordSpacingPercent);
   serialization::writePod(file, spec.zhRubyThreshold);
+  serialization::writePod(file, spec.zhRubyStyle);
+  serialization::writePod(file, spec.zhFontFamilyHash);
   serialization::writePod(file, pageCount);  // Placeholder for page count (will be initially 0, patched later)
   serialization::writePod(file, static_cast<uint32_t>(0));  // Placeholder for LUT offset (patched later)
   serialization::writePod(file, static_cast<uint32_t>(0));  // Placeholder for anchor map offset (patched later)
@@ -215,6 +220,8 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
     int8_t fileCharacterSpacing;
     uint8_t fileWordSpacingPercent;
     uint32_t fileZhRubyThreshold;
+    uint8_t fileZhRubyStyle;
+    uint32_t fileZhFontFamilyHash;
     serialization::readPod(file, fileFontId);
     serialization::readPod(file, fileLineCompression);
     serialization::readPod(file, fileExtraParagraphSpacing);
@@ -229,6 +236,8 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
     serialization::readPod(file, fileCharacterSpacing);
     serialization::readPod(file, fileWordSpacingPercent);
     serialization::readPod(file, fileZhRubyThreshold);
+    serialization::readPod(file, fileZhRubyStyle);
+    serialization::readPod(file, fileZhFontFamilyHash);
 
     if (spec.fontId != fileFontId || spec.lineCompression != fileLineCompression ||
         spec.extraParagraphSpacing != fileExtraParagraphSpacing ||
@@ -237,12 +246,15 @@ bool Section::loadSectionFile(const ReaderRenderSpec& spec) {
         spec.hyphenationEnabled != fileHyphenationEnabled || spec.embeddedStyle != fileEmbeddedStyle ||
         spec.imageRendering != fileImageRendering || spec.focusReadingEnabled != fileFocusReadingEnabled ||
         spec.characterSpacing != fileCharacterSpacing || spec.wordSpacingPercent != fileWordSpacingPercent ||
-        spec.zhRubyThreshold != fileZhRubyThreshold) {
+        spec.zhRubyThreshold != fileZhRubyThreshold || spec.zhRubyStyle != fileZhRubyStyle ||
+        spec.zhFontFamilyHash != fileZhFontFamilyHash) {
       file.close();
       LOG_ERR("SCT", "Deserialization failed: Parameters do not match");
       clearCache();
       return false;
     }
+    zh::setRubyThreshold(spec.zhRubyThreshold);
+    zh::setRubyUnderLine(spec.zhRubyStyle != 0);
   }
 
   serialization::readPod(file, pageCount);
@@ -498,6 +510,7 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
     const std::string& lang = epub->getLanguage();
     const bool otherCjk = lang.rfind("ja", 0) == 0 || lang.rfind("ko", 0) == 0;
     zh::setRubyThreshold(otherCjk ? 0 : spec.zhRubyThreshold);
+    zh::setRubyUnderLine(!otherCjk && spec.zhRubyStyle != 0);
   }
   build_ = std::move(ctx);
 

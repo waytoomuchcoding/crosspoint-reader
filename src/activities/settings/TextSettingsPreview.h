@@ -25,6 +25,8 @@ struct PreviewKey {
   uint8_t wordSpacingPercent = 100;
   bool focusReading = false;
   bool hyphenation = false;
+  uint8_t zhRuby = 0;
+  uint8_t zhRubyStyle = 0;
   bool operator==(const PreviewKey&) const = default;
 };
 

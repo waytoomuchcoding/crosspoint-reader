@@ -26,6 +26,10 @@ struct ReaderRenderSpec {
   bool focusReadingEnabled = false;
   // Zhuyin ruby frequency threshold (see ZhDict.h); 0 = off.
   uint32_t zhRubyThreshold = 0;
+  // Zhuyin ruby placement: 0 = beside character, 1 = under character.
+  uint8_t zhRubyStyle = 0;
+  // Hash of the preferred Chinese fallback font family name (0 = Auto).
+  uint32_t zhFontFamilyHash = 0;
 };
 
 // Stable signature for clipping anchors. Page-local word ordinals are valid
@@ -37,7 +41,7 @@ inline uint32_t readerRenderSpecSignature(const ReaderRenderSpec& spec) {
     signature *= 16777619U;
   };
   // Bump when the same spec values lay out differently, so old clipping word ranges stop matching.
-  constexpr uint32_t LAYOUT_SIGNATURE_VERSION = 1;
+  constexpr uint32_t LAYOUT_SIGNATURE_VERSION = 2;
   mix(LAYOUT_SIGNATURE_VERSION);
   mix(static_cast<uint32_t>(spec.fontId));
   mix(static_cast<uint32_t>(spec.lineCompression * 1000.0f));
@@ -52,5 +56,7 @@ inline uint32_t readerRenderSpecSignature(const ReaderRenderSpec& spec) {
   mix(spec.imageRendering);
   mix(spec.focusReadingEnabled);
   mix(spec.zhRubyThreshold);
+  mix(spec.zhRubyStyle);
+  mix(spec.zhFontFamilyHash);
   return signature == 0 ? 1 : signature;
 }

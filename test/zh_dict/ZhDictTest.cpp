@@ -288,4 +288,69 @@ TEST(ZhRuby, StyleFollowsTheTextSize) {
   }
 }
 
+TEST_F(ZhDictTest, CharacterFilterSkipsFamiliarCharsExceptNonNeutralPolyphones) {
+  auto* s = dict.scratch();
+  ASSERT_NE(s, nullptr);
+
+  // Simulate a 2-char rare compound word (rank 9000, threshold 3000):
+  // char 0 is rare (rank 6000), char 1 is familiar (rank 50) with its primary reading.
+  zh::Segment seg{};
+  seg.start = 0;
+  seg.len = 2;
+  seg.inDict = true;
+  seg.rank = 9000;
+  seg.zhuyin[0] = zhuyin("ㄏㄢ", 4);
+  seg.zhuyin[1] = zhuyin("ㄧㄢ", 1);
+  s->selfRank[0] = 6000;
+  s->selfZhuyin[0] = zhuyin("ㄏㄢ", 4);
+  s->selfRank[1] = 50;
+  s->selfZhuyin[1] = zhuyin("ㄧㄢ", 1);
+
+  EXPECT_TRUE(zh::wantsCharRuby(dict, seg, 0, 0x65F1, 3000));
+  EXPECT_FALSE(zh::wantsCharRuby(dict, seg, 1, 0x70DF, 3000));
+  EXPECT_TRUE(zh::wantsCharRuby(dict, seg, 1, 0x70DF, zh::RUBY_ALL));
+
+  // Polyphone exception: familiar character (着, U+7740) taking a secondary non-neutral
+  // reading (zhuó) in an uncommon compound gets ruby, while neutral tone (zhe) or
+  // grammar particle 得 (U+5F97) does not.
+  seg.zhuyin[1] = zhuyin("ㄓㄨㄛ", 2);
+  s->selfRank[1] = 30;
+  s->selfZhuyin[1] = zhuyin("ㄓㄜ", 5);
+  EXPECT_TRUE(zh::wantsCharRuby(dict, seg, 1, 0x7740, 3000));
+
+  seg.zhuyin[1] = zhuyin("ㄓㄜ", 5);
+  EXPECT_FALSE(zh::wantsCharRuby(dict, seg, 1, 0x7740, 3000));
+
+  seg.zhuyin[1] = zhuyin("ㄉㄟ", 3);
+  s->selfZhuyin[1] = zhuyin("ㄉㄜ", 2);
+  EXPECT_FALSE(zh::wantsCharRuby(dict, seg, 1, 0x5F97, 3000));
+}
+
+TEST(ZhRuby, UnderLinePixelsStayWithinCellAndClearance) {
+  for (const int em : {16, 24, 32, 48}) {
+    const int underH = zh::rubyUnderHeight(em);
+    EXPECT_GT(underH, 0);
+    for (const uint32_t code : {zhuyin("ㄓㄨㄤ", 3), zhuyin("ㄇㄧㄠ", 3), zhuyin("ㄉㄜ", 5), zhuyin("ㄚ", 1)}) {
+      const int w = zh::rubyUnderWidth(code, em);
+      const int extra = zh::rubyUnderExtraWidth(code, em);
+      const int cellW = em + extra;
+      EXPECT_GT(w, 0);
+      EXPECT_LE(w, cellW);
+      int count = 0, minX = 999, maxX = -999, minY = 999, maxY = -999;
+      zh::forEachRubyUnderPixel(code, em, cellW, em, [&](int x, int y) {
+        minX = std::min(minX, x);
+        maxX = std::max(maxX, x);
+        minY = std::min(minY, y);
+        maxY = std::max(maxY, y);
+        ++count;
+      });
+      EXPECT_GT(count, 0);
+      EXPECT_GE(minX, 0) << em;
+      EXPECT_LT(maxX, cellW) << em;
+      EXPECT_GT(minY, em) << em;
+      EXPECT_LT(maxY, em + underH) << em;
+    }
+  }
+}
+
 }  // namespace

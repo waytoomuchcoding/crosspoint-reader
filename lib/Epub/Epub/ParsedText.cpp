@@ -773,21 +773,29 @@ int ParsedText::resolveFirstLineIndent(const bool isFirstLine, const GfxRenderer
 void ParsedText::applyZhRuby() {
   const uint32_t threshold = zh::rubyThreshold();
   if (threshold == 0 || words.empty()) return;
-  zh::Dict& dict = zh::sharedDict();
-  if (!dict.isOpen() && !zh::openSharedDict()) return;
 
-  uint32_t run[zh::MAX_RUN];
-  uint16_t runWord[zh::MAX_RUN];
+  zh::Dict* dictPtr = nullptr;
+  zh::SegmentScratch* scratch = nullptr;
   size_t runLen = 0;
+  const auto ensureScratch = [&]() -> bool {
+    if (scratch) return true;
+    dictPtr = &zh::sharedDict();
+    if (!dictPtr->isOpen() && !zh::openSharedDict()) return false;
+    scratch = dictPtr->scratch();
+    return scratch != nullptr;
+  };
   const auto flush = [&]() {
-    if (runLen == 0) return;
-    zh::segmentRun(dict, run, runLen, [&](const zh::Segment& seg) {
+    if (runLen == 0 || !scratch || !dictPtr) {
+      runLen = 0;
+      return;
+    }
+    zh::segmentRun(*dictPtr, scratch->runCps, runLen, [&](const zh::Segment& seg) {
       if (!zh::wantsRuby(seg, threshold)) return;
       for (uint8_t k = 0; k < seg.len; ++k) {
-        if (seg.zhuyin[k] == 0) continue;
+        if (!zh::wantsCharRuby(*dictPtr, seg, k, scratch->runCps[seg.start + k], threshold)) continue;
         char code[8];
         zh::encodeRubyCode(seg.zhuyin[k], code);
-        setRubyForWordAt(runWord[seg.start + k], code);
+        setRubyForWordAt(scratch->runWord[seg.start + k], code);
       }
     });
     runLen = 0;
@@ -803,9 +811,10 @@ void ParsedText::applyZhRuby() {
       // One ruby slot per word: only its first Han character can carry ruby.
       if (zh::isHan(cp) && !sawHan) {
         sawHan = true;
+        if (!ensureScratch()) return;
         if (runLen == zh::MAX_RUN) flush();
-        run[runLen] = cp;
-        runWord[runLen] = static_cast<uint16_t>(i);
+        scratch->runCps[runLen] = cp;
+        scratch->runWord[runLen] = static_cast<uint16_t>(i);
         ++runLen;
       } else {
         flush();
@@ -1040,16 +1049,20 @@ std::vector<uint16_t> ParsedText::calculateWordWidths(const GfxRenderer& rendere
                                                wordFocusBoundary[i], blockStyle.characterSpacing, wordSpacingPercent));
   }
 
-  // Zhuyin ruby sits in a column to the right of its character, sized by the em.
-  int emFont = -1, rubyW = 0;
+  // Zhuyin ruby sits in a column to the right of its character (or below it when
+  // rubyUnderLine is set, adding only any extra width needed by 3-symbol rubies).
+  int emFont = -1, em = 0, rubyW = 0;
+  const bool underLine = zh::rubyUnderLine();
   for (size_t i = 0; i < rubyTexts.size() && i < wordWidths.size(); ++i) {
-    if (!zh::isRubyCode(rubyTexts[i].c_str())) continue;
+    const uint32_t code = zh::decodeRubyCode(rubyTexts[i].c_str());
+    if (!code) continue;
     const int font = wordFontId(i, fontId);
     if (font != emFont) {
       emFont = font;
-      rubyW = zh::rubyWidth(renderer.getTextAdvanceX(font, zh::EM_PROBE, EpdFontFamily::REGULAR, 0));
+      em = renderer.getTextAdvanceX(font, zh::EM_PROBE, EpdFontFamily::REGULAR, 0);
+      rubyW = zh::rubyWidth(em);
     }
-    wordWidths[i] += rubyW;
+    wordWidths[i] += underLine ? zh::rubyUnderExtraWidth(code, em) : rubyW;
   }
 
   // Adjust widths for ruby groups to comply with JLReq standards
@@ -1215,9 +1228,10 @@ std::vector<size_t> ParsedText::computeLineBreaks(const GfxRenderer& renderer, c
       }
 
       // Calculate extraStartOffset for the first word on the line (i) (protect left margin)
-      const int extraStartOffset = (j == i) ? calculateRubyExtraStartOffset(i, totalWordCount, renderer, fontId) : 0;
+      const int extraStartOffset =
+          (j == static_cast<size_t>(i)) ? calculateRubyExtraStartOffset(i, totalWordCount, renderer, fontId) : 0;
 
-      currlen += wordWidths[j] + gap + (j == i ? extraStartOffset : 0);
+      currlen += wordWidths[j] + gap + (j == static_cast<size_t>(i) ? extraStartOffset : 0);
 
       if (currlen > effectivePageWidth) {
         break;

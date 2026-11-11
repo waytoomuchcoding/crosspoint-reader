@@ -144,9 +144,10 @@ class TextBlock final : public Block {
   bool hasRuby() const;
   // Includes zhuyin codes (see ZhDict.h).
   bool hasAnyRuby() const;
-  // Byte offset just past the first Han character of word i, 0 if none.
-  size_t zhRubySplit(uint16_t i) const;
+  // Byte span [hanStart, hanEnd) of the first Han character of word i (0,0 if none).
+  void zhRubySpan(uint16_t i, size_t& hanStart, size_t& hanEnd) const;
   int getRubyShift(int ascender) const { return hasRuby() ? (ascender / 2) : 0; }
+  int getRubyUnderHeight(const GfxRenderer& renderer, int lineFontId) const;
   const std::vector<std::string>& getRubyTexts() const { return rubyTexts; }
   std::vector<LinkSpan> takeLinkSpans() { return std::move(linkSpans); }
 

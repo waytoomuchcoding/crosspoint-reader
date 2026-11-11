@@ -106,6 +106,8 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
        StrId::STR_ZH_RUBY_2000, StrId::STR_ZH_RUBY_3000, StrId::STR_ZH_RUBY_5000, StrId::STR_ZH_RUBY_8000,
        StrId::STR_ZH_RUBY_12000, StrId::STR_ZH_RUBY_20000, StrId::STR_ZH_RUBY_35000, StrId::STR_ZH_RUBY_60000},
       "zhRuby", StrId::STR_CAT_READER));
+  emit(SettingInfo::Enum(StrId::STR_ZH_RUBY_STYLE, &CrossPointSettings::zhRubyStyle,
+                         {StrId::STR_ZH_RUBY_BESIDE, StrId::STR_ZH_RUBY_UNDER}, "zhRubyStyle", StrId::STR_CAT_READER));
   emit(SettingInfo::Toggle(StrId::STR_FOCUS_READING, &CrossPointSettings::focusReadingEnabled, "focusReadingEnabled",
                            StrId::STR_CAT_READER)
            .withTextSettings());

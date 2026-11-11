@@ -364,6 +364,9 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t focusReadingEnabled = 0;
   // Zhuyin ruby step, see zh::RUBY_STEPS (0 = off).
   uint8_t zhRuby = 0;
+  // Zhuyin ruby placement: 0 = Beside character, 1 = Under character.
+  enum ZH_RUBY_STYLE { ZH_RUBY_BESIDE = 0, ZH_RUBY_UNDER = 1 };
+  uint8_t zhRubyStyle = ZH_RUBY_BESIDE;
   uint8_t readerMenuStyle = READER_MENU_LIST;
   // SD card font family name (empty = use built-in fontFamily)
   char sdFontFamilyName[32] = "";

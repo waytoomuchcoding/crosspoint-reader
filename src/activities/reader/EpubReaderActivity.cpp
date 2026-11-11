@@ -14,6 +14,7 @@
 #include <Logging.h>
 #include <Memory.h>
 #include <TrustedTime.h>
+#include <Utf8.h>
 #include <WiFi.h>
 #include <ZhDict.h>
 #include <esp_system.h>
@@ -483,6 +484,28 @@ bool EpubReaderActivity::openZhLookup(const bool startInJump) {
   if (!section || !epub || section->currentPage < 0 || section->currentPage >= section->pageCount) return false;
   const std::string& lang = epub->getLanguage();
   if (lang.rfind("ja", 0) == 0 || lang.rfind("ko", 0) == 0) return false;
+  if (lang.rfind("zh", 0) != 0) {
+    const auto curPage = section->loadPage(section->currentPage);
+    bool hasHan = false;
+    if (curPage) {
+      for (const auto& element : curPage->elements) {
+        if (element->getTag() != TAG_PageLine) continue;
+        const auto* block = static_cast<const PageLine&>(*element).getBlock();
+        if (!block || !block->valid()) continue;
+        for (uint16_t i = 0; i < block->wordCount() && !hasHan; ++i) {
+          const auto* p = reinterpret_cast<const uint8_t*>(block->wordText(i));
+          while (const uint32_t cp = utf8NextCodepoint(&p)) {
+            if (zh::isHan(cp)) {
+              hasHan = true;
+              break;
+            }
+          }
+        }
+        if (hasHan) break;
+      }
+    }
+    if (!hasHan) return false;
+  }
   if (!zh::openSharedDict()) return false;
   int top, right, bottom, left;
   renderer.getOrientedViewableTRBL(&top, &right, &bottom, &left);

@@ -73,6 +73,8 @@ class ZhLookupActivity final : public Activity {
   };
   struct Reading {
     uint8_t hsk = 0;
+    bool tradOnPinyin = false;
+    int titleFont = 0;
     std::vector<std::string> tabLines;  // wrapped pinyin for the tab, small font
     std::string pinyin;
     std::string trad;
@@ -115,7 +117,8 @@ class ZhLookupActivity final : public Activity {
   void loadHeadwordFont();
   void unloadHeadwordFont();
   // Widest-first font for the pop-up title that fits `avail` px (0 = none fit).
-  int titleFontFor(const Reading& rd, int avail) const;
+  // Sets `tradOnPinyin` when omitting `【trad】` from the title row lets a larger font fit.
+  int titleFontFor(const Reading& rd, int avail, bool& tradOnPinyin) const;
   int titleCharFont(int font, const char* ch) const;
   void saveToVocabulary();
 

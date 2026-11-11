@@ -125,25 +125,32 @@ int ZhLookupActivity::titleCharFont(const int font, const char* ch) const {
   return font;
 }
 
-int ZhLookupActivity::titleFontFor(const Reading& rd, const int avail) const {
+int ZhLookupActivity::titleFontFor(const Reading& rd, const int avail, bool& tradOnPinyin) const {
+  tradOnPinyin = false;
   const int wordLen = matchCount > 0 ? matches[matchIndex].len : 1;
+  const int hskW = rd.hsk ? POPUP_PAD + renderer.getTextAdvanceX(smallFont, "HSK6", EpdFontFamily::REGULAR, 0) : 0;
   for (const int font : {headFont, fontId, smallFont}) {
     if (!font) continue;
     const int em = renderer.getTextAdvanceX(font, zh::EM_PROBE, EpdFontFamily::REGULAR, 0);
-    int width = 0;
+    int baseWidth = hskW;
     for (int k = 0; k < wordLen && selStart + k < cps.size(); ++k) {
       char ch[5] = {};
       utf8AppendCodepoint(ch, cps[selStart + k]);
-      width += renderer.getTextAdvanceX(titleCharFont(font, ch), ch, EpdFontFamily::REGULAR, 0);
-      if (k < rd.syllables && rd.zhuyin[k]) width += zh::rubyWidth(em);
+      baseWidth += renderer.getTextAdvanceX(titleCharFont(font, ch), ch, EpdFontFamily::REGULAR, 0);
+      if (k < rd.syllables && rd.zhuyin[k]) baseWidth += zh::rubyWidth(em);
     }
+    int tradWidth = 0;
     if (!rd.trad.empty()) {
       const std::string trad = "【" + rd.trad + "】";
-      width += renderer.getTextAdvanceX(font, trad.c_str(), EpdFontFamily::REGULAR, 0);
+      tradWidth = renderer.getTextAdvanceX(font, trad.c_str(), EpdFontFamily::REGULAR, 0);
     }
-    if (rd.hsk) width += POPUP_PAD + renderer.getTextAdvanceX(smallFont, "HSK6", EpdFontFamily::REGULAR, 0);
-    if (width <= avail) return font;
+    if (baseWidth + tradWidth <= avail) return font;
+    if (!rd.trad.empty() && baseWidth <= avail) {
+      tradOnPinyin = true;
+      return font;
+    }
   }
+  tradOnPinyin = !rd.trad.empty();
   return smallFont;
 }
 
@@ -226,12 +233,15 @@ bool ZhLookupActivity::extractChars(const Page& src, const bool visible, std::ve
         buf[charLen] = 0;
         c.charW = static_cast<int16_t>(renderer.getTextAdvanceX(font, buf, EpdFontFamily::REGULAR, 0));
         c.ruby = i < rubyTexts.size() ? zh::decodeRubyCode(rubyTexts[i].c_str()) : 0;
-        c.x = static_cast<int16_t>(marginLeft + line.xPos + block->wordXpos(i) + prefixW);
-        c.y = static_cast<int16_t>(marginTop + line.yPos);
-        c.h = static_cast<int16_t>(renderer.getLineHeight(font));
         if (c.ruby)
           c.em = static_cast<int16_t>(renderer.getTextAdvanceX(font, zh::EM_PROBE, EpdFontFamily::REGULAR, 0));
-        c.w = static_cast<int16_t>(c.charW + (c.ruby ? zh::rubyWidth(c.em) : 0));
+        const bool underLine = zh::rubyUnderLine();
+        const int extraW = c.ruby ? (underLine ? zh::rubyUnderExtraWidth(c.ruby, c.em) : zh::rubyWidth(c.em)) : 0;
+        c.x =
+            static_cast<int16_t>(marginLeft + line.xPos + block->wordXpos(i) + prefixW + (underLine ? extraW / 2 : 0));
+        c.y = static_cast<int16_t>(marginTop + line.yPos);
+        c.h = static_cast<int16_t>(renderer.getLineHeight(font));
+        c.w = static_cast<int16_t>(c.charW + (underLine ? 0 : extraW));
         c.line = lineIndex;
       }
       out.push_back(c);
@@ -469,6 +479,9 @@ void ZhLookupActivity::stepStart(const int delta) {
 
 void ZhLookupActivity::wrapInto(const int font, const std::string& text, const int maxWidth, const int indent,
                                 std::vector<std::string>& out) const {
+  if (renderer.isSdCardFont(font) && !text.empty()) {
+    renderer.ensureSdCardFontReady(font, text.c_str(), 1);
+  }
   // Greedy wrap by codepoint; breaks at the last space unless that would leave
   // only the indent or a sense number ("2.") on the line.
   std::string cur;
@@ -538,10 +551,13 @@ void ZhLookupActivity::buildPopup() {
 
     // The title row (reader font) is drawn per page; the rest uses the small font.
     if (r == 0 && m.hsk) rd.hsk = m.hsk;
+    rd.titleFont = titleFontFor(rd, textWidth, rd.tradOnPinyin);
     wrapInto(smallFont, rd.pinyin, tabWidth - 2 * POPUP_PAD, 0, rd.tabLines);
     rd.firstLine = static_cast<uint16_t>(lines.size());
     // Zhuyin is drawn beside the title's characters, like ruby in the book.
-    wrapInto(smallFont, rd.pinyin, textWidth, 0, lines);
+    // When 【trad】 overflows the headword row, place it beside the pinyin line.
+    const std::string pinyinLine = rd.tradOnPinyin && !rd.trad.empty() ? rd.pinyin + " 【" + rd.trad + "】" : rd.pinyin;
+    wrapInto(smallFont, pinyinLine, textWidth, 0, lines);
     int sense = 1;
     for (size_t s = 0; s < defLen;) {
       size_t e = s;
@@ -706,7 +722,7 @@ void ZhLookupActivity::drawHighlight(const size_t first, const size_t len) {
     char buf[5] = {};
     utf8AppendCodepoint(buf, c.cp);
     renderer.drawText(c.font, c.x, c.y, buf, false);
-    if (c.ruby) {
+    if (c.ruby && !zh::rubyUnderLine()) {
       const int rx = c.x + c.charW;
       zh::forEachRubyPixel(c.ruby, c.em, c.h, [&](int px, int py) { renderer.drawPixel(rx + px, c.y + py, false); });
     }
@@ -723,7 +739,8 @@ int ZhLookupActivity::popupTop(const int height) const {
   const size_t s = std::clamp(focus == Focus::Popup ? selStart : cursorStart(), firstOn, endOn - 1);
   const CharBox& sel = chars[s];
   // Below the selection in the top half, above it otherwise; never over it.
-  const int y = sel.y + sel.h / 2 < screenH / 2 ? sel.y + sel.h + 6 : sel.y - 6 - height;
+  const int underH = zh::rubyUnderLine() ? zh::rubyUnderHeight(sel.em ? sel.em : sel.h) : 0;
+  const int y = sel.y + sel.h / 2 < screenH / 2 ? sel.y + sel.h + underH + 6 : sel.y - 6 - height;
   return std::clamp(y, 0, screenH - height);
 }
 
@@ -792,7 +809,7 @@ void ZhLookupActivity::drawPopup() {
   // Each character followed by its zhuyin column (as ruby in the book), then
   // the traditional form and HSK band: in the large headword font when the
   // whole row fits, else the reader font, else the small font.
-  const int titleFont = titleFontFor(rd, x + w - POPUP_BORDER - POPUP_PAD - textX);
+  const int titleFont = rd.titleFont ? rd.titleFont : smallFont;
   const int titleLine = renderer.getLineHeight(titleFont);
   const int titleY = innerY + (titleHeight - titleLine) / 2;
   int tx = textX;
@@ -813,7 +830,7 @@ void ZhLookupActivity::drawPopup() {
       tx += zh::rubyWidth(em);
     }
   }
-  if (!rd.trad.empty()) {
+  if (!rd.trad.empty() && !rd.tradOnPinyin) {
     const std::string trad = "【" + rd.trad + "】";
     renderer.drawText(titleFont, tx, titleY, trad.c_str(), true);
     tx += renderer.getTextAdvanceX(titleFont, trad.c_str(), EpdFontFamily::REGULAR, 0);

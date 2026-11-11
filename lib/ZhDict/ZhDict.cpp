@@ -51,7 +51,7 @@ bool isHan(uint32_t cp) {
 bool Dict::readAt(HalFile& f, uint32_t off, void* buf, size_t len) {
   ++statsData.reads;
   statsData.bytes += len;
-  return f.seekSet(off) && f.read(buf, len) == static_cast<int>(len);
+  return f.seekSet(off) && static_cast<int>(f.read(buf, len)) == static_cast<int>(len);
 }
 
 bool Dict::open(const char* dir) {
@@ -318,6 +318,7 @@ Dict& sharedDict() {
 namespace {
 bool sharedOpenFailed = false;
 uint32_t currentRubyThreshold = 0;
+bool currentRubyUnderLine = false;
 }  // namespace
 
 bool openSharedDict() {
@@ -335,6 +336,8 @@ void resetSharedDict() {
 
 uint32_t rubyThreshold() { return currentRubyThreshold; }
 void setRubyThreshold(uint32_t threshold) { currentRubyThreshold = threshold; }
+bool rubyUnderLine() { return currentRubyUnderLine; }
+void setRubyUnderLine(bool under) { currentRubyUnderLine = under; }
 
 bool isRubyCode(const char* s) { return s && s[0] == RUBY_MARK; }
 

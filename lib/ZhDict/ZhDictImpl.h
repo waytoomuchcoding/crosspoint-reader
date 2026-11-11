@@ -80,9 +80,15 @@ bool segmentRun(Dict& dict, const uint32_t* cps, size_t n, F&& onSegment) {
     if (std::isinf(s->best[i])) continue;
     const int count = dict.matchesAt(cps, n, i, s->matches, MAX_MATCHES);
     bool hasSingle = false;
+    s->selfRank[i] = NO_RANK;
+    s->selfZhuyin[i] = 0;
     for (int k = 0; k < count; ++k) {
       const WordMatch& m = s->matches[k];
-      hasSingle |= m.len == 1;
+      if (m.len == 1) {
+        hasSingle = true;
+        s->selfRank[i] = m.rank;
+        s->selfZhuyin[i] = m.zhuyin[0];
+      }
       const size_t j = i + m.len;
       const float cost = s->best[i] + detail::wordCost(m.rank);
       if (cost < s->best[j]) {
@@ -126,6 +132,123 @@ inline int rubyWidth(int em) {
   const RubyStyle st = rubyStyle(em);
   const detail::GlyphSet& g = detail::GLYPH_SETS[st.set];
   return (1 + g.w + 1 + g.toneW) * st.scale;
+}
+
+namespace detail {
+inline void glyphColSpan(const GlyphSet& g, int symIdx, int& firstCol, int& spanW) {
+  // Horizontal ㄧ (index 33) fills all columns in the vertical column set; trim
+  // 1 column on each side in horizontal layout so it does not fuse with neighbors.
+  if (symIdx == 33 && g.w >= 9) {
+    firstCol = 1;
+    spanW = g.w - 2;
+    return;
+  }
+  uint16_t mask = 0;
+  const uint16_t* rows = g.rows + symIdx * g.h;
+  for (int y = 0; y < g.h; ++y) mask |= rows[y];
+  int left = 0;
+  while (left < g.w && (mask & (1 << (g.w - 1 - left))) == 0) ++left;
+  int right = g.w - 1;
+  while (right > left && (mask & (1 << (g.w - 1 - right))) == 0) --right;
+  firstCol = left;
+  spanW = right >= left ? (right - left + 1) : g.w;
+}
+}  // namespace detail
+
+inline int rubyUnderWidth(uint32_t code, int em) {
+  if (code == 0) return 0;
+  int symbols[3];
+  int count = 0;
+  for (int k = 0; k < 3; ++k) {
+    const int sym = zhuyinSymbol(code, k);
+    if (sym >= 1 && sym <= ZHUYIN_GLYPH_COUNT) symbols[count++] = sym - 1;
+  }
+  if (count == 0) return 0;
+  const RubyStyle st = rubyStyle(em);
+  const detail::GlyphSet& g = detail::GLYPH_SETS[st.set];
+  int designW = 0;
+  const int tone = zhuyinTone(code);
+  if (tone == 5) designW += g.tones[3].w + 1;
+  for (int k = 0; k < count; ++k) {
+    int firstCol = 0, spanW = g.w;
+    detail::glyphColSpan(g, symbols[k], firstCol, spanW);
+    designW += spanW + (k + 1 < count ? 1 : 0);
+  }
+  if (tone >= 2 && tone <= 4) designW += 1 + g.tones[tone - 2].w;
+  return designW * st.scale;
+}
+
+inline int rubyUnderExtraWidth(uint32_t code, int em) {
+  const int w = rubyUnderWidth(code, em);
+  if (w == 0) return 0;
+  const int minCell = w + 4 * rubyStyle(em).scale;
+  return minCell > em ? minCell - em : 0;
+}
+
+inline int rubyUnderHeight(int em) {
+  const RubyStyle st = rubyStyle(em);
+  return (detail::GLYPH_SETS[st.set].h + 6) * st.scale;
+}
+
+template <typename F>
+void forEachRubyUnderPixel(uint32_t code, int em, int cellWidth, int lineHeight, F&& plot) {
+  if (code == 0) return;
+  int symbols[3];
+  int count = 0;
+  for (int k = 0; k < 3; ++k) {
+    const int sym = zhuyinSymbol(code, k);
+    if (sym >= 1 && sym <= ZHUYIN_GLYPH_COUNT) symbols[count++] = sym - 1;
+  }
+  if (count == 0) return;
+  const RubyStyle st = rubyStyle(em);
+  const detail::GlyphSet& g = detail::GLYPH_SETS[st.set];
+  const int s = st.scale;
+  auto dot = [&](int x, int y) {
+    for (int dy = 0; dy < s; ++dy) {
+      for (int dx = 0; dx < s; ++dx) plot(x + dx, y + dy);
+    }
+  };
+  int firstCols[3], spanWs[3];
+  int designW = 0;
+  const int tone = zhuyinTone(code);
+  if (tone == 5) designW += g.tones[3].w + 1;
+  for (int k = 0; k < count; ++k) {
+    detail::glyphColSpan(g, symbols[k], firstCols[k], spanWs[k]);
+    designW += spanWs[k] + (k + 1 < count ? 1 : 0);
+  }
+  if (tone >= 2 && tone <= 4) designW += 1 + g.tones[tone - 2].w;
+
+  int curX = (cellWidth - designW * s) / 2;
+  const int topY = lineHeight + 3 * s;
+  if (tone == 5) {
+    const detail::ToneMark& t = g.tones[3];
+    const int ty = topY + ((g.h - t.h) / 2) * s;
+    for (int y = 0; y < t.h; ++y) {
+      for (int x = 0; x < t.w; ++x) {
+        if (t.rows[y] & (1 << (t.w - 1 - x))) dot(curX + x * s, ty + y * s);
+      }
+    }
+    curX += (t.w + 1) * s;
+  }
+  for (int k = 0; k < count; ++k) {
+    const uint16_t* rows = g.rows + symbols[k] * g.h;
+    for (int y = 0; y < g.h; ++y) {
+      for (int x = 0; x < spanWs[k]; ++x) {
+        if (rows[y] & (1 << (g.w - 1 - (firstCols[k] + x)))) dot(curX + x * s, topY + y * s);
+      }
+    }
+    curX += (spanWs[k] + (k + 1 < count ? 1 : 0)) * s;
+  }
+  if (tone >= 2 && tone <= 4) {
+    const detail::ToneMark& t = g.tones[tone - 2];
+    const int tx = curX + s;
+    const int ty = topY + ((g.h - t.h) / 2) * s;
+    for (int y = 0; y < t.h; ++y) {
+      for (int x = 0; x < t.w; ++x) {
+        if (t.rows[y] & (1 << (t.w - 1 - x))) dot(tx + x * s, ty + y * s);
+      }
+    }
+  }
 }
 
 template <typename F>

@@ -7,6 +7,7 @@
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <ZhDict.h>
 
 #include <algorithm>
 #include <string>
@@ -28,6 +29,16 @@ CssTextAlign toCssAlign(uint8_t align) {
   return static_cast<CssTextAlign>(align);
 }
 
+constexpr const char* ZH_PREVIEW_TEXT = "天地玄黄，宇宙洪荒。日月盈昃，辰宿列张。寒来暑往，秋收冬藏。";
+
+const char* sampleTextForFont(const GfxRenderer& renderer, const int fontId) {
+  const auto it = renderer.getFontMap().find(fontId);
+  if (it != renderer.getFontMap().end() && it->second.hasCodepoint(0x4E00)) {
+    return ZH_PREVIEW_TEXT;
+  }
+  return I18N.get(StrId::STR_FONT_PREVIEW_TEXT);
+}
+
 // Lay the sample text out through the reader engine into layout.lines
 void relayout(PreviewLayout& layout, const GfxRenderer& renderer, int fontId, int textWidth) {
   layout.lines.clear();
@@ -36,11 +47,16 @@ void relayout(PreviewLayout& layout, const GfxRenderer& renderer, int fontId, in
   style.alignment = toCssAlign(SETTINGS.paragraphAlignment);
   style.textAlignDefined = true;  // honor the user's choice; RTL auto-detected from text
 
+  const uint32_t savedRubyThreshold = zh::rubyThreshold();
+  const bool savedRubyUnderLine = zh::rubyUnderLine();
+  zh::setRubyThreshold(zh::rubyThresholdForStep(SETTINGS.zhRuby));
+  zh::setRubyUnderLine(SETTINGS.zhRubyStyle != CrossPointSettings::ZH_RUBY_BESIDE);
+
   ParsedText parsed(SETTINGS.hyphenationEnabled != 0, SETTINGS.focusReadingEnabled != 0, style,
                     SETTINGS.paragraphIndentSpaces);
 
   // Feed one space-separated word at a time; addWord handles NFC/CJK/RTL/focus splitting
-  const char* text = I18N.get(StrId::STR_FONT_PREVIEW_TEXT);
+  const char* text = sampleTextForFont(renderer, fontId);
   std::string word;
   for (const char* p = text;; p++) {
     if (*p == ' ' || *p == '\0') {
@@ -58,6 +74,10 @@ void relayout(PreviewLayout& layout, const GfxRenderer& renderer, int fontId, in
       renderer, fontId, static_cast<uint16_t>(textWidth),
       [&layout](std::unique_ptr<TextBlock> line, uint32_t) { layout.lines.push_back(std::move(line)); }, true,
       SETTINGS.getCharacterSpacing(), SETTINGS.wordSpacing);
+
+  zh::sharedDict().close();
+  zh::setRubyThreshold(savedRubyThreshold);
+  zh::setRubyUnderLine(savedRubyUnderLine);
 }
 
 }  // namespace
@@ -107,10 +127,12 @@ void renderPreview(const GfxRenderer& renderer, PreviewLayout& layout, int previ
                        .characterSpacing = SETTINGS.getCharacterSpacing(),
                        .wordSpacingPercent = SETTINGS.wordSpacing,
                        .focusReading = SETTINGS.focusReadingEnabled != 0,
-                       .hyphenation = SETTINGS.hyphenationEnabled != 0};
+                       .hyphenation = SETTINGS.hyphenationEnabled != 0,
+                       .zhRuby = SETTINGS.zhRuby,
+                       .zhRubyStyle = SETTINGS.zhRubyStyle};
   if (key != layout.key) {
     if (auto* fcm = renderer.getFontCacheManager()) {
-      fcm->prewarmCache(fontId, I18N.get(StrId::STR_FONT_PREVIEW_TEXT), SETTINGS.focusReadingEnabled ? 0x03 : 0x01);
+      fcm->prewarmCache(fontId, sampleTextForFont(renderer, fontId), SETTINGS.focusReadingEnabled ? 0x03 : 0x01);
     }
     relayout(layout, renderer, fontId, textWidth);
     layout.key = key;
@@ -121,9 +143,13 @@ void renderPreview(const GfxRenderer& renderer, PreviewLayout& layout, int previ
   const int textBottomLimit = top + height - labelReserved;
   for (int paragraph = 0; paragraph < 2; paragraph++) {
     for (const auto& line : layout.lines) {
-      if (y + lineH > textBottomLimit) return;
+      const int rubyShift = line->getRubyShift(renderer.getFontAscenderSize(fontId));
+      const int rubyUnder = line->getRubyUnderHeight(renderer, fontId);
+      const int unspacedGap = std::max(0, renderer.getLineHeight(fontId) - lineAdvance);
+      const int stepY = lineAdvance + rubyShift + (rubyUnder > 0 ? rubyUnder + unspacedGap : 0);
+      if (y + lineH + rubyShift + rubyUnder > textBottomLimit) return;
       line->render(renderer, fontId, textLeft, y);
-      y += lineAdvance;
+      y += stepY;
     }
     y += paragraphGap;
   }

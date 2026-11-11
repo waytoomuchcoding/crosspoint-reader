@@ -155,15 +155,32 @@ bool TextBlock::hasAnyRuby() const {
   return false;
 }
 
-size_t TextBlock::zhRubySplit(const uint16_t i) const {
+int TextBlock::getRubyUnderHeight(const GfxRenderer& renderer, const int lineFontId) const {
+  if (!zh::rubyUnderLine()) return 0;
+  for (const auto& rt : rubyTexts) {
+    if (zh::isRubyCode(rt.c_str())) {
+      const int em = renderer.getTextAdvanceX(lineFontId, zh::EM_PROBE, EpdFontFamily::REGULAR, 0);
+      return zh::rubyUnderHeight(em);
+    }
+  }
+  return 0;
+}
+
+void TextBlock::zhRubySpan(const uint16_t i, size_t& hanStart, size_t& hanEnd) const {
   const auto* start = reinterpret_cast<const unsigned char*>(wordText(i));
   const unsigned char* p = start;
   while (*p) {
+    const auto* cpStart = p;
     const uint32_t cp = utf8NextCodepoint(&p);
     if (cp == 0) break;
-    if (zh::isHan(cp)) return static_cast<size_t>(p - start);
+    if (zh::isHan(cp)) {
+      hanStart = static_cast<size_t>(cpStart - start);
+      hanEnd = static_cast<size_t>(p - start);
+      return;
+    }
   }
-  return 0;
+  hanStart = 0;
+  hanEnd = 0;
 }
 
 bool TextBlock::setWordFonts(const uint8_t* slots, const int32_t (&fonts)[MAX_WORD_FONTS]) {
@@ -386,26 +403,51 @@ void TextBlock::render(const GfxRenderer& renderer, const int sectionFontId, con
       renderer.drawText(wordFont, prefixX, wordY, boldBuf, true, boldStyle, baseDir, tracking);
       renderer.drawText(wordFont, suffixX, wordY, word + boldLen, true, currentStyle, baseDir, tracking);
     } else if (const uint32_t zhCode = i < rubyTexts.size() ? zh::decodeRubyCode(rubyTexts[i].c_str()) : 0) {
-      // Zhuyin: draw the word up to its Han character, the ruby column, then the
-      // rest of the word (attached punctuation) after the ruby.
-      const size_t split = zhRubySplit(i);
+      // Zhuyin: keep any leading punctuation anchored at drawX, render the Han
+      // character and its beside/under ruby inside the widened cell, then draw
+      // any trailing punctuation after the cell.
+      size_t hanStart = 0;
+      size_t hanEnd = 0;
+      zhRubySpan(i, hanStart, hanEnd);
       const size_t len = wordTextLen(i);
-      char head[24];
-      const size_t headLen = std::min(split, sizeof(head) - 1);
-      memcpy(head, word, headLen);
-      head[headLen] = '\0';
-      renderer.drawText(wordFont, drawX, wordY, head, true, currentStyle, baseDir, tracking);
-      const int headWidth = renderer.getTextAdvanceX(wordFont, head, currentStyle, tracking);
-      // Sized by the em as in layout (ParsedText::calculateWordWidths).
       const int em = renderer.getTextAdvanceX(wordFont, zh::EM_PROBE, EpdFontFamily::REGULAR, 0);
-      if (split < len) {
-        renderer.drawText(wordFont, drawX + headWidth + zh::rubyWidth(em), wordY, word + split, true, currentStyle,
-                          baseDir, tracking);
+      const bool underLine = zh::rubyUnderLine();
+      const int extraW = underLine ? zh::rubyUnderExtraWidth(zhCode, em) : zh::rubyWidth(em);
+
+      int leadWidth = 0;
+      if (hanStart > 0) {
+        char lead[24];
+        const size_t leadLen = std::min(hanStart, sizeof(lead) - 1);
+        memcpy(lead, word, leadLen);
+        lead[leadLen] = '\0';
+        renderer.drawText(wordFont, drawX, wordY, lead, true, currentStyle, baseDir, tracking);
+        leadWidth = renderer.getTextAdvanceX(wordFont, lead, currentStyle, tracking);
       }
-      if (!scanning) {
-        const int rubyX = drawX + headWidth;
-        zh::forEachRubyPixel(zhCode, em, renderer.getLineHeight(wordFont),
-                             [&](int px, int py) { renderer.drawPixel(rubyX + px, wordY + py, true); });
+
+      char han[8];
+      const size_t hanLen = hanEnd > hanStart ? std::min(hanEnd - hanStart, sizeof(han) - 1) : 0;
+      memcpy(han, word + hanStart, hanLen);
+      han[hanLen] = '\0';
+      const int cellX = drawX + leadWidth;
+      const int hanShift = underLine ? extraW / 2 : 0;
+      if (hanLen > 0) {
+        renderer.drawText(wordFont, cellX + hanShift, wordY, han, true, currentStyle, baseDir, tracking);
+      }
+      const int hanWidth = hanLen > 0 ? renderer.getTextAdvanceX(wordFont, han, currentStyle, tracking) : 0;
+
+      if (hanEnd < len) {
+        renderer.drawText(wordFont, cellX + hanWidth + extraW, wordY, word + hanEnd, true, currentStyle, baseDir,
+                          tracking);
+      }
+      if (!scanning && hanLen > 0) {
+        if (underLine) {
+          zh::forEachRubyUnderPixel(zhCode, em, hanWidth + extraW, renderer.getLineHeight(wordFont),
+                                    [&](int px, int py) { renderer.drawPixel(cellX + px, wordY + py, true); });
+        } else {
+          const int rubyX = cellX + hanWidth;
+          zh::forEachRubyPixel(zhCode, em, renderer.getLineHeight(wordFont),
+                               [&](int px, int py) { renderer.drawPixel(rubyX + px, wordY + py, true); });
+        }
       }
     } else {
       renderer.drawText(wordFont, drawX, wordY, word, true, currentStyle, baseDir, tracking);
