@@ -746,3 +746,13 @@ poll promptly after completion).
 Headless executor page: loads every plugin with its UI hidden so registered
 actions run. Keep it open (browser tab or embedded webview) while jobs are
 queued; jobs enqueued with no page open stay pending until one opens.
+
+## Online Sync & Plain-Text Cover Endpoints
+
+### `GET /api/libby`
+
+Returns Libby link status and cached OverDrive loans (`{"linked":true,"loans":[...]}`).
+
+### `POST /api/libby`
+
+Links an 8-digit Libby setup code (`{"action":"pair","code":"12345678"}`) or refreshes active loans (`{"action":"sync"}`).

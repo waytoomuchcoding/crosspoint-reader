@@ -59,6 +59,7 @@
 #include "html/js/epub_optimizerJs.generated.h"
 #include "html/js/jszip_minJs.generated.h"
 #include "html/js/plugin_hostJs.generated.h"
+#include "network/LibbyClient.h"
 #include "util/BookCacheUtils.h"
 #include "util/DictionaryRegistry.h"
 #include "util/FirmwareIdentity.h"
@@ -360,6 +361,8 @@ class CrossPointWebServer::RouteHandler final : public RequestHandler {
         {"/api/wifi", HTTP_GET, [](S& s) { s.handleGetWifiNetworks(); }, nullptr},
         {"/api/wifi", HTTP_POST, [](S& s) { s.handlePostWifiNetwork(); }, nullptr},
         {"/api/wifi/delete", HTTP_POST, [](S& s) { s.handleDeleteWifiNetwork(); }, nullptr},
+        {"/api/libby", HTTP_GET, [](S& s) { s.handleGetLibby(); }, nullptr},
+        {"/api/libby", HTTP_POST, [](S& s) { s.handlePostLibby(); }, nullptr},
     };
     for (const Route& route : ROUTES) {
       if (route.method == method && uri == route.path) return &route;
@@ -3491,4 +3494,60 @@ void CrossPointWebServer::handleFontDelete() {
     server->send(500, "application/json", "{\"error\":\"Delete failed\"}");
     LOG_ERR("WEB", "Failed to delete font family: %s", familyName);
   }
+}
+
+void CrossPointWebServer::handleGetLibby() const {
+  JsonDocument resp;
+  resp["linked"] = libby::hasToken();
+  std::vector<libby::Loan> loans;
+  libby::loadCachedLoans(loans);
+  JsonArray arr = resp["loans"].to<JsonArray>();
+  for (const auto& loan : loans) {
+    JsonObject obj = arr.add<JsonObject>();
+    obj["id"] = loan.id;
+    obj["cardId"] = loan.cardId;
+    obj["title"] = loan.title;
+    obj["author"] = loan.author;
+    obj["hasOpenEpub"] = loan.hasOpenEpub;
+    obj["hasAdobeEpub"] = loan.hasAdobeEpub;
+  }
+  sendJson(resp);
+}
+
+void CrossPointWebServer::handlePostLibby() {
+  JsonDocument req;
+  if (!readJsonBody(req)) return;
+  const std::string action = req["action"] | "";
+  if (action == "pair") {
+    const std::string code = req["code"] | "";
+    req.clear();
+    std::string err;
+    if (!libby::pairWithSetupCode(code, err)) {
+      JsonDocument resp;
+      resp["ok"] = false;
+      resp["error"] = err;
+      sendJson(resp);
+      return;
+    }
+    server->send(200, "application/json", "{\"ok\":true}");
+    return;
+  }
+  if (action == "sync") {
+    req.clear();
+    std::vector<libby::Loan> loans;
+    std::string err;
+    if (!libby::fetchLoans(loans, err)) {
+      JsonDocument resp;
+      resp["ok"] = false;
+      resp["error"] = err;
+      sendJson(resp);
+      return;
+    }
+    JsonDocument resp;
+    resp["ok"] = true;
+    resp["count"] = loans.size();
+    sendJson(resp);
+    return;
+  }
+  server->send(400, "application/json", "{\"error\":\"unknown action\"}");
 }

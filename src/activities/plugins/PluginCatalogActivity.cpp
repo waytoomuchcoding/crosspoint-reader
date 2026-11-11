@@ -25,6 +25,7 @@
 #include <type_traits>
 
 #include "CrossPointSettings.h"
+#include "LibbyActivity.h"
 #include "MappedInputManager.h"
 #include "activities/reader/DictionaryDefinitionActivity.h"  // plain-text README viewer
 #include "activities/settings/PluginHubInstallActivity.h"
@@ -81,6 +82,26 @@ constexpr auto DETAIL_DESCRIPTION = JsonListParser::F_URL;
 constexpr auto DETAIL_REPOSITORY = JsonListParser::F_BASE;
 constexpr auto DETAIL_PAGE_URL = JsonListParser::F_URL;
 constexpr auto DETAIL_PAGE_FORMAT = JsonListParser::F_BASE;
+constexpr std::string_view LIBBY_BUILTIN_ID = "__builtin_libby";
+
+void appendBuiltinCatalogEntries(std::vector<PluginRef>& out) {
+  PluginRef libbyBuiltin;
+  libbyBuiltin.name = std::string(LIBBY_BUILTIN_ID);
+  libbyBuiltin.title = tr(STR_LIBBY_LIBRARY);
+  libbyBuiltin.description = tr(STR_LIBBY_DESC);
+  libbyBuiltin.deviceKind = PluginLocations::DeviceKind::Catalog;
+  out.push_back(std::move(libbyBuiltin));
+}
+
+std::unique_ptr<Activity> createBuiltinServiceActivity(const std::string_view pluginName, GfxRenderer& renderer,
+                                                       MappedInputManager& mappedInput) {
+  if (pluginName == LIBBY_BUILTIN_ID) {
+    auto act = makeUniqueNoThrow<LibbyActivity>(renderer, mappedInput);
+    if (!act) LOG_ERR("PCAT", "OOM: LibbyActivity (%zu B)", sizeof(LibbyActivity));
+    return act;
+  }
+  return nullptr;
+}
 
 bool fulfillDownloadedIfAcsm(std::string& destPath) {
   if (!adept::isAcsmFile(destPath)) return true;
@@ -571,6 +592,7 @@ void PluginCatalogActivity::onEnter() {
 void PluginCatalogActivity::enterPluginPicker() {
   Storage.remove(BROWSE_TMP_PATH);
   installedPlugins = discoverPlugins();
+  appendBuiltinCatalogEntries(installedPlugins);
   pluginHubAvailable = PluginHubInstallActivity::isAvailable();
   showPluginHubInstallRow = !pluginHubAvailable && !SETTINGS.pluginHubPromptHidden;
   // Discovery just re-read the plugin folders; keep the event subscription
@@ -1356,9 +1378,6 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadBundle(const Item& 
     }
     const auto result = downloadFile(pluginhttp::escapeUrl(base + rel), dest + ".new");
     if (result != HttpDownloader::OK) return result;
-    if (!fulfillDownloadedIfAcsm(dest)) {
-      return HttpDownloader::FILE_ERROR;
-    }
     staged.push_back(dest);
   }
   // ponytail: a failed swap mid-loop leaves a mixed old/new bundle; a
@@ -1450,6 +1469,9 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadBook(const Item& it
     result = fetchFile();
   }
   if (result != HttpDownloader::OK) return result;
+  if (!fulfillDownloadedIfAcsm(dest)) {
+    return HttpDownloader::FILE_ERROR;
+  }
   clearBookCache(dest);
   if (library::isLibraryBookFile(dest)) library::markLibraryIndexDirty();
 
@@ -1632,6 +1654,12 @@ void PluginCatalogActivity::activateIndex(const int index) {
     }
     const int syntheticHubRows = showPluginHubInstallRow ? 1 : 0;
     const PluginRef& plugin = installedPlugins[index - pluginStart - syntheticHubRows];
+    if (auto builtinAct = createBuiltinServiceActivity(plugin.name, renderer, mappedInput)) {
+      app.clearTapFlash();
+      pickerReturnName = plugin.name;
+      startActivityForResult(std::move(builtinAct), [this](const ActivityResult&) { enterPluginPicker(); });
+      return;
+    }
     const auto action = PluginLocations::pickerAction(plugin.deviceKind, !plugin.readmePath.empty());
     if (action == PluginLocations::PickerAction::Readme) {
       // A plain paged text view, not the book reader: viewing instructions must
