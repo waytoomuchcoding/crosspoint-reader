@@ -530,10 +530,11 @@ std::vector<DeadRegion> extractDeadRegions(const ClearanceField& field, int cont
 // ============================================================================
 
 enum PixelMode : uint8_t {
-  PM_PAPER = 0,
-  PM_ATKINSON = 1,
-  PM_SOLID_INK = 2,
-  PM_SOLID_WHITE = 3,
+  PM_BG = 0,           // Untouched background (paper white in light mode, night black in nocturne)
+  PM_ATKINSON = 1,     // 1-bit Atkinson error-diffused physical brightness (0 = black, 255 = white)
+  PM_FORCE_BLACK = 2,  // Crisp solid physical black (ink line in light mode, separation moat / pupil in nocturne)
+  PM_FORCE_WHITE =
+      3,  // Crisp solid physical white (paper knockout in light mode, bright chalk/silver line in nocturne)
 };
 
 enum class PetalShape : uint8_t {
@@ -1046,13 +1047,13 @@ void emitSakuraFlowerOrPetal(SceneGraph& sg, float cx, float cy, float radius, b
   if (fullBloom) {
     for (int i = 0; i < 5; ++i) {
       const float a = rot + (kTwoPi * i) / 5.0f;
-      sg.addPetal((i % 2 == 0) ? 5 : 6, cx, cy, a, radius, radius * 0.64f, PetalShape::SakuraCleft, 132, 254,
+      sg.addPetal((i % 2 == 0) ? 40 : 41, cx, cy, a, radius, radius * 0.64f, PetalShape::SakuraCleft, 132, 254,
                   rng.nextU32());
     }
-    sg.addDisc(7, cx, cy, radius * 0.30f, DiscKind::PlumCalyxPins, rot, 55, 255, rng.nextU32());
+    sg.addDisc(42, cx, cy, radius * 0.30f, DiscKind::PlumCalyxPins, rot, 55, 255, rng.nextU32());
   } else {
     // Single tumbling notched sakura petal in the wind.
-    sg.addPetal(6, cx, cy, rot, radius, radius * rng.range(0.54f, 0.72f), PetalShape::SakuraCleft, 140, 254,
+    sg.addPetal(41, cx, cy, rot, radius, radius * rng.range(0.54f, 0.72f), PetalShape::SakuraCleft, 140, 254,
                 rng.nextU32());
   }
 }
@@ -2349,19 +2350,19 @@ void buildWavesAndPetals(SceneGraph& sg, const ClearanceField& field, const Dead
 
   // Scalloped Seigaiha (青海波) woodblock wave rows rising from the lower portion of the dead space!
   const float scaleR = clampf(mainPole.clearance * 0.38f, 16.0f, 27.0f);
-  const float colStep = scaleR * 1.72f;
-  const float rowStep = scaleR * 0.86f;
+  const float colStep = scaleR * 1.70f;
+  const float rowStep = scaleR * 0.52f;
   const float waterTopBase = lerpf(static_cast<float>(reg.y0), static_cast<float>(reg.y1),
-                                   (reg.kind == RegionKind::MarginalBay) ? 0.48f : 0.38f);
+                                   (reg.kind == RegionKind::MarginalBay) ? 0.50f : 0.42f);
   const float swellPhase = rng.range(0.0f, kTwoPi);
 
   int rowIdx = 0;
   for (float wy = waterTopBase; wy <= static_cast<float>(reg.y1) + scaleR * 0.5f; wy += rowStep, ++rowIdx) {
-    // Front (lower) rows get higher zLayer so lower wave crests cleanly knock out upper rows!
-    const uint8_t zWave = static_cast<uint8_t>(std::min(5, 2 + (rowIdx % 4)));
+    // Monotonic front-to-back zLayer so lower wave crests ALWAYS overlap upper rows without wrapping!
+    const uint8_t zWave = static_cast<uint8_t>(std::min(38, 2 + rowIdx));
     const float xOffset = (rowIdx % 2 == 1) ? colStep * 0.5f : 0.0f;
     for (float wx = static_cast<float>(reg.x0) + xOffset; wx <= static_cast<float>(reg.x1); wx += colStep) {
-      const float swellY = std::sin(wx * 0.022f + swellPhase) * 14.0f;
+      const float swellY = std::sin(wx * 0.022f + swellPhase) * 12.0f;
       const float cy = wy + swellY;
       if (cy < waterTopBase + swellY - 2.0f) continue;
       if (field.clearanceAt(wx, cy) < scaleR * 0.62f) continue;
@@ -2396,7 +2397,8 @@ void buildWavesAndPetals(SceneGraph& sg, const ClearanceField& field, const Dead
 // Strip-Streamed 1:1 Pixel Rasterizer + 1-Bit Atkinson Error Diffusion
 // ============================================================================
 
-void rasterizeStrokeInStrip(const ScenePrim& p, int stripY0, int stripH, int W, uint8_t* lumBuf, uint8_t* modeBuf) {
+void rasterizeStrokeInStrip(const ScenePrim& p, int stripY0, int stripH, int W, uint8_t* lumBuf, uint8_t* modeBuf,
+                            bool nocturne) {
   const int yStart = std::max<int>(stripY0, p.box.y0);
   const int yEnd = std::min<int>(stripY0 + stripH - 1, p.box.y1);
   if (yStart > yEnd) return;
@@ -2428,29 +2430,55 @@ void rasterizeStrokeInStrip(const ScenePrim& p, int stripY0, int stripH, int W, 
       const float dist = std::hypot(fx - projX, fy - projY);
       const float rHere = lerpf(p.r0, p.r1, t);
 
-      if (dist <= rHere) {
-        if (dryBrush && rHere >= 1.9f && dist < rHere - 1.05f) {
-          // Calligraphic feibai (飞白) bark grain inside thick plum trunks!
-          const float grain = valueNoise2D(fx * 0.45f, fy * 0.45f, p.seed);
-          if (grain > 0.74f) {
+      if (!nocturne) {
+        if (dist <= rHere) {
+          if (dryBrush && rHere >= 1.9f && dist < rHere - 1.05f) {
+            // Calligraphic feibai (飞白) bark grain inside thick plum trunks!
+            const float grain = valueNoise2D(fx * 0.45f, fy * 0.45f, p.seed);
+            if (grain > 0.74f) {
+              lumBuf[rowOff + x] = 255;
+              modeBuf[rowOff + x] = PM_FORCE_WHITE;
+              continue;
+            }
+          }
+          lumBuf[rowOff + x] = 0;
+          modeBuf[rowOff + x] = PM_FORCE_BLACK;
+        } else if (whiteHalo && dist <= rHere + 1.45f) {
+          if (modeBuf[rowOff + x] != PM_FORCE_BLACK) {
             lumBuf[rowOff + x] = 255;
-            modeBuf[rowOff + x] = PM_SOLID_WHITE;
-            continue;
+            modeBuf[rowOff + x] = PM_FORCE_WHITE;
           }
         }
-        lumBuf[rowOff + x] = 0;
-        modeBuf[rowOff + x] = PM_SOLID_INK;
-      } else if (whiteHalo && dist <= rHere + 1.45f) {
-        if (modeBuf[rowOff + x] != PM_SOLID_INK) {
+      } else {
+        // Nocturne: crisp moonlit white stems/boughs with velvet-black crossing halos & carved feibai bark!
+        if (dist <= rHere) {
+          if (dryBrush && rHere >= 2.1f && dist < rHere - 1.15f) {
+            const float grain = valueNoise2D(fx * 0.45f, fy * 0.45f, p.seed);
+            if (grain > 0.66f) {
+              lumBuf[rowOff + x] = 0;
+              modeBuf[rowOff + x] = PM_FORCE_BLACK;
+              continue;
+            } else if (grain > 0.36f) {
+              lumBuf[rowOff + x] = static_cast<uint8_t>(lerpf(225.0f, 95.0f, (grain - 0.36f) / 0.30f));
+              modeBuf[rowOff + x] = PM_ATKINSON;
+              continue;
+            }
+          }
           lumBuf[rowOff + x] = 255;
-          modeBuf[rowOff + x] = PM_SOLID_WHITE;
+          modeBuf[rowOff + x] = PM_FORCE_WHITE;
+        } else if (whiteHalo && dist <= rHere + 1.45f) {
+          if (modeBuf[rowOff + x] != PM_FORCE_WHITE) {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_FORCE_BLACK;
+          }
         }
       }
     }
   }
 }
 
-void rasterizePetalInStrip(const ScenePrim& p, int stripY0, int stripH, int W, uint8_t* lumBuf, uint8_t* modeBuf) {
+void rasterizePetalInStrip(const ScenePrim& p, int stripY0, int stripH, int W, uint8_t* lumBuf, uint8_t* modeBuf,
+                           bool nocturne) {
   const int yStart = std::max<int>(stripY0, p.box.y0);
   const int yEnd = std::min<int>(stripY0 + stripH - 1, p.box.y1);
   if (yStart > yEnd) return;
@@ -2539,57 +2567,104 @@ void rasterizePetalInStrip(const ScenePrim& p, int stripY0, int stripH, int W, u
       const float dBase = -u * p.length;
       const float sdf = std::max({dSide, dTip, dBase});
 
-      if (sdf > 1.55f) continue;
+      if (sdf > (nocturne ? 1.78f : 1.55f)) continue;
 
-      if (sdf > 0.0f) {
-        lumBuf[rowOff + x] = 255;
-        modeBuf[rowOff + x] = PM_SOLID_WHITE;
-      } else if (sdf >= -1.18f) {
-        lumBuf[rowOff + x] = 0;
-        modeBuf[rowOff + x] = PM_SOLID_INK;
-      } else if (shape == PetalShape::BellCorolla || shape == PetalShape::TrumpetCorolla) {
-        // Side-profile bell/trumpet: crisp longitudinal corolla lobe creases + deep shaded throat!
-        const float vRel = perp / std::max(1.5f, halfW);
-        const bool lobeSeam = (uc > 0.25f && uc < 0.92f) && (std::fabs(std::fabs(vRel) - 0.38f) < 0.055f);
-        if (lobeSeam) {
-          lumBuf[rowOff + x] = 0;
-          modeBuf[rowOff + x] = PM_SOLID_INK;
-        } else if (sdf >= -2.2f) {
+      if (!nocturne) {
+        if (sdf > 0.0f) {
           lumBuf[rowOff + x] = 255;
-          modeBuf[rowOff + x] = PM_SOLID_WHITE;
-        } else {
-          float lum = lerpf(static_cast<float>(p.lumA), static_cast<float>(p.lumB), uc);
-          // Darker cylindrical side-wall shading + dark nectar opening near mouth of trumpet!
-          lum -= 42.0f * (vRel * vRel);
-          if (shape == PetalShape::TrumpetCorolla && uc > 0.78f && std::fabs(vRel) < 0.55f) {
-            lum -= 65.0f * (1.0f - std::fabs(vRel) / 0.55f);
+          modeBuf[rowOff + x] = PM_FORCE_WHITE;
+        } else if (sdf >= -1.18f) {
+          lumBuf[rowOff + x] = 0;
+          modeBuf[rowOff + x] = PM_FORCE_BLACK;
+        } else if (shape == PetalShape::BellCorolla || shape == PetalShape::TrumpetCorolla) {
+          // Side-profile bell/trumpet: crisp longitudinal corolla lobe creases + deep shaded throat!
+          const float vRel = perp / std::max(1.5f, halfW);
+          const bool lobeSeam = (uc > 0.25f && uc < 0.92f) && (std::fabs(std::fabs(vRel) - 0.38f) < 0.055f);
+          if (lobeSeam) {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_FORCE_BLACK;
+          } else if (sdf >= -2.2f) {
+            lumBuf[rowOff + x] = 255;
+            modeBuf[rowOff + x] = PM_FORCE_WHITE;
+          } else {
+            float lum = lerpf(static_cast<float>(p.lumA), static_cast<float>(p.lumB), uc);
+            // Darker cylindrical side-wall shading + dark nectar opening near mouth of trumpet!
+            lum -= 42.0f * (vRel * vRel);
+            if (shape == PetalShape::TrumpetCorolla && uc > 0.78f && std::fabs(vRel) < 0.55f) {
+              lum -= 65.0f * (1.0f - std::fabs(vRel) / 0.55f);
+            }
+            lumBuf[rowOff + x] = static_cast<uint8_t>(clampf(lum, 28.0f, 255.0f));
+            modeBuf[rowOff + x] = PM_ATKINSON;
           }
-          lumBuf[rowOff + x] = static_cast<uint8_t>(clampf(lum, 28.0f, 255.0f));
+        } else if (sdf >= -2.35f) {
+          lumBuf[rowOff + x] = 255;
+          modeBuf[rowOff + x] = PM_FORCE_WHITE;
+        } else {
+          const float vRel = perp / std::max(1.5f, halfW);
+          float tCup = std::pow(clampf(u / std::max(0.2f, tipLimit), 0.0f, 1.0f), 0.92f);
+          float lum = lerpf(static_cast<float>(p.lumA), static_cast<float>(p.lumB), tCup);
+          lum += 10.0f * (vRel * vRel);
+
+          if (u > 0.08f && u < 0.74f) {
+            const float veinWave = std::fabs(std::sin(vRel * (shape == PetalShape::CosmosFluted ? 4.8f : 6.2f)));
+            if (veinWave < 0.15f) {
+              lum -= (1.0f - u / 0.74f) * 62.0f;
+            }
+          }
+          lumBuf[rowOff + x] = static_cast<uint8_t>(clampf(lum, 24.0f, 255.0f));
           modeBuf[rowOff + x] = PM_ATKINSON;
         }
-      } else if (sdf >= -2.35f) {
-        lumBuf[rowOff + x] = 255;
-        modeBuf[rowOff + x] = PM_SOLID_WHITE;
       } else {
-        const float vRel = perp / std::max(1.5f, halfW);
-        float tCup = std::pow(clampf(u / std::max(0.2f, tipLimit), 0.0f, 1.0f), 0.92f);
-        float lum = lerpf(static_cast<float>(p.lumA), static_cast<float>(p.lumB), tCup);
-        lum += 10.0f * (vRel * vRel);
-
-        if (u > 0.08f && u < 0.74f) {
-          const float veinWave = std::fabs(std::sin(vRel * (shape == PetalShape::CosmosFluted ? 4.8f : 6.2f)));
-          if (veinWave < 0.15f) {
-            lum -= (1.0f - u / 0.74f) * 62.0f;
+        // Nocturne moonlit petal: 1.78px velvet-black separation moat between overlapping petals,
+        // fine 1.18px white petal contour, and delicate silver cupping toward a shadowed flower throat!
+        if (sdf > 0.0f) {
+          lumBuf[rowOff + x] = 0;
+          modeBuf[rowOff + x] = PM_FORCE_BLACK;
+        } else if (shape == PetalShape::BellCorolla || shape == PetalShape::TrumpetCorolla) {
+          const float vRel = perp / std::max(1.5f, halfW);
+          const bool lobeSeam = (uc > 0.25f && uc < 0.92f) && (std::fabs(std::fabs(vRel) - 0.38f) < 0.055f);
+          if (sdf >= -1.25f) {
+            lumBuf[rowOff + x] = 255;
+            modeBuf[rowOff + x] = PM_FORCE_WHITE;
+          } else if (lobeSeam) {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_FORCE_BLACK;
+          } else {
+            float lum = lerpf(static_cast<float>(p.lumA), static_cast<float>(p.lumB), uc);
+            lum -= 42.0f * (vRel * vRel);
+            if (shape == PetalShape::TrumpetCorolla && uc > 0.78f && std::fabs(vRel) < 0.55f) {
+              lum -= 75.0f * (1.0f - std::fabs(vRel) / 0.55f);
+            }
+            lumBuf[rowOff + x] = static_cast<uint8_t>(clampf(lum, 20.0f, 255.0f));
+            modeBuf[rowOff + x] = PM_ATKINSON;
           }
+        } else if (sdf >= -1.18f) {
+          lumBuf[rowOff + x] = 255;
+          modeBuf[rowOff + x] = PM_FORCE_WHITE;
+        } else {
+          const float vRel = perp / std::max(1.5f, halfW);
+          const float throatLum = std::min<float>(static_cast<float>(p.lumA) * 0.60f, 76.0f);
+          const float tipLum = std::min<float>(static_cast<float>(p.lumB), 240.0f);
+          float tCup = std::pow(clampf(u / std::max(0.2f, tipLimit), 0.0f, 1.0f), 1.12f);
+          float lum = lerpf(throatLum, tipLum, tCup);
+          lum += 14.0f * (vRel * vRel);
+
+          if (u > 0.08f && u < 0.74f) {
+            const float veinWave = std::fabs(std::sin(vRel * (shape == PetalShape::CosmosFluted ? 4.8f : 6.2f)));
+            if (veinWave < 0.15f) {
+              lum -= (1.0f - u / 0.74f) * 72.0f;
+            }
+          }
+          lumBuf[rowOff + x] = static_cast<uint8_t>(clampf(lum, 18.0f, 255.0f));
+          modeBuf[rowOff + x] = PM_ATKINSON;
         }
-        lumBuf[rowOff + x] = static_cast<uint8_t>(clampf(lum, 24.0f, 255.0f));
-        modeBuf[rowOff + x] = PM_ATKINSON;
       }
     }
   }
 }
 
-void rasterizeLeafInStrip(const ScenePrim& p, int stripY0, int stripH, int W, uint8_t* lumBuf, uint8_t* modeBuf) {
+void rasterizeLeafInStrip(const ScenePrim& p, int stripY0, int stripH, int W, uint8_t* lumBuf, uint8_t* modeBuf,
+                          bool nocturne) {
   const int yStart = std::max<int>(stripY0, p.box.y0);
   const int yEnd = std::min<int>(stripY0 + stripH - 1, p.box.y1);
   if (yStart > yEnd) return;
@@ -2642,47 +2717,89 @@ void rasterizeLeafInStrip(const ScenePrim& p, int stripY0, int stripH, int W, ui
 
       if (sdf > 1.35f) continue;
 
-      if (sdf > 0.0f) {
-        if (modeBuf[rowOff + x] != PM_SOLID_INK) {
-          lumBuf[rowOff + x] = 255;
-          modeBuf[rowOff + x] = PM_SOLID_WHITE;
+      if (!nocturne) {
+        if (sdf > 0.0f) {
+          if (modeBuf[rowOff + x] != PM_FORCE_BLACK) {
+            lumBuf[rowOff + x] = 255;
+            modeBuf[rowOff + x] = PM_FORCE_WHITE;
+          }
+          continue;
         }
-        continue;
-      }
 
-      if (style == LeafStyle::SolidInkBamboo) {
-        if (p.width >= 6.5f && std::fabs(perp) < 0.55f && uc > 0.12f && uc < 0.72f) {
-          lumBuf[rowOff + x] = 255;
-          modeBuf[rowOff + x] = PM_SOLID_WHITE;
-        } else {
-          lumBuf[rowOff + x] = 0;
-          modeBuf[rowOff + x] = PM_SOLID_INK;
-        }
-      } else if (style == LeafStyle::InkWashBamboo) {
-        lumBuf[rowOff + x] = static_cast<uint8_t>(lerpf(118.0f, 175.0f, uc));
-        modeBuf[rowOff + x] = PM_ATKINSON;
-      } else {
-        // WoodcutHalfShade / HeartCordate / ScallopedOak: crisp ink margin + midrib + bilateral woodcut shading!
-        if (sdf >= -1.12f || (std::fabs(perp) <= 0.68f && uc > 0.0f && uc < 0.88f)) {
-          lumBuf[rowOff + x] = 0;
-          modeBuf[rowOff + x] = PM_SOLID_INK;
-        } else if (perp > 0.0f) {
-          const float diagVein = std::sin((uc * p.length - perp * 0.85f) * 1.15f);
-          float lum = lerpf(118.0f, 205.0f, uc * 0.65f + (perp / std::max(1.0f, halfW)) * 0.35f);
-          if (diagVein > 0.78f) lum -= 52.0f;
-          lumBuf[rowOff + x] = static_cast<uint8_t>(clampf(lum, 30.0f, 245.0f));
+        if (style == LeafStyle::SolidInkBamboo) {
+          if (p.width >= 6.5f && std::fabs(perp) < 0.55f && uc > 0.12f && uc < 0.72f) {
+            lumBuf[rowOff + x] = 255;
+            modeBuf[rowOff + x] = PM_FORCE_WHITE;
+          } else {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_FORCE_BLACK;
+          }
+        } else if (style == LeafStyle::InkWashBamboo) {
+          lumBuf[rowOff + x] = static_cast<uint8_t>(lerpf(118.0f, 175.0f, uc));
           modeBuf[rowOff + x] = PM_ATKINSON;
         } else {
-          const float rim = clampf(-sdf / std::max(1.5f, halfW), 0.0f, 1.0f);
-          lumBuf[rowOff + x] = (rim < 0.24f) ? 212 : 255;
-          modeBuf[rowOff + x] = (rim < 0.24f) ? PM_ATKINSON : PM_SOLID_WHITE;
+          // WoodcutHalfShade / HeartCordate / ScallopedOak: crisp ink margin + midrib + bilateral woodcut shading!
+          if (sdf >= -1.12f || (std::fabs(perp) <= 0.68f && uc > 0.0f && uc < 0.88f)) {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_FORCE_BLACK;
+          } else if (perp > 0.0f) {
+            const float diagVein = std::sin((uc * p.length - perp * 0.85f) * 1.15f);
+            float lum = lerpf(118.0f, 205.0f, uc * 0.65f + (perp / std::max(1.0f, halfW)) * 0.35f);
+            if (diagVein > 0.78f) lum -= 52.0f;
+            lumBuf[rowOff + x] = static_cast<uint8_t>(clampf(lum, 30.0f, 245.0f));
+            modeBuf[rowOff + x] = PM_ATKINSON;
+          } else {
+            const float rim = clampf(-sdf / std::max(1.5f, halfW), 0.0f, 1.0f);
+            lumBuf[rowOff + x] = (rim < 0.24f) ? 212 : 255;
+            modeBuf[rowOff + x] = (rim < 0.24f) ? PM_ATKINSON : PM_FORCE_WHITE;
+          }
+        }
+      } else {
+        // Nocturne leaf: preserve stem connection at u <= 0.08, carve black moat along blade/sepals,
+        // and shade leaves with white outlines/midribs + half-silver/half-velvet-black woodcut relief
+        // so foliage never overpowers the brighter blossoms!
+        if (sdf > 0.0f) {
+          if (u > 0.08f || modeBuf[rowOff + x] != PM_FORCE_WHITE) {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_FORCE_BLACK;
+          }
+          continue;
+        }
+
+        if (style == LeafStyle::SolidInkBamboo) {
+          if (p.width >= 6.5f && std::fabs(perp) < 0.55f && uc > 0.12f && uc < 0.72f) {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_FORCE_BLACK;
+          } else {
+            lumBuf[rowOff + x] = 255;
+            modeBuf[rowOff + x] = PM_FORCE_WHITE;
+          }
+        } else if (style == LeafStyle::InkWashBamboo) {
+          lumBuf[rowOff + x] = static_cast<uint8_t>(lerpf(108.0f, 62.0f, uc));
+          modeBuf[rowOff + x] = PM_ATKINSON;
+        } else {
+          if (sdf >= -1.12f || (std::fabs(perp) <= 0.68f && uc > 0.0f && uc < 0.88f)) {
+            lumBuf[rowOff + x] = 255;
+            modeBuf[rowOff + x] = PM_FORCE_WHITE;
+          } else if (perp > 0.0f) {
+            const float diagVein = std::sin((uc * p.length - perp * 0.85f) * 1.15f);
+            float lum = lerpf(64.0f, 146.0f, uc * 0.55f + (perp / std::max(1.0f, halfW)) * 0.45f);
+            if (diagVein > 0.78f) lum += 72.0f;
+            lumBuf[rowOff + x] = static_cast<uint8_t>(clampf(lum, 24.0f, 242.0f));
+            modeBuf[rowOff + x] = PM_ATKINSON;
+          } else {
+            const float rim = clampf(-sdf / std::max(1.5f, halfW), 0.0f, 1.0f);
+            lumBuf[rowOff + x] = (rim < 0.22f) ? 58 : 0;
+            modeBuf[rowOff + x] = (rim < 0.22f) ? PM_ATKINSON : PM_FORCE_BLACK;
+          }
         }
       }
     }
   }
 }
 
-void rasterizeDiscInStrip(const ScenePrim& p, int stripY0, int stripH, int W, uint8_t* lumBuf, uint8_t* modeBuf) {
+void rasterizeDiscInStrip(const ScenePrim& p, int stripY0, int stripH, int W, uint8_t* lumBuf, uint8_t* modeBuf,
+                          bool nocturne) {
   const int yStart = std::max<int>(stripY0, p.box.y0);
   const int yEnd = std::min<int>(stripY0 + stripH - 1, p.box.y1);
   if (yStart > yEnd) return;
@@ -2698,13 +2815,29 @@ void rasterizeDiscInStrip(const ScenePrim& p, int stripY0, int stripH, int W, ui
       const int rowOff = (y - stripY0) * W;
       for (int x = xStart; x <= xEnd; ++x) {
         const float d = std::hypot(static_cast<float>(x) - p.x0, static_cast<float>(y) - p.y0);
-        if (d <= coreR + 1.3f) {
-          if (d > coreR) {
-            lumBuf[rowOff + x] = 0;
-            modeBuf[rowOff + x] = PM_SOLID_INK;
-          } else {
-            lumBuf[rowOff + x] = (kind == DiscKind::PlumCalyxPins) ? 45 : 135;
-            modeBuf[rowOff + x] = PM_ATKINSON;
+        if (!nocturne) {
+          if (d <= coreR + 1.3f) {
+            if (d > coreR) {
+              lumBuf[rowOff + x] = 0;
+              modeBuf[rowOff + x] = PM_FORCE_BLACK;
+            } else {
+              lumBuf[rowOff + x] = (kind == DiscKind::PlumCalyxPins) ? 45 : 135;
+              modeBuf[rowOff + x] = PM_ATKINSON;
+            }
+          }
+        } else {
+          // Nocturne: velvet-black throat moat so white stamen filaments & pins glow crisply!
+          if (d <= p.r0 * 0.88f) {
+            if (d <= coreR) {
+              lumBuf[rowOff + x] = (kind == DiscKind::PlumCalyxPins) ? 32 : 98;
+              modeBuf[rowOff + x] = PM_ATKINSON;
+            } else if (d <= coreR + 1.15f) {
+              lumBuf[rowOff + x] = 255;
+              modeBuf[rowOff + x] = PM_FORCE_WHITE;
+            } else {
+              lumBuf[rowOff + x] = 0;
+              modeBuf[rowOff + x] = PM_FORCE_BLACK;
+            }
           }
         }
       }
@@ -2724,15 +2857,19 @@ void rasterizeDiscInStrip(const ScenePrim& p, int stripY0, int stripH, int W, ui
       ray.r0 = 0.48f;
       ray.r1 = 0.48f;
       ray.box = p.box;
-      rasterizeStrokeInStrip(ray, stripY0, stripH, W, lumBuf, modeBuf);
+      rasterizeStrokeInStrip(ray, stripY0, stripH, W, lumBuf, modeBuf, nocturne);
 
       for (int y = std::max<int>(yStart, static_cast<int>(ay - 2)); y <= std::min<int>(yEnd, static_cast<int>(ay + 2));
            ++y) {
         for (int x = std::max<int>(xStart, static_cast<int>(ax - 2));
              x <= std::min<int>(xEnd, static_cast<int>(ax + 2)); ++x) {
-          if (std::hypot(static_cast<float>(x) - ax, static_cast<float>(y) - ay) <= 1.35f) {
+          const float dPin = std::hypot(static_cast<float>(x) - ax, static_cast<float>(y) - ay);
+          if (dPin <= 1.35f) {
+            lumBuf[(y - stripY0) * W + x] = nocturne ? 255 : 0;
+            modeBuf[(y - stripY0) * W + x] = nocturne ? PM_FORCE_WHITE : PM_FORCE_BLACK;
+          } else if (nocturne && dPin <= 2.25f && modeBuf[(y - stripY0) * W + x] != PM_FORCE_WHITE) {
             lumBuf[(y - stripY0) * W + x] = 0;
-            modeBuf[(y - stripY0) * W + x] = PM_SOLID_INK;
+            modeBuf[(y - stripY0) * W + x] = PM_FORCE_BLACK;
           }
         }
       }
@@ -2759,28 +2896,49 @@ void rasterizeDiscInStrip(const ScenePrim& p, int stripY0, int stripH, int W, ui
         } else {
           starProfile = p.r0 * (0.24f + 0.76f * std::pow(std::fabs(std::cos(2.0f * theta)), 2.6f));
         }
-        if (r <= starProfile) {
-          if (needle) {
-            if (r < p.r0 * 0.16f) {
-              lumBuf[rowOff + x] = 255;
-              modeBuf[rowOff + x] = PM_SOLID_WHITE;
+        if (!nocturne) {
+          if (r <= starProfile) {
+            if (needle) {
+              if (r < p.r0 * 0.16f) {
+                lumBuf[rowOff + x] = 255;
+                modeBuf[rowOff + x] = PM_FORCE_WHITE;
+              } else {
+                lumBuf[rowOff + x] = 0;
+                modeBuf[rowOff + x] = PM_FORCE_BLACK;
+              }
             } else {
-              lumBuf[rowOff + x] = 0;
-              modeBuf[rowOff + x] = PM_SOLID_INK;
+              const int octant = static_cast<int>(std::floor(((theta + kTwoPi) / (kPi * 0.25f)))) & 1;
+              if (r >= starProfile - 0.95f || octant == 0) {
+                lumBuf[rowOff + x] = 0;
+                modeBuf[rowOff + x] = PM_FORCE_BLACK;
+              } else {
+                lumBuf[rowOff + x] = 255;
+                modeBuf[rowOff + x] = PM_FORCE_WHITE;
+              }
             }
-          } else {
-            const int octant = static_cast<int>(std::floor(((theta + kTwoPi) / (kPi * 0.25f)))) & 1;
-            if (r >= starProfile - 0.95f || octant == 0) {
-              lumBuf[rowOff + x] = 0;
-              modeBuf[rowOff + x] = PM_SOLID_INK;
-            } else {
-              lumBuf[rowOff + x] = 255;
-              modeBuf[rowOff + x] = PM_SOLID_WHITE;
-            }
+          } else if (r <= starProfile + 1.35f && modeBuf[rowOff + x] != PM_FORCE_BLACK) {
+            lumBuf[rowOff + x] = 255;
+            modeBuf[rowOff + x] = PM_FORCE_WHITE;
           }
-        } else if (r <= starProfile + 1.35f && modeBuf[rowOff + x] != PM_SOLID_INK) {
-          lumBuf[rowOff + x] = 255;
-          modeBuf[rowOff + x] = PM_SOLID_WHITE;
+        } else {
+          if (r <= starProfile) {
+            if (needle) {
+              lumBuf[rowOff + x] = 255;
+              modeBuf[rowOff + x] = PM_FORCE_WHITE;
+            } else {
+              const int octant = static_cast<int>(std::floor(((theta + kTwoPi) / (kPi * 0.25f)))) & 1;
+              if (r >= starProfile - 0.95f || octant == 0) {
+                lumBuf[rowOff + x] = 255;
+                modeBuf[rowOff + x] = PM_FORCE_WHITE;
+              } else {
+                lumBuf[rowOff + x] = 0;
+                modeBuf[rowOff + x] = PM_FORCE_BLACK;
+              }
+            }
+          } else if (r <= starProfile + 1.35f && modeBuf[rowOff + x] != PM_FORCE_WHITE) {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_FORCE_BLACK;
+          }
         }
       }
     }
@@ -2788,23 +2946,38 @@ void rasterizeDiscInStrip(const ScenePrim& p, int stripY0, int stripH, int W, ui
   }
 
   if (kind == DiscKind::RingedStar) {
-    // 2nd-magnitude Uranometria bullseye star: solid core + white moat + fine ink ring!
+    // 2nd-magnitude Uranometria bullseye star: solid core + moat + fine outer ring!
     for (int y = yStart; y <= yEnd; ++y) {
       const int rowOff = (y - stripY0) * W;
       for (int x = xStart; x <= xEnd; ++x) {
         const float r = std::hypot(static_cast<float>(x) - p.x0, static_cast<float>(y) - p.y0);
         if (r > p.r0 + 1.3f) continue;
-        if (r > p.r0) {
-          if (modeBuf[rowOff + x] != PM_SOLID_INK) {
+        if (!nocturne) {
+          if (r > p.r0) {
+            if (modeBuf[rowOff + x] != PM_FORCE_BLACK) {
+              lumBuf[rowOff + x] = 255;
+              modeBuf[rowOff + x] = PM_FORCE_WHITE;
+            }
+          } else if (r >= p.r0 - 0.85f || r <= p.r0 * 0.38f) {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_FORCE_BLACK;
+          } else {
             lumBuf[rowOff + x] = 255;
-            modeBuf[rowOff + x] = PM_SOLID_WHITE;
+            modeBuf[rowOff + x] = PM_FORCE_WHITE;
           }
-        } else if (r >= p.r0 - 0.85f || r <= p.r0 * 0.38f) {
-          lumBuf[rowOff + x] = 0;
-          modeBuf[rowOff + x] = PM_SOLID_INK;
         } else {
-          lumBuf[rowOff + x] = 255;
-          modeBuf[rowOff + x] = PM_SOLID_WHITE;
+          if (r > p.r0) {
+            if (modeBuf[rowOff + x] != PM_FORCE_WHITE) {
+              lumBuf[rowOff + x] = 0;
+              modeBuf[rowOff + x] = PM_FORCE_BLACK;
+            }
+          } else if (r >= p.r0 - 0.85f || r <= p.r0 * 0.42f) {
+            lumBuf[rowOff + x] = 255;
+            modeBuf[rowOff + x] = PM_FORCE_WHITE;
+          } else {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_FORCE_BLACK;
+          }
         }
       }
     }
@@ -2827,26 +3000,51 @@ void rasterizeDiscInStrip(const ScenePrim& p, int stripY0, int stripH, int W, ui
         const bool inRing = (ellR >= p.r0 * 0.68f && ellR <= p.r0 * 1.02f);
         const bool frontRing = inRing && (ry >= 0.0f);
 
-        if (frontRing || (inRing && dist > p.r0 + 1.0f)) {
-          if (std::fabs(ellR - p.r0 * 0.85f) < p.r0 * 0.06f) {
+        if (!nocturne) {
+          if (frontRing || (inRing && dist > p.r0 + 1.0f)) {
+            if (std::fabs(ellR - p.r0 * 0.85f) < p.r0 * 0.06f) {
+              lumBuf[rowOff + x] = 255;
+              modeBuf[rowOff + x] = PM_FORCE_WHITE;  // Cassini division highlight!
+            } else {
+              lumBuf[rowOff + x] = 0;
+              modeBuf[rowOff + x] = PM_FORCE_BLACK;
+            }
+          } else if (dist <= p.r0) {
+            if (dist >= p.r0 - 1.0f) {
+              lumBuf[rowOff + x] = 0;
+              modeBuf[rowOff + x] = PM_FORCE_BLACK;
+            } else {
+              const float lit = clampf(0.55f - 0.45f * (dx / p.r0) - 0.35f * (dy / p.r0), 0.08f, 1.0f);
+              lumBuf[rowOff + x] = static_cast<uint8_t>(lerpf(45.0f, 248.0f, lit));
+              modeBuf[rowOff + x] = PM_ATKINSON;
+            }
+          } else if (dist <= p.r0 + 1.3f && modeBuf[rowOff + x] != PM_FORCE_BLACK) {
             lumBuf[rowOff + x] = 255;
-            modeBuf[rowOff + x] = PM_SOLID_WHITE;  // Cassini division highlight!
-          } else {
-            lumBuf[rowOff + x] = 0;
-            modeBuf[rowOff + x] = PM_SOLID_INK;
+            modeBuf[rowOff + x] = PM_FORCE_WHITE;
           }
-        } else if (dist <= p.r0) {
-          if (dist >= p.r0 - 1.0f) {
+        } else {
+          // Nocturne Saturn: glowing white rings split by a dark Cassini division over a 3D sunlit planet!
+          const float lit = clampf(0.55f - 0.45f * (dx / p.r0) - 0.35f * (dy / p.r0), 0.08f, 1.0f);
+          if (frontRing || (inRing && dist > p.r0 + 1.0f)) {
+            if (std::fabs(ellR - p.r0 * 0.85f) < p.r0 * 0.06f) {
+              lumBuf[rowOff + x] = 0;
+              modeBuf[rowOff + x] = PM_FORCE_BLACK;
+            } else {
+              lumBuf[rowOff + x] = 255;
+              modeBuf[rowOff + x] = PM_FORCE_WHITE;
+            }
+          } else if (dist <= p.r0) {
+            if (dist >= p.r0 - 1.0f) {
+              lumBuf[rowOff + x] = (lit > 0.32f) ? 255 : 112;
+              modeBuf[rowOff + x] = (lit > 0.32f) ? PM_FORCE_WHITE : PM_ATKINSON;
+            } else {
+              lumBuf[rowOff + x] = static_cast<uint8_t>(lerpf(26.0f, 250.0f, lit));
+              modeBuf[rowOff + x] = PM_ATKINSON;
+            }
+          } else if (dist <= p.r0 + 1.3f) {
             lumBuf[rowOff + x] = 0;
-            modeBuf[rowOff + x] = PM_SOLID_INK;
-          } else {
-            const float lit = clampf(0.55f - 0.45f * (dx / p.r0) - 0.35f * (dy / p.r0), 0.08f, 1.0f);
-            lumBuf[rowOff + x] = static_cast<uint8_t>(lerpf(45.0f, 248.0f, lit));
-            modeBuf[rowOff + x] = PM_ATKINSON;
+            modeBuf[rowOff + x] = PM_FORCE_BLACK;
           }
-        } else if (dist <= p.r0 + 1.3f && modeBuf[rowOff + x] != PM_SOLID_INK) {
-          lumBuf[rowOff + x] = 255;
-          modeBuf[rowOff + x] = PM_SOLID_WHITE;
         }
       }
     }
@@ -2866,37 +3064,85 @@ void rasterizeDiscInStrip(const ScenePrim& p, int stripY0, int stripH, int W, ui
       const float dist = std::hypot(dx, dy);
 
       if (kind == DiscKind::SeigaihaScale) {
-        if (dy > p.r0 * 0.55f || dist > p.r0 + 1.4f) continue;
-        if (dist > p.r0) {
-          lumBuf[rowOff + x] = 255;
-          modeBuf[rowOff + x] = PM_SOLID_WHITE;
-          continue;
-        }
-        const float uRad = dist / p.r0;
-        const float ringWave = std::fabs(std::sin(uRad * kPi * 4.0f));
-        if (dist >= p.r0 - 1.15f || (ringWave < 0.14f && uRad > 0.18f)) {
-          lumBuf[rowOff + x] = 0;
-          modeBuf[rowOff + x] = PM_SOLID_INK;
-        } else if (uRad > 0.88f) {
-          lumBuf[rowOff + x] = 255;
-          modeBuf[rowOff + x] = PM_SOLID_WHITE;
+        // Restrict each wave scale to its true upper semicircular arch (dy <= 0.06 * r0)
+        // so card-adjacent or bottom-row waves NEVER expose a circular bullseye bottom!
+        if (dy > p.r0 * 0.06f || dist > p.r0 + 1.4f) continue;
+        if (!nocturne) {
+          if (dist > p.r0) {
+            lumBuf[rowOff + x] = 255;
+            modeBuf[rowOff + x] = PM_FORCE_WHITE;
+            continue;
+          }
+          const float uRad = dist / p.r0;
+          const float ringWave = std::fabs(std::sin(uRad * kPi * 4.0f));
+          if (dist >= p.r0 - 1.15f || (ringWave < 0.14f && uRad > 0.18f)) {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_FORCE_BLACK;
+          } else if (uRad > 0.88f) {
+            lumBuf[rowOff + x] = 255;
+            modeBuf[rowOff + x] = PM_FORCE_WHITE;
+          } else {
+            const float lum = lerpf(245.0f, static_cast<float>(p.lumA), std::pow(uRad, 1.35f));
+            lumBuf[rowOff + x] = static_cast<uint8_t>(clampf(lum, 55.0f, 252.0f));
+            modeBuf[rowOff + x] = PM_ATKINSON;
+          }
         } else {
-          const float lum = lerpf(245.0f, static_cast<float>(p.lumA), std::pow(uRad, 1.35f));
-          lumBuf[rowOff + x] = static_cast<uint8_t>(clampf(lum, 55.0f, 252.0f));
-          modeBuf[rowOff + x] = PM_ATKINSON;
+          // Nocturne Seigaiha: black separation moat, crisp white foam crest & concentric silver arcs over dark sea!
+          if (dist > p.r0) {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_FORCE_BLACK;
+            continue;
+          }
+          const float uRad = dist / p.r0;
+          const float ringWave = std::fabs(std::sin(uRad * kPi * 3.5f));
+          if (dist >= p.r0 - 1.2f || (ringWave < 0.125f && uRad > 0.24f)) {
+            lumBuf[rowOff + x] = 255;
+            modeBuf[rowOff + x] = PM_FORCE_WHITE;
+          } else if (uRad > 0.85f) {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_FORCE_BLACK;
+          } else {
+            const float lum = lerpf(10.0f, 132.0f, std::pow(uRad, 1.85f));
+            lumBuf[rowOff + x] = static_cast<uint8_t>(clampf(lum, 0.0f, 175.0f));
+            modeBuf[rowOff + x] = PM_ATKINSON;
+          }
         }
         continue;
       }
 
       if (dist > p.r0 + 1.6f) continue;
+
+      // Pinpoint stars & stamen tips (StippledBud with p.lumB <= 30) in Nocturne: crisp glowing white dots!
+      if (nocturne && kind == DiscKind::StippledBud && p.lumB <= 30) {
+        if (dist <= p.r0) {
+          lumBuf[rowOff + x] = 255;
+          modeBuf[rowOff + x] = PM_FORCE_WHITE;
+        } else if (dist <= p.r0 + 1.25f && modeBuf[rowOff + x] != PM_FORCE_WHITE) {
+          lumBuf[rowOff + x] = 0;
+          modeBuf[rowOff + x] = PM_FORCE_BLACK;
+        }
+        continue;
+      }
+
       if (dist > p.r0) {
-        lumBuf[rowOff + x] = 255;
-        modeBuf[rowOff + x] = PM_SOLID_WHITE;
+        lumBuf[rowOff + x] = nocturne ? 0 : 255;
+        modeBuf[rowOff + x] = nocturne ? PM_FORCE_BLACK : PM_FORCE_WHITE;
         continue;
       }
       if (dist >= p.r0 - 1.15f) {
-        lumBuf[rowOff + x] = 0;
-        modeBuf[rowOff + x] = PM_SOLID_INK;
+        if (!nocturne) {
+          lumBuf[rowOff + x] = 0;
+          modeBuf[rowOff + x] = PM_FORCE_BLACK;
+        } else if (kind == DiscKind::Moon3D) {
+          const float nx = dx / p.r0;
+          const float ny = dy / p.r0;
+          const float ndotl = (nx * lx + ny * ly) / lNorm;
+          lumBuf[rowOff + x] = (ndotl > -0.05f) ? 255 : 108;
+          modeBuf[rowOff + x] = (ndotl > -0.05f) ? PM_FORCE_WHITE : PM_ATKINSON;
+        } else {
+          lumBuf[rowOff + x] = 255;
+          modeBuf[rowOff + x] = PM_FORCE_WHITE;
+        }
         continue;
       }
 
@@ -2906,10 +3152,10 @@ void rasterizeDiscInStrip(const ScenePrim& p, int stripY0, int stripH, int W, ui
         const float hatchB = std::fabs(std::sin((dx - dy) * 0.88f));
         if (hatchA < 0.22f || hatchB < 0.22f) {
           lumBuf[rowOff + x] = 0;
-          modeBuf[rowOff + x] = PM_SOLID_INK;
+          modeBuf[rowOff + x] = PM_FORCE_BLACK;
         } else {
           const float domeLit = std::sqrt(std::max(0.0f, 1.0f - (dist * dist) / (p.r0 * p.r0)));
-          lumBuf[rowOff + x] = static_cast<uint8_t>(lerpf(95.0f, 245.0f, domeLit));
+          lumBuf[rowOff + x] = static_cast<uint8_t>(lerpf(nocturne ? 78.0f : 95.0f, 245.0f, domeLit));
           modeBuf[rowOff + x] = PM_ATKINSON;
         }
       } else if (kind == DiscKind::Moon3D) {
@@ -2920,34 +3166,35 @@ void rasterizeDiscInStrip(const ScenePrim& p, int stripY0, int stripH, int W, ui
         const float maria = fbm2D((nx + 1.5f) * 3.2f, (ny + 1.5f) * 3.2f, p.seed);
         float lum = 0.0f;
         if (ndotl <= -0.06f) {
-          lum = 22.0f + 26.0f * (1.0f - nz);
+          lum = nocturne ? (10.0f + 16.0f * (1.0f - nz)) : (22.0f + 26.0f * (1.0f - nz));
         } else {
           const float lit = smoothstepf(-0.06f, 0.82f, ndotl);
-          lum = lerpf(32.0f, 255.0f, lit) - (1.0f - maria) * 48.0f * lit;
+          lum = lerpf(28.0f, 255.0f, lit) - (1.0f - maria) * 48.0f * lit;
         }
-        lumBuf[rowOff + x] = static_cast<uint8_t>(clampf(lum, 12.0f, 255.0f));
+        lumBuf[rowOff + x] = static_cast<uint8_t>(clampf(lum, nocturne ? 6.0f : 12.0f, 255.0f));
         modeBuf[rowOff + x] = PM_ATKINSON;
       } else if (kind == DiscKind::MorrisRosette) {
         const float uRad = dist / p.r0;
         const float theta = std::atan2(dy, dx) - p.angle;
         const float petalStar = 0.52f + 0.24f * std::cos(8.0f * theta);
         if (std::fabs(uRad - 0.78f) < 0.06f || std::fabs(uRad - 0.24f) < 0.07f) {
-          lumBuf[rowOff + x] = 0;
-          modeBuf[rowOff + x] = PM_SOLID_INK;
+          lumBuf[rowOff + x] = nocturne ? 255 : 0;
+          modeBuf[rowOff + x] = nocturne ? PM_FORCE_WHITE : PM_FORCE_BLACK;
         } else if (uRad < petalStar && uRad > 0.28f) {
           lumBuf[rowOff + x] = 255;
-          modeBuf[rowOff + x] = PM_SOLID_WHITE;
+          modeBuf[rowOff + x] = PM_FORCE_WHITE;
         } else {
-          lumBuf[rowOff + x] = 128;
+          lumBuf[rowOff + x] = nocturne ? 82 : 128;
           modeBuf[rowOff + x] = PM_ATKINSON;
         }
       } else {
         if (p.lumB <= 30) {
           lumBuf[rowOff + x] = 0;
-          modeBuf[rowOff + x] = PM_SOLID_INK;
+          modeBuf[rowOff + x] = PM_FORCE_BLACK;
         } else {
           const float spec = std::hypot(dx / p.r0 + 0.32f, dy / p.r0 + 0.32f);
-          const float lum = lerpf(255.0f, static_cast<float>(p.lumA), clampf(spec * 0.78f, 0.0f, 1.0f));
+          const float minBud = nocturne ? std::min(88.0f, static_cast<float>(p.lumA)) : static_cast<float>(p.lumA);
+          const float lum = lerpf(255.0f, minBud, clampf(spec * 0.78f, 0.0f, 1.0f));
           lumBuf[rowOff + x] = static_cast<uint8_t>(lum);
           modeBuf[rowOff + x] = PM_ATKINSON;
         }
@@ -2970,7 +3217,8 @@ inline float sdCapsuleTapered(float px, float py, float ax, float ay, float bx, 
   return std::hypot(px - (ax + t * vx), py - (ay + t * vy)) - lerpf(ra, rb, t);
 }
 
-void rasterizeCreatureInStrip(const ScenePrim& p, int stripY0, int stripH, int W, uint8_t* lumBuf, uint8_t* modeBuf) {
+void rasterizeCreatureInStrip(const ScenePrim& p, int stripY0, int stripH, int W, uint8_t* lumBuf, uint8_t* modeBuf,
+                              bool nocturne) {
   const int yStart = std::max<int>(stripY0, p.box.y0);
   const int yEnd = std::min<int>(stripY0 + stripH - 1, p.box.y1);
   if (yStart > yEnd) return;
@@ -3047,67 +3295,135 @@ void rasterizeCreatureInStrip(const ScenePrim& p, int stripY0, int stripH, int W
         const float dAll = std::min({dNearWing, dTorso, dBeak, dTail, dFarWing});
         if (dAll > pxHalo) continue;
 
-        if (dAll > 0.0f) {
-          if (modeBuf[rowOff + x] != PM_SOLID_INK) {
-            lumBuf[rowOff + x] = 255;
-            modeBuf[rowOff + x] = PM_SOLID_WHITE;
+        if (!nocturne) {
+          if (dAll > 0.0f) {
+            if (modeBuf[rowOff + x] != PM_FORCE_BLACK) {
+              lumBuf[rowOff + x] = 255;
+              modeBuf[rowOff + x] = PM_FORCE_WHITE;
+            }
+            continue;
           }
-          continue;
-        }
 
-        // Foreground priority: 1) Near Wing, 2) Beak, 3) Torso/Head, 4) Tail, 5) Far Wing!
-        if (dNearWing <= 0.0f) {
-          // Feather shaft lines radiating from shoulder to scalloped primaries!
-          const float featherAngle = std::atan2(wingPerp + 0.02f, wingT * 1.1f + 0.05f);
-          const bool shaftLine =
-              (wingT > 0.18f && wingPerp > 0.02f) && (std::fabs(std::sin(featherAngle * 14.0f)) < 0.14f);
-          if (dNearWing >= -pxOutline || shaftLine) {
+          // Foreground priority: 1) Near Wing, 2) Beak, 3) Torso/Head, 4) Tail, 5) Far Wing!
+          if (dNearWing <= 0.0f) {
+            // Feather shaft lines radiating from shoulder to scalloped primaries!
+            const float featherAngle = std::atan2(wingPerp + 0.02f, wingT * 1.1f + 0.05f);
+            const bool shaftLine =
+                (wingT > 0.18f && wingPerp > 0.02f) && (std::fabs(std::sin(featherAngle * 14.0f)) < 0.14f);
+            if (dNearWing >= -pxOutline || shaftLine) {
+              lumBuf[rowOff + x] = 0;
+              modeBuf[rowOff + x] = PM_FORCE_BLACK;
+            } else {
+              const float wingLum = lerpf(92.0f, 232.0f, clampf(1.0f - wingPerp * 2.4f, 0.0f, 1.0f));
+              lumBuf[rowOff + x] = static_cast<uint8_t>(wingLum);
+              modeBuf[rowOff + x] = PM_ATKINSON;
+            }
+          } else if (dBeak <= 0.0f) {
             lumBuf[rowOff + x] = 0;
-            modeBuf[rowOff + x] = PM_SOLID_INK;
-          } else {
-            const float wingLum = lerpf(92.0f, 232.0f, clampf(1.0f - wingPerp * 2.4f, 0.0f, 1.0f));
-            lumBuf[rowOff + x] = static_cast<uint8_t>(wingLum);
-            modeBuf[rowOff + x] = PM_ATKINSON;
+            modeBuf[rowOff + x] = PM_FORCE_BLACK;
+          } else if (dTorso <= 0.0f) {
+            const float dEye = std::hypot(u - 0.32f, v + 0.24f);
+            if (dEye <= 0.055f) {
+              lumBuf[rowOff + x] = 0;
+              modeBuf[rowOff + x] = PM_FORCE_BLACK;  // Crisp pupil!
+            } else if (dEye <= 0.095f) {
+              lumBuf[rowOff + x] = 255;
+              modeBuf[rowOff + x] = PM_FORCE_WHITE;  // Sparkling white eye-ring!
+            } else if (dTorso >= -pxOutline) {
+              lumBuf[rowOff + x] = 0;
+              modeBuf[rowOff + x] = PM_FORCE_BLACK;
+            } else if (u > 0.14f && v > -0.18f && v < 0.04f) {
+              // Iridescent dark stippled hummingbird gorget throat!
+              lumBuf[rowOff + x] = 68;
+              modeBuf[rowOff + x] = PM_ATKINSON;
+            } else {
+              // Bright sunlit breast + shaded dorsal crown/back!
+              const float bellyBright = clampf((u * 0.6f + v * 1.4f + 0.35f), 0.0f, 1.0f);
+              lumBuf[rowOff + x] = static_cast<uint8_t>(lerpf(108.0f, 245.0f, bellyBright));
+              modeBuf[rowOff + x] = PM_ATKINSON;
+            }
+          } else if (dTail <= 0.0f) {
+            if (dTail >= -pxOutline * 0.9f) {
+              lumBuf[rowOff + x] = 0;
+              modeBuf[rowOff + x] = PM_FORCE_BLACK;
+            } else {
+              lumBuf[rowOff + x] = 115;
+              modeBuf[rowOff + x] = PM_ATKINSON;
+            }
+          } else if (dFarWing <= 0.0f) {
+            if (dFarWing >= -pxOutline * 0.9f) {
+              lumBuf[rowOff + x] = 0;
+              modeBuf[rowOff + x] = PM_FORCE_BLACK;
+            } else {
+              lumBuf[rowOff + x] = 118;
+              modeBuf[rowOff + x] = PM_ATKINSON;
+            }
           }
-        } else if (dBeak <= 0.0f) {
-          lumBuf[rowOff + x] = 0;
-          modeBuf[rowOff + x] = PM_SOLID_INK;
-        } else if (dTorso <= 0.0f) {
-          const float dEye = std::hypot(u - 0.32f, v + 0.24f);
-          if (dEye <= 0.055f) {
+        } else {
+          // Nocturne Hummingbird: velvet-black separation moat, crisp silver-white silhouette & needle bill,
+          // carved black primary feather shafts, and living dark pupil inside a sparkling white eye-ring!
+          if (dAll > 0.0f) {
             lumBuf[rowOff + x] = 0;
-            modeBuf[rowOff + x] = PM_SOLID_INK;  // Crisp pupil!
-          } else if (dEye <= 0.095f) {
+            modeBuf[rowOff + x] = PM_FORCE_BLACK;
+            continue;
+          }
+
+          if (dNearWing <= 0.0f) {
+            const float featherAngle = std::atan2(wingPerp + 0.02f, wingT * 1.1f + 0.05f);
+            const bool shaftLine =
+                (wingT > 0.18f && wingPerp > 0.02f) && (std::fabs(std::sin(featherAngle * 14.0f)) < 0.14f);
+            if (dNearWing >= -pxOutline) {
+              lumBuf[rowOff + x] = 255;
+              modeBuf[rowOff + x] = PM_FORCE_WHITE;
+            } else if (shaftLine) {
+              lumBuf[rowOff + x] = 0;
+              modeBuf[rowOff + x] = PM_FORCE_BLACK;
+            } else {
+              const float wingLum = lerpf(86.0f, 236.0f, clampf(1.0f - wingPerp * 2.4f, 0.0f, 1.0f));
+              lumBuf[rowOff + x] = static_cast<uint8_t>(wingLum);
+              modeBuf[rowOff + x] = PM_ATKINSON;
+            }
+          } else if (dBeak <= 0.0f) {
             lumBuf[rowOff + x] = 255;
-            modeBuf[rowOff + x] = PM_SOLID_WHITE;  // Sparkling white eye-ring!
-          } else if (dTorso >= -pxOutline) {
-            lumBuf[rowOff + x] = 0;
-            modeBuf[rowOff + x] = PM_SOLID_INK;
-          } else if (u > 0.14f && v > -0.18f && v < 0.04f) {
-            // Iridescent dark stippled hummingbird gorget throat!
-            lumBuf[rowOff + x] = 68;
-            modeBuf[rowOff + x] = PM_ATKINSON;
-          } else {
-            // Bright sunlit breast + shaded dorsal crown/back!
-            const float bellyBright = clampf((u * 0.6f + v * 1.4f + 0.35f), 0.0f, 1.0f);
-            lumBuf[rowOff + x] = static_cast<uint8_t>(lerpf(108.0f, 245.0f, bellyBright));
-            modeBuf[rowOff + x] = PM_ATKINSON;
-          }
-        } else if (dTail <= 0.0f) {
-          if (dTail >= -pxOutline * 0.9f) {
-            lumBuf[rowOff + x] = 0;
-            modeBuf[rowOff + x] = PM_SOLID_INK;
-          } else {
-            lumBuf[rowOff + x] = 115;
-            modeBuf[rowOff + x] = PM_ATKINSON;
-          }
-        } else if (dFarWing <= 0.0f) {
-          if (dFarWing >= -pxOutline * 0.9f) {
-            lumBuf[rowOff + x] = 0;
-            modeBuf[rowOff + x] = PM_SOLID_INK;
-          } else {
-            lumBuf[rowOff + x] = 118;
-            modeBuf[rowOff + x] = PM_ATKINSON;
+            modeBuf[rowOff + x] = PM_FORCE_WHITE;
+          } else if (dTorso <= 0.0f) {
+            const float dEye = std::hypot(u - 0.32f, v + 0.24f);
+            if (dEye <= 0.055f) {
+              lumBuf[rowOff + x] = 0;
+              modeBuf[rowOff + x] = PM_FORCE_BLACK;  // Living dark pupil!
+            } else if (dEye <= 0.098f) {
+              lumBuf[rowOff + x] = 255;
+              modeBuf[rowOff + x] = PM_FORCE_WHITE;  // Sparkling white eye-ring!
+            } else if (dEye <= 0.128f) {
+              lumBuf[rowOff + x] = 0;
+              modeBuf[rowOff + x] = PM_FORCE_BLACK;  // Dark eye-socket crease!
+            } else if (dTorso >= -pxOutline) {
+              lumBuf[rowOff + x] = 255;
+              modeBuf[rowOff + x] = PM_FORCE_WHITE;
+            } else if (u > 0.14f && v > -0.18f && v < 0.04f) {
+              lumBuf[rowOff + x] = 58;
+              modeBuf[rowOff + x] = PM_ATKINSON;
+            } else {
+              const float bellyBright = clampf((u * 0.6f + v * 1.4f + 0.35f), 0.0f, 1.0f);
+              lumBuf[rowOff + x] = static_cast<uint8_t>(lerpf(88.0f, 238.0f, bellyBright));
+              modeBuf[rowOff + x] = PM_ATKINSON;
+            }
+          } else if (dTail <= 0.0f) {
+            if (dTail >= -pxOutline * 0.9f) {
+              lumBuf[rowOff + x] = 255;
+              modeBuf[rowOff + x] = PM_FORCE_WHITE;
+            } else {
+              lumBuf[rowOff + x] = 102;
+              modeBuf[rowOff + x] = PM_ATKINSON;
+            }
+          } else if (dFarWing <= 0.0f) {
+            if (dFarWing >= -pxOutline * 0.9f) {
+              lumBuf[rowOff + x] = 255;
+              modeBuf[rowOff + x] = PM_FORCE_WHITE;
+            } else {
+              lumBuf[rowOff + x] = 108;
+              modeBuf[rowOff + x] = PM_ATKINSON;
+            }
           }
         }
       } else {
@@ -3137,57 +3453,116 @@ void rasterizeCreatureInStrip(const ScenePrim& p, int stripY0, int stripH, int W
         const float dAll = std::min({dHindLeg, dToes, dBody});
         if (dAll > pxHalo) continue;
 
-        if (dAll > 0.0f) {
-          if (modeBuf[rowOff + x] != PM_SOLID_INK) {
-            lumBuf[rowOff + x] = 255;
-            modeBuf[rowOff + x] = PM_SOLID_WHITE;
+        if (!nocturne) {
+          if (dAll > 0.0f) {
+            if (modeBuf[rowOff + x] != PM_FORCE_BLACK) {
+              lumBuf[rowOff + x] = 255;
+              modeBuf[rowOff + x] = PM_FORCE_WHITE;
+            }
+            continue;
           }
-          continue;
-        }
 
-        if (dToes <= 0.0f) {
-          if (dToes >= -pxOutline * 0.95f) {
-            lumBuf[rowOff + x] = 0;
-            modeBuf[rowOff + x] = PM_SOLID_INK;
-          } else {
-            lumBuf[rowOff + x] = 172;
-            modeBuf[rowOff + x] = PM_ATKINSON;
-          }
-        } else if (dHindLeg <= 0.0f) {
-          if (dHindLeg >= -pxOutline) {
-            lumBuf[rowOff + x] = 0;
-            modeBuf[rowOff + x] = PM_SOLID_INK;
-          } else {
-            lumBuf[rowOff + x] = static_cast<uint8_t>(lerpf(122.0f, 224.0f, clampf(-lv * 4.6f + 0.45f, 0.0f, 1.0f)));
-            modeBuf[rowOff + x] = PM_ATKINSON;
-          }
-        } else if (dHindLeg <= pxOutline * 1.25f && v < -0.10f) {
-          lumBuf[rowOff + x] = 255;
-          modeBuf[rowOff + x] = PM_SOLID_WHITE;  // Crisp white separation highlight over tucked thigh!
-        } else {
-          const float dEye = std::hypot(u - 0.31f, v + 0.58f);
-          const bool mouthSmile = (u > 0.28f && u < 0.62f && std::fabs(v + 0.30f - (u - 0.45f) * 0.16f) < 0.025f);
-          const bool dorsalSpot =
-              (std::hypot(u + 0.04f, v + 0.44f) < 0.072f) || (std::hypot(u + 0.22f, v + 0.35f) < 0.060f);
-          if (dEye <= 0.062f && std::fabs(v + 0.58f) < 0.036f) {
-            lumBuf[rowOff + x] = 0;
-            modeBuf[rowOff + x] = PM_SOLID_INK;  // Horizontal frog pupil!
-          } else if (dEye <= 0.108f) {
+          if (dToes <= 0.0f) {
+            if (dToes >= -pxOutline * 0.95f) {
+              lumBuf[rowOff + x] = 0;
+              modeBuf[rowOff + x] = PM_FORCE_BLACK;
+            } else {
+              lumBuf[rowOff + x] = 172;
+              modeBuf[rowOff + x] = PM_ATKINSON;
+            }
+          } else if (dHindLeg <= 0.0f) {
+            if (dHindLeg >= -pxOutline) {
+              lumBuf[rowOff + x] = 0;
+              modeBuf[rowOff + x] = PM_FORCE_BLACK;
+            } else {
+              lumBuf[rowOff + x] = static_cast<uint8_t>(lerpf(122.0f, 224.0f, clampf(-lv * 4.6f + 0.45f, 0.0f, 1.0f)));
+              modeBuf[rowOff + x] = PM_ATKINSON;
+            }
+          } else if (dHindLeg <= pxOutline * 1.25f && v < -0.10f) {
             lumBuf[rowOff + x] = 255;
-            modeBuf[rowOff + x] = PM_SOLID_WHITE;  // Bright iris!
-          } else if (dEye <= 0.142f || dBody >= -pxOutline || mouthSmile) {
-            lumBuf[rowOff + x] = 0;
-            modeBuf[rowOff + x] = PM_SOLID_INK;
-          } else if (dorsalSpot) {
-            lumBuf[rowOff + x] = 65;
-            modeBuf[rowOff + x] = PM_ATKINSON;
-          } else if (v > -0.32f && u > 0.08f) {
-            lumBuf[rowOff + x] = 246;
-            modeBuf[rowOff + x] = PM_ATKINSON;  // Pale sunlit vocal sac & chest!
+            modeBuf[rowOff + x] = PM_FORCE_WHITE;  // Crisp white separation highlight over tucked thigh!
           } else {
-            const float shade = clampf((-v - 0.14f) * 1.45f, 0.0f, 1.0f);
-            lumBuf[rowOff + x] = static_cast<uint8_t>(lerpf(228.0f, 118.0f, shade));
-            modeBuf[rowOff + x] = PM_ATKINSON;
+            const float dEye = std::hypot(u - 0.31f, v + 0.58f);
+            const bool mouthSmile = (u > 0.28f && u < 0.62f && std::fabs(v + 0.30f - (u - 0.45f) * 0.16f) < 0.025f);
+            const bool dorsalSpot =
+                (std::hypot(u + 0.04f, v + 0.44f) < 0.072f) || (std::hypot(u + 0.22f, v + 0.35f) < 0.060f);
+            if (dEye <= 0.062f && std::fabs(v + 0.58f) < 0.036f) {
+              lumBuf[rowOff + x] = 0;
+              modeBuf[rowOff + x] = PM_FORCE_BLACK;  // Horizontal frog pupil!
+            } else if (dEye <= 0.108f) {
+              lumBuf[rowOff + x] = 255;
+              modeBuf[rowOff + x] = PM_FORCE_WHITE;  // Bright iris!
+            } else if (dEye <= 0.142f || dBody >= -pxOutline || mouthSmile) {
+              lumBuf[rowOff + x] = 0;
+              modeBuf[rowOff + x] = PM_FORCE_BLACK;
+            } else if (dorsalSpot) {
+              lumBuf[rowOff + x] = 65;
+              modeBuf[rowOff + x] = PM_ATKINSON;
+            } else if (v > -0.32f && u > 0.08f) {
+              lumBuf[rowOff + x] = 246;
+              modeBuf[rowOff + x] = PM_ATKINSON;  // Pale sunlit vocal sac & chest!
+            } else {
+              const float shade = clampf((-v - 0.14f) * 1.45f, 0.0f, 1.0f);
+              lumBuf[rowOff + x] = static_cast<uint8_t>(lerpf(228.0f, 118.0f, shade));
+              modeBuf[rowOff + x] = PM_ATKINSON;
+            }
+          }
+        } else {
+          // Nocturne Tree Frog: black moat over vine/leaves, crisp white amphibian contours,
+          // horizontal dark pupil in a bright white iris, dark smiling mouth crease, and moonlit vocal sac!
+          if (dAll > 0.0f) {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_FORCE_BLACK;
+            continue;
+          }
+
+          if (dToes <= 0.0f) {
+            if (dToes >= -pxOutline * 0.95f) {
+              lumBuf[rowOff + x] = 255;
+              modeBuf[rowOff + x] = PM_FORCE_WHITE;
+            } else {
+              lumBuf[rowOff + x] = 156;
+              modeBuf[rowOff + x] = PM_ATKINSON;
+            }
+          } else if (dHindLeg <= 0.0f) {
+            if (dHindLeg >= -pxOutline) {
+              lumBuf[rowOff + x] = 255;
+              modeBuf[rowOff + x] = PM_FORCE_WHITE;
+            } else {
+              lumBuf[rowOff + x] = static_cast<uint8_t>(lerpf(96.0f, 214.0f, clampf(-lv * 4.6f + 0.45f, 0.0f, 1.0f)));
+              modeBuf[rowOff + x] = PM_ATKINSON;
+            }
+          } else if (dHindLeg <= pxOutline * 1.25f && v < -0.10f) {
+            lumBuf[rowOff + x] = 0;
+            modeBuf[rowOff + x] = PM_FORCE_BLACK;  // Dark separation crease over tucked thigh!
+          } else {
+            const float dEye = std::hypot(u - 0.31f, v + 0.58f);
+            const bool mouthSmile = (u > 0.28f && u < 0.62f && std::fabs(v + 0.30f - (u - 0.45f) * 0.16f) < 0.025f);
+            const bool dorsalSpot =
+                (std::hypot(u + 0.04f, v + 0.44f) < 0.072f) || (std::hypot(u + 0.22f, v + 0.35f) < 0.060f);
+            if (dEye <= 0.062f && std::fabs(v + 0.58f) < 0.036f) {
+              lumBuf[rowOff + x] = 0;
+              modeBuf[rowOff + x] = PM_FORCE_BLACK;  // Horizontal dark frog pupil!
+            } else if (dEye <= 0.108f) {
+              lumBuf[rowOff + x] = 255;
+              modeBuf[rowOff + x] = PM_FORCE_WHITE;  // Bright moonlit iris!
+            } else if (dEye <= 0.142f || mouthSmile) {
+              lumBuf[rowOff + x] = 0;
+              modeBuf[rowOff + x] = PM_FORCE_BLACK;
+            } else if (dBody >= -pxOutline) {
+              lumBuf[rowOff + x] = 255;
+              modeBuf[rowOff + x] = PM_FORCE_WHITE;
+            } else if (dorsalSpot) {
+              lumBuf[rowOff + x] = 48;
+              modeBuf[rowOff + x] = PM_ATKINSON;
+            } else if (v > -0.32f && u > 0.08f) {
+              lumBuf[rowOff + x] = 232;
+              modeBuf[rowOff + x] = PM_ATKINSON;
+            } else {
+              const float shade = clampf((-v - 0.14f) * 1.45f, 0.0f, 1.0f);
+              lumBuf[rowOff + x] = static_cast<uint8_t>(lerpf(212.0f, 92.0f, shade));
+              modeBuf[rowOff + x] = PM_ATKINSON;
+            }
           }
         }
       }
@@ -3196,7 +3571,7 @@ void rasterizeCreatureInStrip(const ScenePrim& p, int stripY0, int stripH, int W
 }
 
 void rasterizeWashInStrip(const ScenePrim& p, const ClearanceField& field, int stripY0, int stripH, int W,
-                          uint8_t* lumBuf, uint8_t* modeBuf) {
+                          uint8_t* lumBuf, uint8_t* modeBuf, bool nocturne) {
   const int yStart = std::max<int>(stripY0, p.box.y0);
   const int yEnd = std::min<int>(stripY0 + stripH - 1, p.box.y1);
   if (yStart > yEnd) return;
@@ -3211,38 +3586,65 @@ void rasterizeWashInStrip(const ScenePrim& p, const ClearanceField& field, int s
     const int rowOff = (y - stripY0) * W;
     const float fy = static_cast<float>(y);
     for (int x = xStart; x <= xEnd; ++x) {
-      if (modeBuf[rowOff + x] != PM_PAPER) continue;
+      if (modeBuf[rowOff + x] != PM_BG) continue;
       const float fx = static_cast<float>(x);
       const float c = field.clearanceAt(fx, fy);
-      if (c < 14.0f) continue;
-      const float fade = smoothstepf(14.0f, 34.0f, c);
+      if (c < 16.0f) continue;
+      const float fade = smoothstepf(16.0f, 52.0f, c);
 
       if (p.subKind == 0) {
         const float u = (fx - p.x0) / boxW;
+        const float hFade = smoothstepf(0.03f, 0.22f, u) * smoothstepf(0.97f, 0.78f, u);
+        if (hFade <= 0.002f) continue;
         const float ridgeH = p.y0 + boxH * (0.28f + 0.26f * fbm2D(u * 4.2f, 0.5f, p.seed));
         if (fy >= ridgeH) {
           const float depthBelow = (fy - ridgeH) / std::max(24.0f, boxH * 0.42f);
           if (depthBelow < 1.0f) {
-            const float washDark = (1.0f - depthBelow) * (1.0f - depthBelow) * fade;
-            const float lum = lerpf(255.0f, static_cast<float>(p.lumA), washDark);
-            if (lum < 245.0f) {
-              lumBuf[rowOff + x] = static_cast<uint8_t>(lum);
-              modeBuf[rowOff + x] = PM_ATKINSON;
+            const float wisp = 0.68f + 0.32f * fbm2D(fx * 0.045f, fy * 0.07f, p.seed ^ 0x55AAu);
+            const float washDark = std::pow(1.0f - depthBelow, 2.2f) * fade * hFade * wisp;
+            if (!nocturne) {
+              const float lum = lerpf(255.0f, static_cast<float>(p.lumA), washDark);
+              if (lum < 245.0f) {
+                lumBuf[rowOff + x] = static_cast<uint8_t>(lum);
+                modeBuf[rowOff + x] = PM_ATKINSON;
+              }
+            } else {
+              // Nocturne Shan-Shui mist: soft-edged ethereal moon-mist in wide open sky (zero box or pocket edges!)
+              const float openFade = smoothstepf(30.0f, 76.0f, c);
+              const float topSoft = smoothstepf(0.0f, 0.24f, depthBelow);
+              const float mist = topSoft * std::pow(1.0f - depthBelow, 1.8f) * openFade * hFade * wisp;
+              const float density = mist * 0.15f;
+              if (density > 0.004f && hash2i(x, y, p.seed ^ 0x9E3779B9u) < density) {
+                lumBuf[rowOff + x] = 255;
+                modeBuf[rowOff + x] = PM_FORCE_WHITE;
+              }
             }
           }
         }
       } else {
-        // Smooth subtle Milky Way stardust sweep (no blotchy isolated puddles!)
+        // Smooth subtle Milky Way stardust sweep with elliptical end-taper (zero rectangular clipping!)
         const float nx = (fx - 0.5f * (p.x0 + p.x1)) / (boxW * 0.5f);
         const float ny = (fy - 0.5f * (p.y0 + p.y1)) / (boxH * 0.5f);
+        const float endFade = smoothstepf(0.98f, 0.22f, std::hypot(nx, ny));
+        if (endFade <= 0.002f) continue;
         const float bandDist = std::fabs(nx * 0.52f + ny * 0.85f + 0.14f * std::sin(nx * 2.4f));
-        if (bandDist < 0.34f) {
-          const float gauss = std::cos((bandDist / 0.34f) * kPi * 0.5f);
-          const float strength = gauss * gauss * fade * 0.72f;
-          const float lum = lerpf(255.0f, static_cast<float>(p.lumA), strength);
-          if (lum < 244.0f) {
-            lumBuf[rowOff + x] = static_cast<uint8_t>(lum);
-            modeBuf[rowOff + x] = PM_ATKINSON;
+        if (bandDist < 0.36f) {
+          const float gauss = std::cos((bandDist / 0.36f) * kPi * 0.5f);
+          const float cloud = 0.58f + 0.42f * fbm2D(fx * 0.035f, fy * 0.035f, p.seed ^ 0x3C6EF372u);
+          const float strength = gauss * gauss * fade * endFade * cloud * 0.78f;
+          if (!nocturne) {
+            const float lum = lerpf(255.0f, static_cast<float>(p.lumA), strength);
+            if (lum < 244.0f) {
+              lumBuf[rowOff + x] = static_cast<uint8_t>(lum);
+              modeBuf[rowOff + x] = PM_ATKINSON;
+            }
+          } else {
+            // Nocturne Milky Way: scattered pinpoint stardust cloud fading seamlessly into night sky!
+            const float density = strength * 0.17f;
+            if (density > 0.003f && hash2i(x, y, p.seed ^ 0x85EBCA6Bu) < density) {
+              lumBuf[rowOff + x] = 255;
+              modeBuf[rowOff + x] = PM_FORCE_WHITE;
+            }
           }
         }
       }
@@ -3250,7 +3652,8 @@ void rasterizeWashInStrip(const ScenePrim& p, const ClearanceField& field, int s
   }
 }
 
-void compositeAndDitherScene(const GfxRenderer& renderer, const ClearanceField& field, SceneGraph& sg) {
+void compositeAndDitherScene(const GfxRenderer& renderer, const ClearanceField& field, SceneGraph& sg, bool nocturne,
+                             bool whiteBitVal) {
   if (sg.prims.empty()) return;
 
   std::stable_sort(sg.prims.begin(), sg.prims.end(),
@@ -3274,8 +3677,8 @@ void compositeAndDitherScene(const GfxRenderer& renderer, const ClearanceField& 
   for (int stripY0 = 0; stripY0 < H; stripY0 += kStripRows) {
     const int stripH = std::min(kStripRows, H - stripY0);
     const size_t curPixels = static_cast<size_t>(W) * stripH;
-    std::memset(lumBuf.get(), 255, curPixels);
-    std::memset(modeBuf.get(), PM_PAPER, curPixels);
+    std::memset(lumBuf.get(), nocturne ? 0 : 255, curPixels);
+    std::memset(modeBuf.get(), PM_BG, curPixels);
 
     bool anyHit = false;
     for (const auto& prim : sg.prims) {
@@ -3283,22 +3686,22 @@ void compositeAndDitherScene(const GfxRenderer& renderer, const ClearanceField& 
       anyHit = true;
       switch (prim.type) {
         case PrimType::Stroke:
-          rasterizeStrokeInStrip(prim, stripY0, stripH, W, lumBuf.get(), modeBuf.get());
+          rasterizeStrokeInStrip(prim, stripY0, stripH, W, lumBuf.get(), modeBuf.get(), nocturne);
           break;
         case PrimType::Petal:
-          rasterizePetalInStrip(prim, stripY0, stripH, W, lumBuf.get(), modeBuf.get());
+          rasterizePetalInStrip(prim, stripY0, stripH, W, lumBuf.get(), modeBuf.get(), nocturne);
           break;
         case PrimType::Leaf:
-          rasterizeLeafInStrip(prim, stripY0, stripH, W, lumBuf.get(), modeBuf.get());
+          rasterizeLeafInStrip(prim, stripY0, stripH, W, lumBuf.get(), modeBuf.get(), nocturne);
           break;
         case PrimType::Disc:
-          rasterizeDiscInStrip(prim, stripY0, stripH, W, lumBuf.get(), modeBuf.get());
+          rasterizeDiscInStrip(prim, stripY0, stripH, W, lumBuf.get(), modeBuf.get(), nocturne);
           break;
         case PrimType::Wash:
-          rasterizeWashInStrip(prim, field, stripY0, stripH, W, lumBuf.get(), modeBuf.get());
+          rasterizeWashInStrip(prim, field, stripY0, stripH, W, lumBuf.get(), modeBuf.get(), nocturne);
           break;
         case PrimType::Creature:
-          rasterizeCreatureInStrip(prim, stripY0, stripH, W, lumBuf.get(), modeBuf.get());
+          rasterizeCreatureInStrip(prim, stripY0, stripH, W, lumBuf.get(), modeBuf.get(), nocturne);
           break;
       }
     }
@@ -3308,42 +3711,80 @@ void compositeAndDitherScene(const GfxRenderer& renderer, const ClearanceField& 
       continue;
     }
 
-    // 1-Bit Atkinson Error Diffusion with crisp Solid-Ink & Paper-Knockout isolation!
+    // 1-Bit Atkinson Error Diffusion with crisp Solid-Ink & Knockout Moat isolation!
     for (int sy = 0; sy < stripH; ++sy) {
       const int y = stripY0 + sy;
       const int rowOff = sy * W;
       for (int x = 0; x < W; ++x) {
         const uint8_t m = modeBuf[rowOff + x];
-        if (m == PM_PAPER || m == PM_SOLID_WHITE) continue;
+        if (!nocturne) {
+          if (m == PM_BG || m == PM_FORCE_WHITE) continue;
 
-        // Hard mathematical safety gate: never emit a single black pixel inside the text halo!
-        if (field.clearanceAt(static_cast<float>(x), static_cast<float>(y)) <= 0.0f) continue;
+          // Hard mathematical safety gate: never emit a single pixel inside the text/card halo!
+          if (field.clearanceAt(static_cast<float>(x), static_cast<float>(y)) <= 0.0f) continue;
 
-        if (m == PM_SOLID_INK) {
-          renderer.drawPixel(x, y, true);
-          continue;
-        }
+          if (m == PM_FORCE_BLACK) {
+            renderer.drawPixel(x, y, true);
+            continue;
+          }
 
-        const int rawLum = lumBuf[rowOff + x];
-        if (rawLum >= 246) continue;  // Keep highlights sparkling clean white without stray dots!
+          const int rawLum = lumBuf[rowOff + x];
+          if (rawLum >= 246) continue;  // Keep highlights sparkling clean white without stray dots!
 
-        int adjusted = rawLum + err0[x + 2];
-        if (adjusted < 0) adjusted = 0;
-        if (adjusted > 255) adjusted = 255;
+          int adjusted = rawLum + err0[x + 2];
+          if (adjusted < 0) adjusted = 0;
+          if (adjusted > 255) adjusted = 255;
 
-        const bool inkBlack = (adjusted < 128);
-        const int quantVal = inkBlack ? 0 : 255;
-        const int err = (adjusted - quantVal) >> 3;  // 1/8 Atkinson kernel (6/8 total diffusion)
+          const bool inkBlack = (adjusted < 128);
+          const int quantVal = inkBlack ? 0 : 255;
+          const int err = (adjusted - quantVal) >> 3;  // 1/8 Atkinson kernel (6/8 total diffusion)
 
-        err0[x + 3] += static_cast<int16_t>(err);
-        err0[x + 4] += static_cast<int16_t>(err);
-        err1[x + 1] += static_cast<int16_t>(err);
-        err1[x + 2] += static_cast<int16_t>(err);
-        err1[x + 3] += static_cast<int16_t>(err);
-        err2[x + 2] += static_cast<int16_t>(err);
+          err0[x + 3] += static_cast<int16_t>(err);
+          err0[x + 4] += static_cast<int16_t>(err);
+          err1[x + 1] += static_cast<int16_t>(err);
+          err1[x + 2] += static_cast<int16_t>(err);
+          err1[x + 3] += static_cast<int16_t>(err);
+          err2[x + 2] += static_cast<int16_t>(err);
 
-        if (inkBlack) {
-          renderer.drawPixel(x, y, true);
+          if (inkBlack) {
+            renderer.drawPixel(x, y, true);
+          }
+        } else {
+          if (m == PM_BG || m == PM_FORCE_BLACK) continue;
+
+          // Hard mathematical safety gate: never emit a single pixel inside the text/card halo!
+          if (field.clearanceAt(static_cast<float>(x), static_cast<float>(y)) <= 0.0f) continue;
+
+          if (m == PM_FORCE_WHITE) {
+            renderer.drawPixel(x, y, whiteBitVal);
+            continue;
+          }
+
+          const int rawLum = lumBuf[rowOff + x];
+          if (rawLum <= 12) continue;  // Keep deep night shadows velvet black without stray snow dots!
+          if (rawLum >= 246) {
+            renderer.drawPixel(x, y, whiteBitVal);
+            continue;
+          }
+
+          int adjusted = rawLum + err0[x + 2];
+          if (adjusted < 0) adjusted = 0;
+          if (adjusted > 255) adjusted = 255;
+
+          const bool emitWhite = (adjusted >= 128);
+          const int quantVal = emitWhite ? 255 : 0;
+          const int err = (adjusted - quantVal) >> 3;  // 1/8 Atkinson kernel (6/8 total diffusion)
+
+          err0[x + 3] += static_cast<int16_t>(err);
+          err0[x + 4] += static_cast<int16_t>(err);
+          err1[x + 1] += static_cast<int16_t>(err);
+          err1[x + 2] += static_cast<int16_t>(err);
+          err1[x + 3] += static_cast<int16_t>(err);
+          err2[x + 2] += static_cast<int16_t>(err);
+
+          if (emitWhite) {
+            renderer.drawPixel(x, y, whiteBitVal);
+          }
         }
       }
 
@@ -3406,11 +3847,13 @@ void renderDeadSpaceOrnaments(const GfxRenderer& renderer, const Page& page, con
     }
   }
 
-  compositeAndDitherScene(renderer, field, sg);
+  // In Reader Night Mode (ctx.darkMode == true), HalDisplay inverts at output (fb bit 0 -> visible white),
+  // so emitting drawPixel(x, y, true) draws visible white Nocturne strokes on the inverted black page!
+  compositeAndDitherScene(renderer, field, sg, ctx.darkMode, /*whiteBitVal=*/true);
 }
 
 void renderCanvasOrnaments(const GfxRenderer& renderer, Theme theme, uint32_t seed, const KeepoutRect* keepouts,
-                           size_t keepoutCount, int marginPx, float haloPx) {
+                           size_t keepoutCount, int marginPx, float haloPx, bool darkCanvas) {
   if (theme == Theme::Off) return;
   if (renderer.isFontCacheScanning() || !renderer.hasFrameBuffer()) return;
   const uint8_t* fb = renderer.getFrameBuffer();
@@ -3445,7 +3888,10 @@ void renderCanvasOrnaments(const GfxRenderer& renderer, Theme theme, uint32_t se
   for (int y = 0; y < H; ++y) {
     const int gy = y / kCellPx;
     for (int x = 0; x < W; ++x) {
-      if (readLogicalInkBit(renderer, fb, x, y)) {
+      // On a light canvas (cleared to 0xFF), foreground ink is black (readLogicalInkBit == true).
+      // On a dark canvas (cleared to 0x00), foreground ink is white (!readLogicalInkBit).
+      const bool occupied = darkCanvas ? !readLogicalInkBit(renderer, fb, x, y) : readLogicalInkBit(renderer, fb, x, y);
+      if (occupied) {
         dist16[gy * gw + (x / kCellPx)] = 0;
         minInkY = std::min(minInkY, y);
         maxInkY = std::max(maxInkY, y);
@@ -3534,7 +3980,8 @@ void renderCanvasOrnaments(const GfxRenderer& renderer, Theme theme, uint32_t se
     }
   }
 
-  compositeAndDitherScene(renderer, field, sg);
+  // On a direct dark canvas (cleared to 0x00 without output inversion), drawPixel(x, y, false) emits visible white!
+  compositeAndDitherScene(renderer, field, sg, darkCanvas, /*whiteBitVal=*/false);
 }
 
 }  // namespace page_ornament

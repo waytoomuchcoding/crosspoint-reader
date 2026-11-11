@@ -21,6 +21,7 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
     values[CrossPointSettings::TRANSPARENT_CUSTOM] = StrId::STR_TRANSPARENT;
     values[CrossPointSettings::COVER_TRANSPARENT] = StrId::STR_COVER_TRANSPARENT;
     values[CrossPointSettings::VOCAB_CARDS] = StrId::STR_VOCABULARY_CARDS;
+    values[CrossPointSettings::VOCAB_CARDS_DARK] = StrId::STR_VOCABULARY_CARDS_DARK;
     return values;
   }();
   static constexpr auto STATUS_BAR_CLOCK_VALUES = [] {

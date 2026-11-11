@@ -29,6 +29,7 @@ struct RenderContext {
   int marginBottom = 0;
   int marginLeft = 0;
   Theme theme = Theme::Off;
+  bool darkMode = false;
 };
 
 struct KeepoutRect {
@@ -46,8 +47,9 @@ void renderDeadSpaceOrnaments(const GfxRenderer& renderer, const Page& page, con
 
 // Fills open negative space on an arbitrary full-screen B/W canvas (such as staggered
 // sleep-screen vocabulary cards) while strictly respecting explicit keepout rectangles
-// and any already-drawn ink pixels.
+// and any already-drawn ink pixels. When darkCanvas is true, assumes a black-cleared
+// canvas (0x00) with white foreground plaques and renders Nocturne moonlit ornaments.
 void renderCanvasOrnaments(const GfxRenderer& renderer, Theme theme, uint32_t seed, const KeepoutRect* keepouts,
-                           size_t keepoutCount, int marginPx = 6, float haloPx = 9.5f);
+                           size_t keepoutCount, int marginPx = 6, float haloPx = 9.5f, bool darkCanvas = false);
 
 }  // namespace page_ornament

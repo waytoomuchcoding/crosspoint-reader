@@ -751,7 +751,13 @@ void SleepActivity::onEnter() {
         return renderCustomSleepScreen();
       }
     case (CrossPointSettings::SLEEP_SCREEN_MODE::VOCAB_CARDS):
-      if (sleep_vocab::renderVocabSleepScreen(renderer)) {
+      if (sleep_vocab::renderVocabSleepScreen(renderer, false)) {
+        renderer.displayBuffer(kSleepClean);
+        return;
+      }
+      return renderDefaultSleepScreen();
+    case (CrossPointSettings::SLEEP_SCREEN_MODE::VOCAB_CARDS_DARK):
+      if (sleep_vocab::renderVocabSleepScreen(renderer, true)) {
         renderer.displayBuffer(kSleepClean);
         return;
       }

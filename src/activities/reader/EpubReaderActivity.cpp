@@ -2315,6 +2315,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     ornCtx.marginBottom = orientedMarginBottom;
     ornCtx.marginLeft = orientedMarginLeft;
     ornCtx.theme = static_cast<page_ornament::Theme>(SETTINGS.deadSpaceOrnamentTheme);
+    ornCtx.darkMode = (SETTINGS.screenInverted != 0);
     page_ornament::renderDeadSpaceOrnaments(renderer, *page, ornCtx);
   }
   const auto tBwRender = millis();

@@ -76,13 +76,13 @@ struct PreparedCard {
   std::string word;
   std::vector<uint32_t> cps;
   std::string trad;
-  std::string badge;        // e.g. "HSK 6 · #5.4k" or "#9.2k"
-  std::string pinyinLine;   // Primary reading pinyin
+  std::string badge;       // e.g. "HSK 6 · #5.4k" or "#9.2k"
+  std::string pinyinLine;  // Primary reading pinyin
   uint32_t zhuyin[zh::MAX_WORD_CHARS] = {};
   uint8_t syllables = 0;
-  std::vector<std::string> primaryLines;    // 1-2 wrapped lines of primary reading senses
-  std::vector<SecondaryPron> otherProns;    // 1 compact line per secondary pronunciation
-  std::string sourceBook;                   // e.g. "《唐宋诗词选》"
+  std::vector<std::string> primaryLines;  // 1-2 wrapped lines of primary reading senses
+  std::vector<SecondaryPron> otherProns;  // 1 compact line per secondary pronunciation
+  std::string sourceBook;                 // e.g. "《唐宋诗词选》"
   bool isChinese = false;
   uint32_t rank = zh::NO_RANK;
   uint8_t hsk = 0;
@@ -327,25 +327,29 @@ std::string formatRankBadge(uint8_t hsk, uint32_t rank) {
 }
 
 // Draw an artisanal woodblock/scholar's slip frame:
-// pure white knockout interior + 5px chamfered classical corners + 2px outer ink border
-// + 1px inner hairline inset + 3px offset woodcut ink drop-shadow on bottom & right.
-void drawScholarPlaqueFrame(GfxRenderer& renderer, int x, int y, int w, int h) {
+// Light mode: pure white paper interior + 5px chamfered corners + 2px ink border + 3px ink drop-shadow.
+// Dark mode: velvet black interior + 5px chamfered 2px white border + 50% stippled silver relief shadow.
+void drawScholarPlaqueFrame(GfxRenderer& renderer, int x, int y, int w, int h, bool darkMode) {
   constexpr int kChamfer = 5;
   constexpr int kShadow = 3;
 
-  // 1. Offset woodcut ink drop-shadow (bottom-right)
+  // 1. Offset woodcut drop-shadow (bottom-right): solid ink on white paper, 50% silver stipple on night black!
   for (int sy = y + kShadow; sy < y + h + kShadow; ++sy) {
     for (int sx = x + kShadow; sx < x + w + kShadow; ++sx) {
       const int lx = sx - (x + kShadow);
       const int ly = sy - (y + kShadow);
       const int cornerDist = std::min(lx, w - 1 - lx) + std::min(ly, h - 1 - ly);
       if (cornerDist >= kChamfer) {
-        renderer.drawPixel(sx, sy, true);
+        if (!darkMode) {
+          renderer.drawPixel(sx, sy, true);
+        } else if (((sx + sy) & 1) == 0) {
+          renderer.drawPixel(sx, sy, false);
+        }
       }
     }
   }
 
-  // 2. White paper card interior + 2px chamfered ink border
+  // 2. Card interior knockout + 2px chamfered border
   for (int py = y; py < y + h; ++py) {
     const int ly = py - y;
     for (int px = x; px < x + w; ++px) {
@@ -358,25 +362,26 @@ void drawScholarPlaqueFrame(GfxRenderer& renderer, int x, int y, int w, int h) {
       const int cornerSum = std::min(dLeft, dRight) + std::min(dTop, dBot);
       if (cornerSum < kChamfer) continue;  // Outside chamfered corner
       const bool onOuterBorder = (minEdge <= 1) || (cornerSum <= kChamfer + 1);
-      renderer.drawPixel(px, py, onOuterBorder);
+      renderer.drawPixel(px, py, darkMode ? !onOuterBorder : onOuterBorder);
     }
   }
 
   // 3. Delicate inner corner L-brackets (traditional East Asian stationery accent)
+  const bool fgInk = !darkMode;
   constexpr int kIn = 5;
   constexpr int kArm = 11;
   // Top-left
-  renderer.drawLine(x + kIn + 2, y + kIn, x + kIn + kArm, y + kIn, true);
-  renderer.drawLine(x + kIn, y + kIn + 2, x + kIn, y + kIn + kArm, true);
+  renderer.drawLine(x + kIn + 2, y + kIn, x + kIn + kArm, y + kIn, fgInk);
+  renderer.drawLine(x + kIn, y + kIn + 2, x + kIn, y + kIn + kArm, fgInk);
   // Top-right
-  renderer.drawLine(x + w - 1 - kIn - kArm, y + kIn, x + w - 1 - kIn - 2, y + kIn, true);
-  renderer.drawLine(x + w - 1 - kIn, y + kIn + 2, x + w - 1 - kIn, y + kIn + kArm, true);
+  renderer.drawLine(x + w - 1 - kIn - kArm, y + kIn, x + w - 1 - kIn - 2, y + kIn, fgInk);
+  renderer.drawLine(x + w - 1 - kIn, y + kIn + 2, x + w - 1 - kIn, y + kIn + kArm, fgInk);
   // Bottom-left
-  renderer.drawLine(x + kIn + 2, y + h - 1 - kIn, x + kIn + kArm, y + h - 1 - kIn, true);
-  renderer.drawLine(x + kIn, y + h - 1 - kIn - kArm, x + kIn, y + h - 1 - kIn - 2, true);
+  renderer.drawLine(x + kIn + 2, y + h - 1 - kIn, x + kIn + kArm, y + h - 1 - kIn, fgInk);
+  renderer.drawLine(x + kIn, y + h - 1 - kIn - kArm, x + kIn, y + h - 1 - kIn - 2, fgInk);
   // Bottom-right
-  renderer.drawLine(x + w - 1 - kIn - kArm, y + h - 1 - kIn, x + w - 1 - kIn - 2, y + h - 1 - kIn, true);
-  renderer.drawLine(x + w - 1 - kIn, y + h - 1 - kIn - kArm, x + w - 1 - kIn, y + h - 1 - kIn - 2, true);
+  renderer.drawLine(x + w - 1 - kIn - kArm, y + h - 1 - kIn, x + w - 1 - kIn - 2, y + h - 1 - kIn, fgInk);
+  renderer.drawLine(x + w - 1 - kIn, y + h - 1 - kIn - kArm, x + w - 1 - kIn, y + h - 1 - kIn - 2, fgInk);
 }
 
 int chooseCharFont(GfxRenderer& renderer, int preferredFont, int fallbackFont, const char* ch) {
@@ -471,8 +476,12 @@ void measureAndPrepareCard(GfxRenderer& renderer, PreparedCard& card, int headFo
   card.h = h;
 }
 
-void drawPreparedCard(GfxRenderer& renderer, const PreparedCard& card, int readerFont, int bodyFont, int captionFont) {
-  drawScholarPlaqueFrame(renderer, card.x, card.y, card.w, card.h);
+void drawPreparedCard(GfxRenderer& renderer, const PreparedCard& card, int readerFont, int bodyFont, int captionFont,
+                      bool darkMode) {
+  drawScholarPlaqueFrame(renderer, card.x, card.y, card.w, card.h, darkMode);
+
+  const bool fgInk = !darkMode;
+  const bool bgInk = darkMode;
 
   constexpr int kPadX = 13;
   constexpr int kPadTop = 9;
@@ -493,10 +502,10 @@ void drawPreparedCard(GfxRenderer& renderer, const PreparedCard& card, int reade
     const int bh = capLH + 4;
     const int bx = innerRight - bw;
     const int by = curY + 2;
-    // Chamfered 1-bit black pill
-    renderer.fillRect(bx + 1, by, bw - 2, bh, true);
-    renderer.fillRect(bx, by + 1, bw, bh - 2, true);
-    renderer.drawText(captionFont, bx + 5, by + 2, card.badge.c_str(), false);
+    // Chamfered 1-bit high-contrast pill (black pill on white paper; white pill on velvet-black plaque)
+    renderer.fillRect(bx + 1, by, bw - 2, bh, fgInk);
+    renderer.fillRect(bx, by + 1, bw, bh - 2, fgInk);
+    renderer.drawText(captionFont, bx + 5, by + 2, card.badge.c_str(), bgInk);
     badgeLeft = bx - 6;
   }
 
@@ -511,12 +520,12 @@ void drawPreparedCard(GfxRenderer& renderer, const PreparedCard& card, int reade
       *utf8AppendCodepoint(ch, card.cps[k]) = '\0';
       const int cf = chooseCharFont(renderer, card.titleFont, readerFont, ch);
       const int chY = curY + renderer.getFontAscenderSize(card.titleFont) - renderer.getFontAscenderSize(cf);
-      renderer.drawText(cf, tx, chY, ch, true);
+      renderer.drawText(cf, tx, chY, ch, fgInk);
       tx += renderer.getTextAdvanceX(cf, ch, EpdFontFamily::REGULAR, 0);
       if (k < card.syllables && card.zhuyin[k] != 0) {
         const int rx = tx;
         zh::forEachRubyPixel(card.zhuyin[k], em, titleLine,
-                             [&](int px, int py) { renderer.drawPixel(rx + px, curY + py, true); });
+                             [&](int px, int py) { renderer.drawPixel(rx + px, curY + py, fgInk); });
         tx += zh::rubyWidth(em);
       }
     }
@@ -526,26 +535,26 @@ void drawPreparedCard(GfxRenderer& renderer, const PreparedCard& card, int reade
       const int tw = renderer.getTextAdvanceX(bodyFont, tradTag.c_str(), EpdFontFamily::REGULAR, 0);
       if (tx + tw + 2 <= badgeLeft) {
         const int ty = curY + card.titleHeight - bodyLH - 2;
-        renderer.drawText(bodyFont, tx + 2, ty, tradTag.c_str(), true);
+        renderer.drawText(bodyFont, tx + 2, ty, tradTag.c_str(), fgInk);
       }
     }
   } else {
     ensureGlyphsReady(renderer, card.titleFont, card.word);
-    renderer.drawText(card.titleFont, innerX, curY, card.word.c_str(), true);
+    renderer.drawText(card.titleFont, innerX, curY, card.word.c_str(), fgInk);
   }
   curY += card.titleHeight + 2;
 
   // 3. Primary reading Pinyin line
   if (!card.pinyinLine.empty()) {
     const std::string pyFit = truncateToPixelWidth(renderer, captionFont, card.pinyinLine, innerW);
-    renderer.drawText(captionFont, innerX, curY, pyFit.c_str(), true);
+    renderer.drawText(captionFont, innerX, curY, pyFit.c_str(), fgInk);
     curY += capLH + 2;
   }
 
   // 4. Primary reading senses
   for (const auto& line : card.primaryLines) {
     ensureGlyphsReady(renderer, bodyFont, line);
-    renderer.drawText(bodyFont, innerX, curY, line.c_str(), true);
+    renderer.drawText(bodyFont, innerX, curY, line.c_str(), fgInk);
     curY += bodyLH;
   }
 
@@ -553,15 +562,15 @@ void drawPreparedCard(GfxRenderer& renderer, const PreparedCard& card, int reade
   if (!card.otherProns.empty()) {
     curY += 2;
     for (int dx = 0; dx < innerW; dx += 4) {
-      renderer.drawPixel(innerX + dx, curY, true);
-      renderer.drawPixel(innerX + dx + 1, curY, true);
+      renderer.drawPixel(innerX + dx, curY, fgInk);
+      renderer.drawPixel(innerX + dx + 1, curY, fgInk);
     }
     curY += 4;
     for (const auto& sec : card.otherProns) {
       int lx = innerX;
       const std::string pyPart = "• " + sec.pinyin;
       ensureGlyphsReady(renderer, captionFont, pyPart);
-      renderer.drawText(captionFont, lx, curY, pyPart.c_str(), true);
+      renderer.drawText(captionFont, lx, curY, pyPart.c_str(), fgInk);
       lx += renderer.getTextAdvanceX(captionFont, pyPart.c_str(), EpdFontFamily::REGULAR, 0);
 
       if (sec.syllables > 0 && sec.zhuyin[0] != 0) {
@@ -571,13 +580,13 @@ void drawPreparedCard(GfxRenderer& renderer, const PreparedCard& card, int reade
           if (s > 0) lx += 3;
           const int rw = zh::rubyUnderWidth(sec.zhuyin[s], 14);
           zh::forEachRubyUnderPixel(sec.zhuyin[s], 14, rw, 0,
-                                    [&](int px, int py) { renderer.drawPixel(lx + px, rubyBaseY + py, true); });
+                                    [&](int px, int py) { renderer.drawPixel(lx + px, rubyBaseY + py, fgInk); });
           lx += rw;
         }
       }
 
       ensureGlyphsReady(renderer, captionFont, sec.fitSense);
-      renderer.drawText(captionFont, lx, curY, sec.fitSense.c_str(), true);
+      renderer.drawText(captionFont, lx, curY, sec.fitSense.c_str(), fgInk);
       curY += capLH + 1;
     }
   }
@@ -587,7 +596,7 @@ void drawPreparedCard(GfxRenderer& renderer, const PreparedCard& card, int reade
     curY += 2;
     const std::string srcFit = truncateToPixelWidth(renderer, captionFont, card.sourceBook, innerW - 8);
     const int sw = renderer.getTextAdvanceX(captionFont, srcFit.c_str(), EpdFontFamily::REGULAR, 0);
-    renderer.drawText(captionFont, std::max(innerX, innerRight - sw), curY, srcFit.c_str(), true);
+    renderer.drawText(captionFont, std::max(innerX, innerRight - sw), curY, srcFit.c_str(), fgInk);
   }
 }
 
@@ -613,7 +622,7 @@ uint32_t nextSleepVocabSeed() {
 
 }  // namespace
 
-bool renderVocabSleepScreen(GfxRenderer& renderer) {
+bool renderVocabSleepScreen(GfxRenderer& renderer, bool darkMode) {
   sdFontSystem.ensureLoaded(renderer);
 
   std::vector<RawVocabItem> rawItems;
@@ -660,8 +669,7 @@ bool renderVocabSleepScreen(GfxRenderer& renderer) {
     bool enrichedFromZhDict = false;
     if (card.isChinese && zhDictReady) {
       zh::WordMatch matches[zh::MAX_MATCHES];
-      const int mCount =
-          zh::sharedDict().matchesAt(card.cps.data(), card.cps.size(), 0, matches, zh::MAX_MATCHES);
+      const int mCount = zh::sharedDict().matchesAt(card.cps.data(), card.cps.size(), 0, matches, zh::MAX_MATCHES);
       const zh::WordMatch* exact = nullptr;
       for (int i = 0; i < mCount; ++i) {
         if (matches[i].len == card.cps.size()) {
@@ -861,13 +869,13 @@ bool renderVocabSleepScreen(GfxRenderer& renderer) {
     }
   }
 
-  renderer.clearScreen();
+  renderer.clearScreen(darkMode ? 0x00 : 0xFF);
 
-  // Draw all vocabulary plaques first on crisp white paper.
+  // Draw all vocabulary plaques first.
   std::vector<page_ornament::KeepoutRect> keepouts;
   keepouts.reserve(selected.size());
   for (const auto& card : selected) {
-    drawPreparedCard(renderer, card, readerFont, bodyFont, captionFont);
+    drawPreparedCard(renderer, card, readerFont, bodyFont, captionFont, darkMode);
     keepouts.push_back({static_cast<int16_t>(card.x - 2), static_cast<int16_t>(card.y - 2),
                         static_cast<int16_t>(card.x + card.w + 5), static_cast<int16_t>(card.y + card.h + 5)});
   }
@@ -877,7 +885,7 @@ bool renderVocabSleepScreen(GfxRenderer& renderer) {
   if (theme == page_ornament::Theme::Off) {
     theme = page_ornament::Theme::AutoCycle;
   }
-  page_ornament::renderCanvasOrnaments(renderer, theme, sleepSeed, keepouts.data(), keepouts.size(), 6, 9.0f);
+  page_ornament::renderCanvasOrnaments(renderer, theme, sleepSeed, keepouts.data(), keepouts.size(), 6, 9.0f, darkMode);
 
   return true;
 }
