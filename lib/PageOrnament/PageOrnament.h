@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 class GfxRenderer;
@@ -30,10 +31,23 @@ struct RenderContext {
   Theme theme = Theme::Off;
 };
 
+struct KeepoutRect {
+  int16_t x0 = 0;
+  int16_t y0 = 0;
+  int16_t x1 = 0;
+  int16_t y1 = 0;
+};
+
 // Detects dead-space regions on an already-rendered B/W page (using both structural
 // Page element spans and the actual 1-bit framebuffer ink occupancy) and fills
 // qualifying dead spaces with procedural 1-bit dithered designs.
 // Strictly preserves a clear breathing halo around all text, images, borders, and chrome.
 void renderDeadSpaceOrnaments(const GfxRenderer& renderer, const Page& page, const RenderContext& ctx);
+
+// Fills open negative space on an arbitrary full-screen B/W canvas (such as staggered
+// sleep-screen vocabulary cards) while strictly respecting explicit keepout rectangles
+// and any already-drawn ink pixels.
+void renderCanvasOrnaments(const GfxRenderer& renderer, Theme theme, uint32_t seed, const KeepoutRect* keepouts,
+                           size_t keepoutCount, int marginPx = 6, float haloPx = 9.5f);
 
 }  // namespace page_ornament

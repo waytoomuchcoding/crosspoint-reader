@@ -25,6 +25,7 @@
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "SleepVocabScreen.h"
 #include "activities/reader/ReaderUtils.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -749,6 +750,12 @@ void SleepActivity::onEnter() {
       } else {
         return renderCustomSleepScreen();
       }
+    case (CrossPointSettings::SLEEP_SCREEN_MODE::VOCAB_CARDS):
+      if (sleep_vocab::renderVocabSleepScreen(renderer)) {
+        renderer.displayBuffer(kSleepClean);
+        return;
+      }
+      return renderDefaultSleepScreen();
     default:
       return renderDefaultSleepScreen();
   }

@@ -133,6 +133,8 @@ struct ClearanceField {
   int usableBottom = 0;
   int gw = 0;
   int gh = 0;
+  float haloPx = kInkHaloPx;
+  float edgePadPx = kScreenEdgePadPx;
   std::unique_ptr<uint8_t[]> inkDistPx;  // Distance to nearest occupied cell in pixels (0..255)
 
   float sampleInkDist(float x, float y) const {
@@ -152,11 +154,11 @@ struct ClearanceField {
   }
 
   float clearanceAt(float x, float y) const {
-    if (x < kScreenEdgePadPx || x >= static_cast<float>(screenW) - kScreenEdgePadPx) return -10.0f;
-    if (y < kScreenEdgePadPx || y >= static_cast<float>(usableBottom) - 4.0f) return -10.0f;
-    const float edgeDist = std::min({x - kScreenEdgePadPx, static_cast<float>(screenW - 1) - kScreenEdgePadPx - x,
-                                     y - kScreenEdgePadPx, static_cast<float>(usableBottom) - 4.0f - y});
-    const float inkClear = sampleInkDist(x, y) - kInkHaloPx;
+    if (x < edgePadPx || x >= static_cast<float>(screenW) - edgePadPx) return -10.0f;
+    if (y < edgePadPx || y >= static_cast<float>(usableBottom) - 4.0f) return -10.0f;
+    const float edgeDist = std::min({x - edgePadPx, static_cast<float>(screenW - 1) - edgePadPx - x, y - edgePadPx,
+                                     static_cast<float>(usableBottom) - 4.0f - y});
+    const float inkClear = sampleInkDist(x, y) - haloPx;
     return std::min(inkClear, edgeDist);
   }
 
@@ -480,9 +482,9 @@ std::vector<DeadRegion> extractDeadRegions(const ClearanceField& field, int cont
         reg.kind = (bestY > field.usableBottom * 0.5f) ? RegionKind::TailpieceExpanse : RegionKind::CrownExpanse;
       }
 
-      // Extract up to 5 greedy inscribed-circle poles inside this component.
+      // Extract up to 7 greedy inscribed-circle poles inside this component.
       reg.poles.push_back({bestX, bestY, bestClear});
-      for (int p = 1; p < 5; ++p) {
+      for (int p = 1; p < 7; ++p) {
         float candClear = -1.0f;
         float candX = 0.0f, candY = 0.0f;
         for (int gy = minGY; gy <= maxGY; ++gy) {
@@ -1186,8 +1188,12 @@ void buildBotanicalFloral(SceneGraph& sg, const ClearanceField& field, const Dea
     float dirX, dirY;
   };
 
+  const bool isTallCanvas = (reg.y1 - reg.y0) > 460;
+  const size_t maxVineNodes = isTallCanvas ? 360 : 225;
+  const int maxGrowIters = isTallCanvas ? 86 : 56;
+
   std::vector<VineNode> nodes;
-  nodes.reserve(240);
+  nodes.reserve(maxVineNodes + 16);
   nodes.push_back({rootX, rootY, -1, 0, initDX, initDY});
 
   struct Attractor {
@@ -1195,7 +1201,7 @@ void buildBotanicalFloral(SceneGraph& sg, const ClearanceField& field, const Dea
     bool active;
   };
   std::vector<Attractor> attractors;
-  const int targetAttr = std::clamp(reg.areaPx / 820, 40, 175);
+  const int targetAttr = std::clamp(reg.areaPx / (isTallCanvas ? 540 : 820), 40, isTallCanvas ? 290 : 175);
   attractors.reserve(targetAttr + reg.poles.size());
   for (const auto& pole : reg.poles) {
     if (std::hypot(pole.x - rootX, pole.y - rootY) > 22.0f) {
@@ -1224,13 +1230,13 @@ void buildBotanicalFloral(SceneGraph& sg, const ClearanceField& field, const Dea
 
   constexpr float kStepLen = 14.5f;
   constexpr float kKillDist = 19.5f;
-  constexpr float kInfluenceDist = 145.0f;
+  const float kInfluenceDist = isTallCanvas ? 185.0f : 145.0f;
 
   std::vector<float> pullX;
   std::vector<float> pullY;
   std::vector<int> pullCount;
 
-  for (int iter = 0; iter < 56 && nodes.size() < 225; ++iter) {
+  for (int iter = 0; iter < maxGrowIters && nodes.size() < maxVineNodes; ++iter) {
     pullX.assign(nodes.size(), 0.0f);
     pullY.assign(nodes.size(), 0.0f);
     pullCount.assign(nodes.size(), 0);
@@ -1266,7 +1272,7 @@ void buildBotanicalFloral(SceneGraph& sg, const ClearanceField& field, const Dea
     if (activeRemaining == 0) break;
 
     const size_t curCount = nodes.size();
-    for (size_t ni = 0; ni < curCount && nodes.size() < 225; ++ni) {
+    for (size_t ni = 0; ni < curCount && nodes.size() < maxVineNodes; ++ni) {
       if (pullCount[ni] == 0) continue;
       float dx = pullX[ni] / static_cast<float>(pullCount[ni]);
       float dy = pullY[ni] / static_cast<float>(pullCount[ni]);
@@ -1352,7 +1358,8 @@ void buildBotanicalFloral(SceneGraph& sg, const ClearanceField& field, const Dea
 
   // 3. Place Hero Blossoms at sunlit interior/canopy vine nodes (away from the grounded root)!
   int heroPlaced = 0;
-  for (size_t p = 0; p < reg.poles.size() && heroPlaced < 3; ++p) {
+  const int maxHeroes = isTallCanvas ? 5 : 3;
+  for (size_t p = 0; p < reg.poles.size() && heroPlaced < maxHeroes; ++p) {
     const auto& rawPole = reg.poles[p];
     size_t bestIdx = 0;
     float bestD = 1e9f;
@@ -1714,10 +1721,19 @@ void buildPlumAndBamboo(SceneGraph& sg, const ClearanceField& field, const DeadR
     return;
   }
 
-  // Distant Shan-Shui mountain mist wash in wide tailpieces!
-  if (reg.kind == RegionKind::TailpieceExpanse && (reg.y1 - reg.y0) >= 120) {
-    sg.addWash(reg.x0, reg.y0 + (reg.y1 - reg.y0) / 3, reg.x1, reg.y1, 0, 178, rng.nextU32());
+  // Distant Shan-Shui mountain mist wash in wide tailpieces or tall multi-bay sleep canvases!
+  if ((reg.kind == RegionKind::TailpieceExpanse && (reg.y1 - reg.y0) >= 120) || (reg.y1 - reg.y0) > 460) {
+    sg.addWash(reg.x0, reg.y0 + (reg.y1 - reg.y0) / 4, reg.x1, reg.y1, 0, 178, rng.nextU32());
   }
+
+  auto minSegClear = [&](float x0, float y0, float x1, float y1) {
+    float mc = 1e6f;
+    for (int k = 0; k <= 14; ++k) {
+      const float t = static_cast<float>(k) / 14.0f;
+      mc = std::min(mc, field.clearanceAt(lerpf(x0, x1, t), lerpf(y0, y1, t)));
+    }
+    return mc;
+  };
 
   // Track placed plum blossoms so overlapping clusters keep clean petal readability!
   struct PlacedPlum {
@@ -1731,16 +1747,6 @@ void buildPlumAndBamboo(SceneGraph& sg, const ClearanceField& field, const DeadR
     return true;
   };
 
-  // Choose an anchor side to launch the gnarled calligraphic plum trunk toward mainPole!
-  const bool fromLeft = rng.chance(0.55f);
-  float startX = fromLeft ? static_cast<float>(reg.x0 + 18) : static_cast<float>(reg.x1 - 18);
-  float startY = clampf(mainPole.y + (reg.y1 - mainPole.y) * 0.48f, static_cast<float>(reg.y0 + 22),
-                        static_cast<float>(reg.y1 - 22));
-  for (int s = 0; s < 16 && field.clearanceAt(startX, startY) < 12.0f; ++s) {
-    startX = lerpf(startX, mainPole.x, 0.18f);
-    startY = lerpf(startY, mainPole.y, 0.18f);
-  }
-
   // Reserve mainPole hero blossom first so every petal has guaranteed clearance!
   float heroX = mainPole.x, heroY = mainPole.y, heroR = 18.0f;
   const bool hasHero =
@@ -1748,6 +1754,33 @@ void buildPlumAndBamboo(SceneGraph& sg, const ClearanceField& field, const DeadR
   if (hasHero) {
     placedBlossoms.push_back({heroX, heroY, heroR});
   }
+
+  // Choose an anchor side whose trunk segment to heroX/heroY never clips across a card corner!
+  auto findCleanTrunkAnchor = [&](float tx, float ty, bool preferLeft, float& outX, float& outY, bool& outLeft) {
+    for (int attempt = 0; attempt < 2; ++attempt) {
+      const bool sideLeft = (attempt == 0) ? preferLeft : !preferLeft;
+      float sx = sideLeft ? static_cast<float>(reg.x0 + 16) : static_cast<float>(reg.x1 - 16);
+      float sy =
+          clampf(ty + (sideLeft ? 48.0f : 38.0f), static_cast<float>(reg.y0 + 18), static_cast<float>(reg.y1 - 18));
+      for (int s = 0; s < 16 && (field.clearanceAt(sx, sy) < 11.5f || minSegClear(sx, sy, tx, ty) < 9.5f); ++s) {
+        sx = lerpf(sx, tx, 0.16f);
+        sy = lerpf(sy, ty, 0.16f);
+      }
+      if (minSegClear(sx, sy, tx, ty) >= 8.5f) {
+        outX = sx;
+        outY = sy;
+        outLeft = sideLeft;
+        return;
+      }
+    }
+    outLeft = (tx < field.screenW * 0.5f);
+    outX = lerpf(outLeft ? static_cast<float>(reg.x0 + 16) : static_cast<float>(reg.x1 - 16), tx, 0.55f);
+    outY = lerpf(ty + 30.0f, ty, 0.55f);
+  };
+
+  bool fromLeft = (mainPole.x < field.screenW * 0.5f);
+  float startX = heroX, startY = heroY;
+  findCleanTrunkAnchor(heroX, heroY, fromLeft, startX, startY, fromLeft);
 
   // Recursive angular brush branch builder ("iron-wire" calligraphy kinks + feibai dry brush).
   auto growPlumBranch = [&](auto& self, float x, float y, float ang, float segLen, float radius, int depth) -> void {
@@ -1799,21 +1832,52 @@ void buildPlumAndBamboo(SceneGraph& sg, const ClearanceField& field, const DeadR
 
   const float mainAng = std::atan2(heroY - startY, heroX - startX);
   const float trunkDist = std::hypot(heroX - startX, heroY - startY);
-  const float trunkLen = clampf(trunkDist * 0.42f, 24.0f, 54.0f);
+  const float trunkLen = clampf(trunkDist * 0.45f, 26.0f, 56.0f);
   const float midX = lerpf(startX, heroX, 0.52f) + (fromLeft ? 8.0f : -8.0f);
   const float midY = lerpf(startY, heroY, 0.52f) + 10.0f;
-  if (field.clearanceAt(midX, midY) >= 8.5f) {
+  if (field.clearanceAt(midX, midY) >= 9.0f && minSegClear(startX, startY, midX, midY) >= 8.5f &&
+      minSegClear(midX, midY, heroX, heroY) >= 8.5f) {
     sg.addStroke(2, startX, startY, midX, midY, 3.6f, 2.7f, true, true, false, rng.nextU32());
     sg.addStroke(2, midX, midY, heroX, heroY, 2.7f, 2.0f, true, true, false, rng.nextU32());
     growPlumBranch(growPlumBranch, midX, midY, mainAng - 0.52f, trunkLen * 0.72f, 2.1f, 2);
   } else {
     sg.addStroke(2, startX, startY, heroX, heroY, 3.3f, 2.1f, true, true, false, rng.nextU32());
   }
-  growPlumBranch(growPlumBranch, heroX, heroY, mainAng + 0.22f, trunkLen * 0.82f, 2.1f, 1);
-  growPlumBranch(growPlumBranch, heroX, heroY, mainAng - 0.58f, trunkLen * 0.68f, 1.7f, 2);
+  growPlumBranch(growPlumBranch, heroX, heroY, mainAng + 0.22f, trunkLen * 0.86f, 2.1f, 1);
+  growPlumBranch(growPlumBranch, heroX, heroY, mainAng - 0.58f, trunkLen * 0.72f, 1.7f, 2);
 
   if (hasHero) {
     emitPlumBlossom(sg, heroX, heroY, heroR, rng);
+  }
+
+  // On full-height multi-bay canvases (e.g. staggered sleep-screen vocabulary cards),
+  // grow up to 2 companion plum boughs into distant upper/lower bays!
+  if ((reg.y1 - reg.y0) > 460 && reg.poles.size() >= 3) {
+    int companionCount = 0;
+    float lastAltY = mainPole.y;
+    for (size_t pi = 1; pi < reg.poles.size() && companionCount < 2; ++pi) {
+      const Pole& altPole = reg.poles[pi];
+      if (std::fabs(altPole.y - mainPole.y) < 175.0f || std::fabs(altPole.y - lastAltY) < 175.0f ||
+          altPole.clearance < 19.0f) {
+        continue;
+      }
+      bool altLeft = (altPole.x < field.screenW * 0.5f);
+      float ax0 = altPole.x, ay0 = altPole.y;
+      findCleanTrunkAnchor(altPole.x, altPole.y, altLeft, ax0, ay0, altLeft);
+      float ahx = altPole.x, ahy = altPole.y, ahr = 16.0f;
+      if (fitSafeBloomRadius(field, ahx, ahy, clampf(altPole.clearance * 0.42f, 12.5f, 21.0f), 10.5f, ahr) &&
+          canPlacePlum(ahx, ahy, ahr)) {
+        placedBlossoms.push_back({ahx, ahy, ahr});
+        sg.addStroke(2, ax0, ay0, ahx, ahy, 3.1f, 1.9f, true, true, false, rng.nextU32());
+        const float aAng = std::atan2(ahy - ay0, ahx - ax0);
+        const float aLen = clampf(std::hypot(ahx - ax0, ahy - ay0) * 0.48f, 24.0f, 48.0f);
+        growPlumBranch(growPlumBranch, ahx, ahy, aAng + 0.24f, aLen * 0.84f, 1.9f, 1);
+        growPlumBranch(growPlumBranch, ahx, ahy, aAng - 0.56f, aLen * 0.68f, 1.5f, 2);
+        emitPlumBlossom(sg, ahx, ahy, ahr, rng);
+        lastAltY = altPole.y;
+        ++companionCount;
+      }
+    }
   }
 
   // Add graceful segmented Ink Bamboo (墨竹) stalk + swept leaf clusters on secondary pole or tall bay!
@@ -3320,6 +3384,134 @@ void renderDeadSpaceOrnaments(const GfxRenderer& renderer, const Page& page, con
   SceneGraph sg;
   sg.reserve(256);
 
+  for (const auto& reg : regions) {
+    switch (resolvedTheme) {
+      case Theme::BotanicalFloral:
+        buildBotanicalFloral(sg, field, reg, cellComp, rng);
+        break;
+      case Theme::PlumAndBamboo:
+        buildPlumAndBamboo(sg, field, reg, rng);
+        break;
+      case Theme::CelestialAstrolabe:
+        buildCelestialAstrolabe(sg, field, reg, cellComp, rng);
+        break;
+      case Theme::MorrisFiligree:
+        buildMorrisFiligree(sg, field, reg, rng);
+        break;
+      case Theme::WavesAndPetals:
+        buildWavesAndPetals(sg, field, reg, cellComp, rng);
+        break;
+      default:
+        break;
+    }
+  }
+
+  compositeAndDitherScene(renderer, field, sg);
+}
+
+void renderCanvasOrnaments(const GfxRenderer& renderer, Theme theme, uint32_t seed, const KeepoutRect* keepouts,
+                           size_t keepoutCount, int marginPx, float haloPx) {
+  if (theme == Theme::Off) return;
+  if (renderer.isFontCacheScanning() || !renderer.hasFrameBuffer()) return;
+  const uint8_t* fb = renderer.getFrameBuffer();
+  if (!fb) return;
+
+  const int W = renderer.getScreenWidth();
+  const int H = renderer.getScreenHeight();
+  if (W <= 64 || H <= 64) return;
+
+  const int gw = (W + kCellPx - 1) / kCellPx;
+  const int gh = (H + kCellPx - 1) / kCellPx;
+  const size_t totalCells = static_cast<size_t>(gw) * gh;
+
+  auto dist16 = makeUniqueNoThrow<uint16_t[]>(totalCells);
+  ClearanceField field;
+  field.inkDistPx = makeUniqueNoThrow<uint8_t[]>(totalCells);
+  if (!dist16 || !field.inkDistPx) return;
+
+  field.screenW = W;
+  field.screenH = H;
+  field.gw = gw;
+  field.gh = gh;
+  field.usableBottom = std::max(64, H - std::max(marginPx, 4));
+  field.haloPx = haloPx;
+  field.edgePadPx = static_cast<float>(std::max(marginPx, 5));
+
+  constexpr uint16_t kInf = 30000;
+  for (size_t i = 0; i < totalCells; ++i) dist16[i] = kInf;
+
+  int minInkY = H;
+  int maxInkY = 0;
+  for (int y = 0; y < H; ++y) {
+    const int gy = y / kCellPx;
+    for (int x = 0; x < W; ++x) {
+      if (readLogicalInkBit(renderer, fb, x, y)) {
+        dist16[gy * gw + (x / kCellPx)] = 0;
+        minInkY = std::min(minInkY, y);
+        maxInkY = std::max(maxInkY, y);
+      }
+    }
+  }
+
+  for (size_t i = 0; i < keepoutCount && keepouts; ++i) {
+    const int gx0 = std::max(0, static_cast<int>(keepouts[i].x0) / kCellPx);
+    const int gy0 = std::max(0, static_cast<int>(keepouts[i].y0) / kCellPx);
+    const int gx1 = std::min(gw - 1, std::max(0, static_cast<int>(keepouts[i].x1)) / kCellPx);
+    const int gy1 = std::min(gh - 1, std::max(0, static_cast<int>(keepouts[i].y1)) / kCellPx);
+    for (int gy = gy0; gy <= gy1; ++gy) {
+      for (int gx = gx0; gx <= gx1; ++gx) {
+        dist16[gy * gw + gx] = 0;
+      }
+    }
+    minInkY = std::min<int>(minInkY, keepouts[i].y0);
+    maxInkY = std::max<int>(maxInkY, keepouts[i].y1);
+  }
+
+  // Two-pass Rosenfeld-Pfaltz Chamfer (12, 17) distance transform.
+  constexpr uint16_t kOrth = 12;
+  constexpr uint16_t kDiag = 17;
+  for (int y = 0; y < gh; ++y) {
+    for (int x = 0; x < gw; ++x) {
+      uint16_t d = dist16[y * gw + x];
+      if (d == 0) continue;
+      if (x > 0) d = std::min<uint16_t>(d, dist16[y * gw + (x - 1)] + kOrth);
+      if (y > 0) {
+        d = std::min<uint16_t>(d, dist16[(y - 1) * gw + x] + kOrth);
+        if (x > 0) d = std::min<uint16_t>(d, dist16[(y - 1) * gw + (x - 1)] + kDiag);
+        if (x + 1 < gw) d = std::min<uint16_t>(d, dist16[(y - 1) * gw + (x + 1)] + kDiag);
+      }
+      dist16[y * gw + x] = d;
+    }
+  }
+  for (int y = gh - 1; y >= 0; --y) {
+    for (int x = gw - 1; x >= 0; --x) {
+      uint16_t d = dist16[y * gw + x];
+      if (x + 1 < gw) d = std::min<uint16_t>(d, dist16[y * gw + (x + 1)] + kOrth);
+      if (y + 1 < gh) {
+        d = std::min<uint16_t>(d, dist16[(y + 1) * gw + x] + kOrth);
+        if (x + 1 < gw) d = std::min<uint16_t>(d, dist16[(y + 1) * gw + (x + 1)] + kDiag);
+        if (x > 0) d = std::min<uint16_t>(d, dist16[(y + 1) * gw + (x - 1)] + kDiag);
+      }
+      dist16[y * gw + x] = d;
+      const uint32_t px = (d + 1) / 3;
+      field.inkDistPx[y * gw + x] = static_cast<uint8_t>(std::min<uint32_t>(255u, px));
+    }
+  }
+
+  std::vector<int16_t> cellComp;
+  const int cTop = (minInkY <= maxInkY) ? minInkY : marginPx;
+  const int cBot = (minInkY <= maxInkY) ? maxInkY : (H - marginPx);
+  const auto regions = extractDeadRegions(field, cTop, cBot, cellComp);
+  if (regions.empty()) return;
+
+  Rng rng(seed ^ 0xA53C9E21u);
+  Theme resolvedTheme = theme;
+  if (resolvedTheme == Theme::AutoCycle) {
+    resolvedTheme = static_cast<Theme>(1u + (seed % 5u));
+  }
+
+  SceneGraph sg;
+  sg.reserve(384);
   for (const auto& reg : regions) {
     switch (resolvedTheme) {
       case Theme::BotanicalFloral:
