@@ -94,6 +94,7 @@ add_subdirectory(txt_cover_meta)
 add_subdirectory(text_encoding)
 add_subdirectory(adept_drm)
 add_subdirectory(libby_sync)
+add_subdirectory(telegram_sync)
 
 add_subdirectory(absolute_grayscale)
 

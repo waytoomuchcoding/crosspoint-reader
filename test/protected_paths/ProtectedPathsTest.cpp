@@ -9,13 +9,16 @@ TEST(ProtectedPaths, CredentialStoresAreSensitive) {
   EXPECT_TRUE(isSensitivePath("/.crosspoint/wifi.json"));
   EXPECT_TRUE(isSensitivePath("/.crosspoint/opds.json"));
   EXPECT_TRUE(isSensitivePath("/.crosspoint/koreader.json"));
+  EXPECT_TRUE(isSensitivePath("/.crosspoint/telegram.json"));
   EXPECT_TRUE(isSensitivePath("/.crosspoint/libby.json"));
   EXPECT_TRUE(isSensitivePath("/.crosspoint/adept.json"));
   EXPECT_TRUE(isSensitivePath("/.crosspoint/adept/activation.xml"));
   EXPECT_TRUE(isSensitivePath("/.crosspoint/plugins/libby/token.json"));
   EXPECT_TRUE(isSensitivePath("/.crosspoint/plugins/protected-content/adept.json"));
   EXPECT_TRUE(isSensitivePath("/.crosspoint/wifi.json.tmp"));
+  EXPECT_TRUE(isSensitivePath("/.crosspoint/telegram.json.tmp"));
   EXPECT_TRUE(isSensitivePath("/.CrossPoint/WIFI.json"));
+  EXPECT_TRUE(isSensitivePath("/.CrossPoint/TELEGRAM.json"));
 }
 
 TEST(ProtectedPaths, SpellingVariantsCannotDodgeTheMatch) {

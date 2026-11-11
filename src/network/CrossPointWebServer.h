@@ -157,6 +157,8 @@ class CrossPointWebServer {
   void handlePostWifiNetwork();
   void handleDeleteWifiNetwork();
 
+  void handleGetTelegram() const;
+  void handlePostTelegram();
   void handleGetLibby() const;
   void handlePostLibby();
 

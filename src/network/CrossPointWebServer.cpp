@@ -44,6 +44,7 @@
 #include "ProtectedPaths.h"
 #include "SdCardFontSystem.h"
 #include "SettingsList.h"
+#include "TelegramCredentialStore.h"
 #include "WebDAVHandler.h"
 #include "WifiCredentialStore.h"
 #include "WifiPowerSaveGuard.h"
@@ -60,6 +61,7 @@
 #include "html/js/jszip_minJs.generated.h"
 #include "html/js/plugin_hostJs.generated.h"
 #include "network/LibbyClient.h"
+#include "network/TelegramBookSync.h"
 #include "util/BookCacheUtils.h"
 #include "util/DictionaryRegistry.h"
 #include "util/FirmwareIdentity.h"
@@ -361,6 +363,8 @@ class CrossPointWebServer::RouteHandler final : public RequestHandler {
         {"/api/wifi", HTTP_GET, [](S& s) { s.handleGetWifiNetworks(); }, nullptr},
         {"/api/wifi", HTTP_POST, [](S& s) { s.handlePostWifiNetwork(); }, nullptr},
         {"/api/wifi/delete", HTTP_POST, [](S& s) { s.handleDeleteWifiNetwork(); }, nullptr},
+        {"/api/telegram", HTTP_GET, [](S& s) { s.handleGetTelegram(); }, nullptr},
+        {"/api/telegram", HTTP_POST, [](S& s) { s.handlePostTelegram(); }, nullptr},
         {"/api/libby", HTTP_GET, [](S& s) { s.handleGetLibby(); }, nullptr},
         {"/api/libby", HTTP_POST, [](S& s) { s.handlePostLibby(); }, nullptr},
     };
@@ -3494,6 +3498,91 @@ void CrossPointWebServer::handleFontDelete() {
     server->send(500, "application/json", "{\"error\":\"Delete failed\"}");
     LOG_ERR("WEB", "Failed to delete font family: %s", familyName);
   }
+}
+
+void CrossPointWebServer::handleGetTelegram() const {
+  TELEGRAM_STORE.loadFromFile();
+  JsonDocument resp;
+  resp["configured"] = TELEGRAM_STORE.hasCredentials();
+  resp["hasBotToken"] = !TELEGRAM_STORE.getBotToken().empty();
+  resp["allowedChatId"] = TELEGRAM_STORE.getAllowedChatId();
+  resp["destFolder"] = TELEGRAM_STORE.getDestFolder();
+  resp["autoSyncOnSleep"] = TELEGRAM_STORE.getAutoSyncOnSleep();
+  resp["lastUpdateId"] = TELEGRAM_STORE.getLastUpdateId();
+  sendJson(resp);
+}
+
+void CrossPointWebServer::handlePostTelegram() {
+  TELEGRAM_STORE.loadFromFile();
+  JsonDocument req;
+  if (!readJsonBody(req)) return;
+
+  const std::string action = req["action"] | "";
+  if (action == "pair") {
+    std::string token = req["botToken"] | "";
+    req.clear();
+    if (token.empty()) {
+      token = TELEGRAM_STORE.getBotToken();
+    }
+    std::string chatId, username, err;
+    if (!telegram::pairLatestChat(token, chatId, username, err)) {
+      JsonDocument resp;
+      resp["ok"] = false;
+      resp["error"] = err;
+      sendJson(resp);
+      return;
+    }
+    JsonDocument resp;
+    resp["ok"] = true;
+    resp["allowedChatId"] = chatId;
+    resp["username"] = username;
+    sendJson(resp);
+    return;
+  }
+
+  if (action == "sync") {
+    req.clear();
+    telegram::SyncSummary summary;
+    std::string err;
+    if (!telegram::syncPendingFiles(summary, err)) {
+      JsonDocument resp;
+      resp["ok"] = false;
+      resp["error"] = err;
+      sendJson(resp);
+      return;
+    }
+    JsonDocument resp;
+    resp["ok"] = true;
+    resp["filesDownloaded"] = summary.filesDownloaded;
+    resp["coversBound"] = summary.coversBound;
+    JsonArray arr = resp["savedPaths"].to<JsonArray>();
+    for (const auto& p : summary.savedPaths) {
+      arr.add(p);
+    }
+    sendJson(resp);
+    return;
+  }
+
+  if (req["botToken"].is<const char*>()) {
+    const char* tok = req["botToken"];
+    if (tok[0] != '\0') {
+      TELEGRAM_STORE.setBotToken(tok);
+    }
+  }
+  if (req["allowedChatId"].is<const char*>()) {
+    TELEGRAM_STORE.setAllowedChatId(req["allowedChatId"].as<const char*>());
+  } else if (req["allowedChatId"].is<int64_t>()) {
+    TELEGRAM_STORE.setAllowedChatId(std::to_string(req["allowedChatId"].as<int64_t>()));
+  }
+  if (req["destFolder"].is<const char*>()) {
+    TELEGRAM_STORE.setDestFolder(req["destFolder"].as<const char*>());
+  }
+  if (req["autoSyncOnSleep"].is<bool>()) {
+    TELEGRAM_STORE.setAutoSyncOnSleep(req["autoSyncOnSleep"].as<bool>());
+  }
+  req.clear();
+  TELEGRAM_STORE.saveToFile();
+  server->send(200, "application/json", "{\"ok\":true}");
 }
 
 void CrossPointWebServer::handleGetLibby() const {

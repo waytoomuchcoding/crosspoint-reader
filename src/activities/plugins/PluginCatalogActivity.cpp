@@ -27,6 +27,7 @@
 #include "CrossPointSettings.h"
 #include "LibbyActivity.h"
 #include "MappedInputManager.h"
+#include "TelegramSyncActivity.h"
 #include "activities/reader/DictionaryDefinitionActivity.h"  // plain-text README viewer
 #include "activities/settings/PluginHubInstallActivity.h"
 #include "activities/util/ConfirmationActivity.h"
@@ -83,6 +84,7 @@ constexpr auto DETAIL_REPOSITORY = JsonListParser::F_BASE;
 constexpr auto DETAIL_PAGE_URL = JsonListParser::F_URL;
 constexpr auto DETAIL_PAGE_FORMAT = JsonListParser::F_BASE;
 constexpr std::string_view LIBBY_BUILTIN_ID = "__builtin_libby";
+constexpr std::string_view TELEGRAM_BUILTIN_ID = "__builtin_telegram";
 
 void appendBuiltinCatalogEntries(std::vector<PluginRef>& out) {
   PluginRef libbyBuiltin;
@@ -91,6 +93,13 @@ void appendBuiltinCatalogEntries(std::vector<PluginRef>& out) {
   libbyBuiltin.description = tr(STR_LIBBY_DESC);
   libbyBuiltin.deviceKind = PluginLocations::DeviceKind::Catalog;
   out.push_back(std::move(libbyBuiltin));
+
+  PluginRef tgBuiltin;
+  tgBuiltin.name = std::string(TELEGRAM_BUILTIN_ID);
+  tgBuiltin.title = tr(STR_TELEGRAM_SYNC);
+  tgBuiltin.description = tr(STR_TELEGRAM_DESC);
+  tgBuiltin.deviceKind = PluginLocations::DeviceKind::Catalog;
+  out.push_back(std::move(tgBuiltin));
 }
 
 std::unique_ptr<Activity> createBuiltinServiceActivity(const std::string_view pluginName, GfxRenderer& renderer,
@@ -98,6 +107,11 @@ std::unique_ptr<Activity> createBuiltinServiceActivity(const std::string_view pl
   if (pluginName == LIBBY_BUILTIN_ID) {
     auto act = makeUniqueNoThrow<LibbyActivity>(renderer, mappedInput);
     if (!act) LOG_ERR("PCAT", "OOM: LibbyActivity (%zu B)", sizeof(LibbyActivity));
+    return act;
+  }
+  if (pluginName == TELEGRAM_BUILTIN_ID) {
+    auto act = makeUniqueNoThrow<TelegramSyncActivity>(renderer, mappedInput);
+    if (!act) LOG_ERR("PCAT", "OOM: TelegramSyncActivity (%zu B)", sizeof(TelegramSyncActivity));
     return act;
   }
   return nullptr;

@@ -45,6 +45,7 @@
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/BookSyncService.h"
 #include "platform/UsbSerialJtagHandoff.h"
 #include "util/ButtonNavigator.h"
 #include "util/PluginEvents.h"
@@ -399,14 +400,16 @@ static void deliverSleepPluginEvents(const bool allowNetwork) {
   }
   pluginevents::emit(pluginevents::Event::SleepEnter, vars, varCount);
   if (!allowNetwork) return;
+  const bool wantsCloudSync = booksync::wantsSleepAutoSync();
   if (WiFi.status() == WL_CONNECTED) {
     pluginevents::drain(&renderer);
+    if (wantsCloudSync) booksync::runSleepAutoSync(&renderer);
     return;
   }
   // Any connect-flagged queued event justifies the join, not only
   // sleep.enter: reader.session is queued while reading and delivered on this
   // same sleep, and a progress-sync plugin usually subscribes to it alone.
-  if (!pluginevents::wantsConnectAny()) return;
+  if (!pluginevents::wantsConnectAny() && !wantsCloudSync) return;
   if (powerManager.getBatteryPercentage() < 20) return;
   // Sleep can be the first WiFi use since boot or deep-sleep wake.
   WIFI_STORE.loadFromFile();
@@ -423,6 +426,7 @@ static void deliverSleepPluginEvents(const bool allowNetwork) {
   if (WiFi.status() == WL_CONNECTED) {
     trustedtime::startSync();  // snap the clock floor while the network is up
     pluginevents::drain(&renderer);
+    if (wantsCloudSync) booksync::runSleepAutoSync(&renderer);
   } else {
     LOG_DBG("MAIN", "Sleep-event WiFi join timed out; deferring delivery");
   }

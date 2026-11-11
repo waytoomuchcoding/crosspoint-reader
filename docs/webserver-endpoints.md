@@ -749,6 +749,25 @@ queued; jobs enqueued with no page open stay pending until one opens.
 
 ## Online Sync & Plain-Text Cover Endpoints
 
+### `GET /api/telegram`
+
+Returns the current Telegram Bot sync configuration (never exposing the raw bot token).
+
+```json
+{
+  "configured": true,
+  "hasBotToken": true,
+  "allowedChatId": "123456789",
+  "destFolder": "/Books",
+  "autoSyncOnSleep": false,
+  "lastUpdateId": 42
+}
+```
+
+### `POST /api/telegram`
+
+Configures Telegram credentials (`{"botToken":"...","allowedChatId":"...","destFolder":"/Books","autoSyncOnSleep":false}`), pairs with the most recent `/start` sender (`{"action":"pair","botToken":"..."}`), or triggers an immediate sync (`{"action":"sync"}`).
+
 ### `GET /api/libby`
 
 Returns Libby link status and cached OverDrive loans (`{"linked":true,"loans":[...]}`).

@@ -16,6 +16,7 @@ inline constexpr const char* SENSITIVE_FILES[] = {
     "/.crosspoint/wifi.json",
     "/.crosspoint/opds.json",
     "/.crosspoint/koreader.json",
+    "/.crosspoint/telegram.json",
     "/.crosspoint/libby.json",
     "/.crosspoint/adept.json",
     "/.crosspoint/adept",
