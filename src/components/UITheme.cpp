@@ -17,6 +17,7 @@
 #include "components/themes/lyra/Lyra3CoversTheme.h"
 #include "components/themes/lyra/LyraTheme.h"
 #include "components/themes/roundedraff/RoundedRaffTheme.h"
+#include "components/themes/shibadesk/ShibaDeskTheme.h"
 
 UITheme UITheme::instance;
 
@@ -33,6 +34,10 @@ void UITheme::reload() {
 bool UITheme::supportsCoverGrid() { return HalMemory::getPsramHeap().totalBytes > 0; }
 
 bool UITheme::hasCoverGridHome() { return SETTINGS.uiTheme == CrossPointSettings::COVER_GRID && supportsCoverGrid(); }
+
+bool UITheme::isShibaDesk() { return SETTINGS.uiTheme == CrossPointSettings::SHIBA_DESK; }
+
+bool UITheme::hasShibaDeskHome() { return SETTINGS.uiTheme == CrossPointSettings::SHIBA_DESK; }
 
 void UITheme::drawCoverGridHome(CoverGridHomeUi& home) { home.renderUi(); }
 
@@ -67,6 +72,19 @@ void UITheme::setTheme(CrossPointSettings::UI_THEME type) {
       LOG_DBG("UI", "Using Lyra 3 Covers theme");
       currentTheme = std::make_unique<Lyra3CoversTheme>();
       currentMetrics = &Lyra3CoversMetrics::values;
+      break;
+    case CrossPointSettings::UI_THEME::SHIBA_DESK: {
+      auto theme = makeUniqueNoThrow<ShibaDeskTheme>();
+      if (!theme) {
+        LOG_ERR("UI", "OOM: ShibaDesk theme");
+        return;
+      }
+      currentTheme = std::move(theme);
+      currentMetrics = &ShibaDeskMetrics::values;
+      LOG_DBG("UI", "Using Shiba Study Desk theme");
+      break;
+    }
+    case CrossPointSettings::UI_THEME::UI_THEME_COUNT:
       break;
   }
   metricsValid = false;

@@ -1724,6 +1724,9 @@ void CrossPointWebServer::handlePostSettings() {
           } else if (s.valueSetter) {
             s.valueSetter(static_cast<uint8_t>(val));
           }
+          if (s.valuePtr == &CrossPointSettings::uiTheme) {
+            UITheme::getInstance().reload();
+          }
           applied++;
         }
         break;

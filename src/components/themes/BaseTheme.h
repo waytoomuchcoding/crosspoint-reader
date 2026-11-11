@@ -290,6 +290,14 @@ class BaseTheme {
   static void drawSelectionActions(const GfxRenderer& renderer, Rect rect, int count = 3, int firstAction = 0);
   virtual Rect drawPopup(const GfxRenderer& renderer, const char* message) const;
   virtual void fillPopupProgress(const GfxRenderer& renderer, const Rect& layout, const int progress) const;
+  virtual void drawOptionPopupBackdrop(const GfxRenderer&, Rect) const {}
+  virtual void drawOptionPopupForeground(const GfxRenderer&, Rect) const {}
+  virtual bool renderCustomOptionPopup(const GfxRenderer&, const char* /*title*/, const char* /*headline*/,
+                                       const char* /*message*/, const std::vector<std::string>& /*options*/,
+                                       int /*count*/, int /*selectedIndex*/, Rect& /*outDialogRect*/,
+                                       std::vector<Rect>& /*outOptionRects*/) const {
+    return false;
+  }
   static void drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage, const int pageCount,
                             std::string title, const int paddingBottom = 0, const int textYOffset = 0,
                             const bool fillMargin = true, const bool isPageBookmarked = false,

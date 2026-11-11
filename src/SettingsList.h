@@ -19,6 +19,7 @@
 #include "ReaderFontSizes.h"
 #include "ReaderLineSpacing.h"
 #include "activities/settings/SettingsActivity.h"
+#include "components/UITheme.h"
 #include "util/DictionaryRegistry.h"
 #include "util/SlideSwitch.h"
 
@@ -316,6 +317,54 @@ inline void setShortPowerButtonFromDisplayValue(const uint8_t displayValue) {
 inline SettingInfo buildShortPowerButtonSetting() {
   return SettingInfo::DynamicEnum(StrId::STR_SHORT_PWR_BTN, buildShortPowerButtonValues(), shortPowerButtonDisplayValue,
                                   setShortPowerButtonFromDisplayValue, "shortPwrBtn", StrId::STR_CAT_CONTROLS);
+}
+
+struct UiThemeOption {
+  StrId label;
+  uint8_t value;
+};
+
+// COVER_GRID is omitted on non-PSRAM boards (e.g. ESP32-C3 X3), so map display
+// index <-> persisted UI_THEME enum value explicitly.
+inline std::vector<UiThemeOption> uiThemeOptions() {
+  std::vector<UiThemeOption> options;
+  options.reserve(CrossPointSettings::UI_THEME_COUNT);
+  options.push_back({StrId::STR_THEME_CLASSIC, CrossPointSettings::CLASSIC});
+  options.push_back({StrId::STR_THEME_LYRA, CrossPointSettings::LYRA});
+  options.push_back({StrId::STR_THEME_LYRA_EXTENDED, CrossPointSettings::LYRA_3_COVERS});
+  options.push_back({StrId::STR_THEME_ROUNDEDRAFF, CrossPointSettings::ROUNDEDRAFF});
+  if (UITheme::supportsCoverGrid()) {
+    options.push_back({StrId::STR_THEME_COVER_GRID, CrossPointSettings::COVER_GRID});
+  }
+  options.push_back({StrId::STR_THEME_SHIBA_DESK, CrossPointSettings::SHIBA_DESK});
+  return options;
+}
+
+inline std::vector<StrId> buildUiThemeValues() {
+  const auto options = uiThemeOptions();
+  std::vector<StrId> values;
+  values.reserve(options.size());
+  for (const auto& option : options) values.push_back(option.label);
+  return values;
+}
+
+inline uint8_t uiThemeDisplayValue() {
+  const auto options = uiThemeOptions();
+  for (size_t i = 0; i < options.size(); i++) {
+    if (options[i].value == SETTINGS.uiTheme) return static_cast<uint8_t>(i);
+  }
+  return 1;  // LYRA display slot
+}
+
+inline void setUiThemeFromDisplayValue(const uint8_t displayValue) {
+  const auto options = uiThemeOptions();
+  SETTINGS.uiTheme = displayValue < options.size() ? options[displayValue].value : CrossPointSettings::LYRA;
+  UITheme::getInstance().reload();
+}
+
+inline SettingInfo buildUiThemeSetting() {
+  return SettingInfo::DynamicEnum(StrId::STR_UI_THEME, buildUiThemeValues(), uiThemeDisplayValue,
+                                  setUiThemeFromDisplayValue, "uiTheme", StrId::STR_CAT_DISPLAY);
 }
 
 using SettingVisitor = void (*)(void* context, SettingInfo& info);
