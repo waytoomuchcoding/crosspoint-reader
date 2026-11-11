@@ -42,6 +42,7 @@ class HalFile {
   size_t write(uint8_t byte) { return write(&byte, 1); }
   bool flush() { return file_ && std::fflush(file_) == 0; }
   bool seek(size_t pos) { return file_ && std::fseek(file_, static_cast<long>(pos), SEEK_SET) == 0; }
+  bool seekSet(size_t pos) { return seek(pos); }
   bool seekCur(size_t offset) { return file_ && std::fseek(file_, static_cast<long>(offset), SEEK_CUR) == 0; }
   bool close() {
     if (!file_) return false;
@@ -56,6 +57,7 @@ class HalFile {
   bool isOpen() const { return file_ != nullptr; }
   explicit operator bool() const { return isOpen(); }
   size_t position() const { return file_ ? static_cast<size_t>(std::ftell(file_)) : 0; }
+  size_t fileSize() const { return size(); }
   size_t size() const {
     if (!file_) return 0;
     const long offset = std::ftell(file_);

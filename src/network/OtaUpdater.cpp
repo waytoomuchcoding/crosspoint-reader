@@ -19,7 +19,7 @@
 #include "FirmwareFlasher.h"
 
 namespace {
-constexpr char latestReleaseUrl[] = "https://api.github.com/repos/crosspoint-reader/crosspoint-reader/releases/latest";
+constexpr char latestReleaseUrl[] = "https://api.github.com/repos/waytoomuchcoding/crosspoint-reader/releases/latest";
 }  // namespace
 
 OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
@@ -54,7 +54,9 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
       releaseParser.feed(reinterpret_cast<const char*>(data + offset), 1);
       offset++;
       if (releaseParser.foundTag()) {
-        snprintf(assetName, sizeof(assetName), "crosspoint-%s%s.bin", releaseParser.getTagName(), assetSuffix);
+        const char* tag = releaseParser.getTagName();
+        if (tag[0] == 'v' || tag[0] == 'V') tag++;
+        snprintf(assetName, sizeof(assetName), "crosspoint-%s%s.bin", tag, assetSuffix);
         releaseParser.setFirmwareAssetName(assetName);
         assetNameSet = true;
       }
@@ -96,14 +98,18 @@ bool OtaUpdater::isUpdateNewer() const {
     return false;
   }
 
-  int currentMajor, currentMinor, currentPatch;
-  int latestMajor, latestMinor, latestPatch;
+  int currentMajor = 0, currentMinor = 0, currentPatch = 0;
+  int latestMajor = 0, latestMinor = 0, latestPatch = 0;
 
   const auto currentVersion = CROSSPOINT_VERSION;
+  const char* latestStr = latestVersion.c_str();
+  if (latestStr[0] == 'v' || latestStr[0] == 'V') latestStr++;
+  const char* currentStr = currentVersion;
+  if (currentStr[0] == 'v' || currentStr[0] == 'V') currentStr++;
 
   // semantic version check (only match on 3 segments)
-  sscanf(latestVersion.c_str(), "%d.%d.%d", &latestMajor, &latestMinor, &latestPatch);
-  sscanf(currentVersion, "%d.%d.%d", &currentMajor, &currentMinor, &currentPatch);
+  sscanf(latestStr, "%d.%d.%d", &latestMajor, &latestMinor, &latestPatch);
+  sscanf(currentStr, "%d.%d.%d", &currentMajor, &currentMinor, &currentPatch);
 
   /*
    * Compare major versions.
@@ -125,9 +131,8 @@ bool OtaUpdater::isUpdateNewer() const {
   if (latestPatch != currentPatch) return latestPatch > currentPatch;
 
   // If we reach here, it means all segments are equal.
-  // One final check, if we're on an RC build (contains "-rc"), we should consider the latest version as newer even if
-  // the segments are equal, since RC builds are pre-release versions.
-  if (strstr(currentVersion, "-rc") != nullptr) {
+  // If we're on an RC or branch/dev build (contains "-"), consider the tagged release newer.
+  if (strchr(currentVersion, '-') != nullptr) {
     return true;
   }
 

@@ -12,6 +12,7 @@ add_executable(EmDashLineBreakingTest
   ${REPO_ROOT}/lib/MiniBidi/BidiUtils.cpp
   ${REPO_ROOT}/lib/MiniBidi/minibidi.c
   ${REPO_ROOT}/lib/Utf8/Utf8.cpp
+  ${REPO_ROOT}/lib/ZhDict/ZhDict.cpp
 )
 
 target_include_directories(EmDashLineBreakingTest PRIVATE
@@ -25,6 +26,7 @@ target_include_directories(EmDashLineBreakingTest PRIVATE
   ${REPO_ROOT}/lib/Serialization
   ${REPO_ROOT}/lib/MiniBidi
   ${REPO_ROOT}/lib/FsHelpers
+  ${REPO_ROOT}/lib/ZhDict
 )
 
 target_link_libraries(EmDashLineBreakingTest PRIVATE

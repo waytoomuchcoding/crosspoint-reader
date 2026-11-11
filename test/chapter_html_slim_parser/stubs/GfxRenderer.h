@@ -36,6 +36,7 @@ class GfxRenderer {
   bool isFontCacheScanning() const { return false; }
   mutable int lastLineY = -1;
   mutable int drawnLineCount = 0;
+  void drawPixel(int, int, bool = true) const {}
   void drawLine(int, int y, int, int, int, bool) const {
     lastLineY = y;
     ++drawnLineCount;

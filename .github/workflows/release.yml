@@ -1,14 +1,28 @@
 name: Compile Release
 
-# Build and attach firmware only after a release is published. The release tag
-# supplies both the source revision and the version in each asset name.
+# Automatically build and publish a GitHub Release whenever a version tag is pushed
+# (e.g. v2.1.0 or 2.1.0), when a release is published manually, or via workflow_dispatch.
 
 on:
+  push:
+    tags:
+      - 'v[0-9]*'
+      - '[0-9]*.[0-9]*.[0-9]*'
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build and release (e.g. v2.1.0)'
+        required: true
+        type: string
 
 permissions:
   contents: read
+
+env:
+  RESOLVED_TAG: ${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
+  IS_PRERELEASE: ${{ github.event.release.prerelease == true || contains(github.event.release.tag_name || inputs.tag || github.ref_name, 'rc') }}
 
 jobs:
   build-release:
@@ -44,20 +58,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ env.RESOLVED_TAG }}
           submodules: recursive
 
-      - name: Validate release version
+      - name: Sync release version from tag
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ env.RESOLVED_TAG }}
         run: |
           version="${RELEASE_TAG#v}"
-          configured_version="$(sed -n 's/^version = //p' platformio.ini | head -n1)"
-          if [ "${{ github.event.release.prerelease }}" = "true" ]; then
-            test "$version" = "${configured_version}rc"
-          else
-            test "$version" = "$configured_version"
-          fi
+          base_version="${version%%-*}"
+          base_version="${base_version%rc*}"
+          sed -i "s/^version = .*/version = ${base_version}/" platformio.ini
+          echo "Building release version: ${version} (base: ${base_version})"
 
       - uses: actions/setup-python@v6
         with:
@@ -82,7 +94,7 @@ jobs:
 
       - name: Pin pioarduino core inside the platform penv
         env:
-          PIO_ENV: ${{ github.event.release.prerelease && matrix.rc_env || matrix.release_env }}
+          PIO_ENV: ${{ env.IS_PRERELEASE == 'true' && matrix.rc_env || matrix.release_env }}
         run: |
           set -euo pipefail
           # Envs with custom_sdkconfig run a nested `pio run` from
@@ -94,7 +106,7 @@ jobs:
 
       - name: Build CrossPoint
         env:
-          PIO_ENV: ${{ github.event.release.prerelease && matrix.rc_env || matrix.release_env }}
+          PIO_ENV: ${{ env.IS_PRERELEASE == 'true' && matrix.rc_env || matrix.release_env }}
           # Enrollment gate for the LCP service: official releases carry this
           # key, self-builds do not (and lose only LCP). Rotate per release by
           # updating the repo secret; retire old values in the service's
@@ -109,8 +121,8 @@ jobs:
       - name: Prepare firmware asset
         id: asset
         env:
-          PIO_ENV: ${{ github.event.release.prerelease && matrix.rc_env || matrix.release_env }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          PIO_ENV: ${{ env.IS_PRERELEASE == 'true' && matrix.rc_env || matrix.release_env }}
+          RELEASE_TAG: ${{ env.RESOLVED_TAG }}
         run: |
           version="${RELEASE_TAG#v}"
           asset="crosspoint-${version}-${{ matrix.device }}.bin"
@@ -120,7 +132,7 @@ jobs:
       - name: Prepare license asset
         if: matrix.device == 'x3-x4'
         env:
-          PIO_ENV: ${{ github.event.release.prerelease && matrix.rc_env || matrix.release_env }}
+          PIO_ENV: ${{ env.IS_PRERELEASE == 'true' && matrix.rc_env || matrix.release_env }}
         run: python3 scripts/build_release_license.py --env "$PIO_ENV" --output dist/LICENSE
 
       - name: Stage license asset
@@ -160,10 +172,11 @@ jobs:
           name: release-license
           path: dist
 
-      - name: Attach firmware assets
+      - name: Publish or attach firmware assets
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ env.RESOLVED_TAG }}
+          PRERELEASE: ${{ env.IS_PRERELEASE }}
         run: |
           version="${RELEASE_TAG#v}"
           for device in x3-x4 sticky x4pro x4c papermono metalio_eink4 eego_a4 picco; do
@@ -171,5 +184,17 @@ jobs:
           done
           test "$(find dist -maxdepth 1 -type f -name 'crosspoint-*.bin' | wc -l)" -eq 8
           test -s dist/LICENSE
-          gh release upload "$RELEASE_TAG" dist/crosspoint-*.bin dist/LICENSE \
-            --repo "$GITHUB_REPOSITORY" --clobber
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/crosspoint-*.bin dist/LICENSE \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            extra_flags=()
+            if [ "$PRERELEASE" = "true" ]; then
+              extra_flags+=(--prerelease)
+            fi
+            gh release create "$RELEASE_TAG" dist/crosspoint-*.bin dist/LICENSE \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "CrossPoint ${RELEASE_TAG}" \
+              --generate-notes \
+              "${extra_flags[@]}"
+          fi

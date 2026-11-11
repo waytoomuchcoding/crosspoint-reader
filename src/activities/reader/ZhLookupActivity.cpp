@@ -105,8 +105,8 @@ void ZhLookupActivity::loadHeadwordFont() {
   if (renderer.getFontMap().count(HEADWORD_FONT_ID)) renderer.removeFont(HEADWORD_FONT_ID);
   renderer.registerSdCardFont(HEADWORD_FONT_ID, font.get());
   // The size argument only feeds CSS-style size matching, unused for this id.
-  renderer.insertFont(HEADWORD_FONT_ID, EpdFontFamily(0, font->getEpdFont(0), font->getEpdFont(1),
-                                                      font->getEpdFont(2), font->getEpdFont(3)));
+  renderer.insertFont(HEADWORD_FONT_ID, EpdFontFamily(0, font->getEpdFont(0), font->getEpdFont(1), font->getEpdFont(2),
+                                                      font->getEpdFont(3)));
   headwordFile = std::move(font);
   headFont = HEADWORD_FONT_ID;
 }
