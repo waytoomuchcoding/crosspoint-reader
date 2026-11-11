@@ -152,10 +152,8 @@ void TextSettingsActivity::rebuildSizeList() {
   for (const uint8_t pt : points) {
     // "pt" is deliberately not translated: it is the typographic unit symbol,
     // written the same way in every language CrossPoint ships.
-    char label[12];
-    snprintf(label, sizeof(label), "%u pt", pt);
     if (pt == selectedPt) currentSizeIndex_ = static_cast<int>(sizes_.size());
-    sizes_.push_back({label, pt});
+    sizes_.push_back({formatReaderFontSizeLabel(registry_, SETTINGS.sdFontFamilyName, pt), pt});
   }
 }
 

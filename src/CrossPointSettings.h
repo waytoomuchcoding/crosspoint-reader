@@ -370,6 +370,9 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t readerMenuStyle = READER_MENU_LIST;
   // SD card font family name (empty = use built-in fontFamily)
   char sdFontFamilyName[32] = "";
+  // SD bitmap family used as CJK fallback in book text and UI when the active
+  // font lacks Han glyphs (empty = Auto, preferring Unifont when installed).
+  char zhFontFamilyName[32] = "";
   // SD bitmap family drawn in place of the built-in UI fonts (menus, status
   // bar, buttons); empty = built-in. Each UI size takes the nearest file.
   char uiFontFamilyName[32] = "";

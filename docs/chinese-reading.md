@@ -2,11 +2,15 @@
 
 This fork adds three things for reading Chinese books:
 
-- **Zhuyin ruby**: bopomofo (ㄅㄆㄇㄈ) drawn in a small column to the right of
-  each character of words rarer than a frequency threshold you choose. The
-  column follows the text size: 5x7 symbols below 29 px, 9x9 up to 34 px,
-  11x11 up to 39 px, then the same sets doubled or tripled (5x7 at 2x for
-  40-53 px, and so on), so its strokes keep pace with scaled pixel fonts.
+- **Zhuyin ruby**: bopomofo (ㄅㄆㄇㄈ) drawn either in a small vertical column
+  **beside** each character or horizontally **under** each character for words
+  rarer than a frequency threshold you choose. Within uncommon compound words,
+  already-familiar characters and neutral-tone grammar particles are left clean
+  unless a character takes a non-primary polyphone reading (such as `着` in
+  `着急` `zháo jí` or `着陆` `zhuó lù`). The glyphs scale with the text size:
+  5x7 symbols below 29 px, 9x9 up to 34 px, 11x11 up to 39 px, then the same
+  sets doubled or tripled (5x7 at 2x for 40-53 px, and so on), so their strokes
+  keep pace with scaled pixel fonts.
 - **Word lookup**: a cursor that moves word by word over the page, with a
   CC-CEDICT pop-up showing pinyin, zhuyin, HSK band and definitions.
 - **Pixel-exact CJK font**: GNU Unifont at 2x (32 px), sharp on 1-bit e-ink.
@@ -66,21 +70,26 @@ characters, no Latin):
 #### Pop-up headword font
 
 The lookup pop-up draws the word in `/zh/headword.cpfont` when present (the
-download ships CMEX Ming 24 at 48 px), whatever the reading font. A row too
-wide for it falls back to the reader font, then the small font; characters the
-headword font lacks are drawn in the reader font.
+download ships CMEX Ming 24 at 48 px), whatever the reading font. When a
+traditional variant `【傳統】` would make the 48 px headword row overflow,
+`【傳統】` wraps onto the pinyin line below so the headword stays at 48 px; a
+row still too wide falls back to the reader font, then the small font.
+Characters the headword font lacks are drawn in the reader font.
 
     python3 lib/EpdFont/scripts/fontconvert_sdcard.py cmex24m.bdf --pixel-native 24 \
       --intervals punctuation,zh --size 48 --max-intervals 64 -o headword.cpfont
 
-#### UI font
+#### Chinese fallback font & UI font
 
-Menus, buttons and the status bar use the built-in fonts. CJK text there (book
-and chapter titles) falls back to an SD family with a file at the exact UI
-size (8, 10 and 12 pt): the reader family first, else the family on the card
-with the most glyphs at that size. To draw the whole UI in a bitmap family
-instead, set `"uiFontFamilyName"` in `/.crosspoint/settings.json` (no menu
-yet); each UI size takes that family's nearest file, ties to the larger. A
+Menus, buttons and the status bar use the built-in fonts by default. CJK text in
+both the UI and the reader body (when the active reading font lacks Han glyphs,
+e.g. built-in Noto Sans) automatically falls back to the family chosen in
+**Settings > Reader > Chinese Font** (`Auto` prefers `Unifont`, else the family
+on the card with the most glyphs at that size).
+
+To draw the whole UI in an SD bitmap family instead of built-in Noto Sans,
+choose **Settings > Reader > UI Font**; each UI size takes that family's nearest
+file, ties to the larger, and reloads immediately without a reboot. A
 `WenQuanYi` folder holding WQY 12 px at 1x and 2x (`WenQuanYi_6`,
 `WenQuanYi_12`) and WQY 16 px (`WenQuanYi_8`, `WenQuanYi_15`) covers Latin and
 CJK at every UI size.
@@ -106,16 +115,23 @@ Copy the `zh` folder (about 21 MB) to the root of the SD card.
 
 ### 3. Settings
 
+- **Settings > Reader > Chinese Font** selects the CJK fallback font (`Auto` or
+  any CJK bitmap family on the SD card) used when the active reading or UI font
+  lacks Chinese characters.
+- **Settings > Reader > UI Font** selects the UI font (`Noto Sans` or any SD
+  bitmap family).
 - **Settings > Reader > Zhuyin Ruby** sets which words get zhuyin: Off, All
   Words, or words rarer than the top 500 ... 60,000 most common words. The same
   control is in the reader menu as **Zhuyin Ruby**, where ◀ gives more zhuyin
   and ▶ gives less.
+- **Settings > Reader > Zhuyin Position** switches between **Beside** (vertical
+  column to the right of each character) and **Under** (horizontal line below
+  each character).
 - For lookup, open the reader menu and choose **Look Up**, or set
   **Settings > Controls > Long-press Menu** to **Dictionary** and hold Confirm.
 
-Changing the threshold lays the chapter out again, because zhuyin widens the
-characters it annotates. Books whose language is Japanese or Korean never get
-zhuyin.
+Changing the threshold or position lays the chapter out again. Books whose
+language is Japanese or Korean never get zhuyin.
 
 ## Using lookup
 

@@ -73,6 +73,8 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
   // UI callers replace this entry with buildFontSizeSetting(). It only
   // fixes the setting's position in the Reader category.
   emit(SettingInfo::Enum(StrId::STR_FONT_SIZE, nullptr, {}, "fontSize", StrId::STR_CAT_READER).withTextSettings());
+  emit(SettingInfo::Enum(StrId::STR_ZH_FONT_FAMILY, nullptr, {}, "zhFontFamilyName", StrId::STR_CAT_READER));
+  emit(SettingInfo::Enum(StrId::STR_UI_FONT_FAMILY, nullptr, {}, "uiFontFamilyName", StrId::STR_CAT_READER));
   // "lineHeight": fromJson() moves older "lineSpacing" saves up one slot for the added 1.0.
   emit(SettingInfo::StaticEnum(StrId::STR_LINE_SPACING, &CrossPointSettings::lineSpacing, LINE_SPACING_IDS,
                                "lineHeight", StrId::STR_CAT_READER)

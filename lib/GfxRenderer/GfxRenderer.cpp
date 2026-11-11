@@ -130,7 +130,11 @@ void GfxRenderer::ensureSdCardFontReady(int fontId, const char* utf8Text, uint8_
     if (missed > 0) {
       LOG_DBG("GFX", "ensureSdCardFontReady: %d glyph(s) not found", missed);
     }
-    return;
+  }
+  if (const int fbId = resolveTextFontId(fontId, utf8Text, EpdFontFamily::REGULAR); fbId != fontId) {
+    if (auto fbIt = sdCardFonts_.find(fbId); fbIt != sdCardFonts_.end()) {
+      fbIt->second->buildAdvanceTable(utf8Text, styleMask, nullptr);
+    }
   }
   // TTF (vector) fonts need nothing here: getGlyph faults glyphs in on demand
   // (glyphMissHandler), and the page's set is batch-warmed by the render scan's
@@ -161,7 +165,26 @@ void GfxRenderer::ensureSdCardFontReady(const int fontId, const char* const* seg
     if (missed > 0) {
       LOG_DBG("GFX", "ensureSdCardFontReady: %d glyph(s) not found", missed);
     }
-    return;
+  }
+  if (const auto fb = fallbackFontMap_.find(fontId); fb != fallbackFontMap_.end() && fb->second != fontId) {
+    if (auto fbIt = sdCardFonts_.find(fb->second); fbIt != sdCardFonts_.end()) {
+      bool usesFallback = false;
+      for (size_t seg = 0; seg < segmentCount && !usesFallback; seg++) {
+        const char* p = segments[seg];
+        const char* const end = p + segmentLens[seg];
+        while (p < end) {
+          if (resolveTextFontId(fontId, p, EpdFontFamily::REGULAR) != fontId) {
+            usesFallback = true;
+            break;
+          }
+          p += strlen(p) + 1;
+        }
+      }
+      if (usesFallback) {
+        fbIt->second->buildAdvanceTablePacked(segments, segmentLens, segmentCount, includeSpace, includeHyphen,
+                                              styleMask, nullptr, includeSmallCaps);
+      }
+    }
   }
   // TTF (vector) fonts: nothing to do — glyphs fault in on demand at getGlyph
   // and the page is batch-warmed by the render scan (see the other overload).
@@ -297,6 +320,19 @@ int GfxRenderer::resolveTextFontId(const int fontId, const char* text, const Epd
     }
   }
   return fontId;
+}
+
+bool GfxRenderer::canRenderCodepoint(const int fontId, const uint32_t cp, const EpdFontFamily::Style style) const {
+  const auto primaryIt = fontMap.find(fontId);
+  if (primaryIt != fontMap.end() && primaryIt->second.hasCodepoint(cp, style)) {
+    return true;
+  }
+  const auto fbIt = fallbackFontMap_.find(fontId);
+  if (fbIt == fallbackFontMap_.end()) {
+    return false;
+  }
+  const auto fallbackIt = fontMap.find(fbIt->second);
+  return fallbackIt != fontMap.end() && fallbackIt->second.hasCodepoint(cp, style);
 }
 
 void GfxRenderer::prewarmFallbackText(const int fontId, const TextGetter getter, const void* ctx,

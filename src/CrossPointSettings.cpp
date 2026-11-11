@@ -102,6 +102,9 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   if (sdFontFamilyName[0] != '\0') {
     doc["sdFontFamilyName"] = sdFontFamilyName;
   }
+  if (zhFontFamilyName[0] != '\0') {
+    doc["zhFontFamilyName"] = zhFontFamilyName;
+  }
   if (uiFontFamilyName[0] != '\0') {
     doc["uiFontFamilyName"] = uiFontFamilyName;
   }
@@ -281,6 +284,10 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
     }
   }
 
+  const char* zfn = doc["zhFontFamilyName"] | "";
+  strncpy(zhFontFamilyName, zfn, sizeof(zhFontFamilyName) - 1);
+  zhFontFamilyName[sizeof(zhFontFamilyName) - 1] = '\0';
+
   const char* ufn = doc["uiFontFamilyName"] | "";
   strncpy(uiFontFamilyName, ufn, sizeof(uiFontFamilyName) - 1);
   uiFontFamilyName[sizeof(uiFontFamilyName) - 1] = '\0';
@@ -364,6 +371,14 @@ ReaderRenderSpec CrossPointSettings::readerRenderSpec(const uint16_t viewportWid
   spec.focusReadingEnabled = focusReadingEnabled != 0;
   spec.zhRubyThreshold = zh::rubyThresholdForStep(zhRuby);
   spec.zhRubyStyle = spec.zhRubyThreshold != 0 ? zhRubyStyle : 0;
+  if (zhFontFamilyName[0] != '\0') {
+    uint32_t hash = 2166136261U;
+    for (const char* p = zhFontFamilyName; *p; ++p) {
+      hash ^= static_cast<uint8_t>(*p);
+      hash *= 16777619U;
+    }
+    spec.zhFontFamilyHash = hash == 0 ? 1 : hash;
+  }
   return spec;
 }
 

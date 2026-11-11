@@ -53,6 +53,7 @@ class SdCardFontManager {
 
  private:
   struct LoadedFont {
+    std::string familyName;
     SdCardFont* font;  // heap-allocated, owned
     int fontId;
     uint8_t size;

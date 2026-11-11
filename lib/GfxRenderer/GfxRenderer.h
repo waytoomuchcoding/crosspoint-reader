@@ -187,7 +187,11 @@ class GfxRenderer {
     return (it != sdCardFontScales_.end()) ? it->second : 256;
   }
   const std::map<int, SdCardFont*>& getSdCardFonts() const { return sdCardFonts_; }
-  bool isSdCardFont(int fontId) const { return sdCardFonts_.count(fontId) > 0; }
+  bool isSdCardFont(int fontId) const {
+    if (sdCardFonts_.count(fontId) > 0) return true;
+    const auto fb = fallbackFontMap_.find(fontId);
+    return fb != fallbackFontMap_.end() && sdCardFonts_.count(fb->second) > 0;
+  }
   // TTF (vector) fonts rendered via TtfEpdFont/FreeInkFont. Registered like an
   // ordinary EpdFontFamily (insertFont), plus tracked here so ensureSdCardFontReady()
   // rebuilds their per-page glyph set on demand — the eager analogue of the SD
@@ -199,6 +203,8 @@ class GfxRenderer {
   // setFallbackFont maps a primary UI font id to an SD font id of the same size.
   void setFallbackFont(int primaryFontId, int fallbackFontId) { fallbackFontMap_[primaryFontId] = fallbackFontId; }
   void clearFallbackFonts() { fallbackFontMap_.clear(); }
+  // True when either fontId or its registered UI fallback font covers `cp`.
+  bool canRenderCodepoint(int fontId, uint32_t cp, EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
 
   void setFontVariantProvider(const FontVariantProvider& provider) { fontVariantProvider_ = provider; }
   int resolveFontVariant(const int fontId, const float scale) const {

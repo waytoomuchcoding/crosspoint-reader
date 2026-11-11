@@ -600,6 +600,16 @@ void SdCardFont::computeStyleFileOffsets(PerStyle& s, uint32_t baseOffset) {
 
 // --- Load ---
 
+uint8_t SdCardFont::peekBitonalAdvanceY(const char* path) {
+  HalFile file;
+  if (!path || !Storage.openFileForRead("SDCF", path, file)) return 0;
+  uint8_t buf[HEADER_SIZE + STYLE_TOC_ENTRY_SIZE];
+  if (file.read(buf, sizeof(buf)) != static_cast<int>(sizeof(buf))) return 0;
+  if (memcmp(buf, CPFONT_MAGIC, 8) != 0 || readU16(buf + 8) != CPFONT_VERSION) return 0;
+  if ((readU16(buf + 10) & 2) == 0 || buf[12] == 0) return 0;
+  return buf[HEADER_SIZE + 12];
+}
+
 bool SdCardFont::load(const char* path) {
   freeAll();
   if (strlen(path) >= sizeof(filePath_)) {

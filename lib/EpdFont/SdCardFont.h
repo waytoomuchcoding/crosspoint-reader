@@ -152,6 +152,9 @@ class SdCardFont {
   // True when every glyph pixel is fully on or off (pixel-native .cpfont), so
   // text in this font gains nothing from the grayscale anti-aliasing pass.
   bool isBitonal() const { return bitonal_; }
+  // Reads just the 64-byte header + first style TOC of a .cpfont file; returns
+  // its advanceY (pixel height) when the file is bitonal, 0 otherwise.
+  static uint8_t peekBitonalAdvanceY(const char* path);
   // Glyph records in a style (bridged empty codepoints included), 0 if absent.
   uint32_t glyphCount(uint8_t style = 0) const {
     return style < styleCount_ && styles_ ? styles_[style].header.glyphCount : 0;

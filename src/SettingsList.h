@@ -19,7 +19,6 @@
 #include "ReaderFontSizes.h"
 #include "ReaderLineSpacing.h"
 #include "activities/settings/SettingsActivity.h"
-#include "components/UITheme.h"
 #include "util/DictionaryRegistry.h"
 #include "util/SlideSwitch.h"
 
@@ -95,7 +94,7 @@ inline SettingInfo buildFontSizeSetting(const SdCardFontRegistry* registry) {
   std::vector<std::string> labels;
   labels.reserve(sizes.size());
   for (const uint8_t pt : sizes) {
-    labels.push_back(std::to_string(pt) + " pt");
+    labels.push_back(formatReaderFontSizeLabel(registry, SETTINGS.sdFontFamilyName, pt));
   }
 
   SettingInfo s;
@@ -119,6 +118,76 @@ inline SettingInfo buildFontSizeSetting(const SdCardFontRegistry* registry) {
   };
 
   return s;
+}
+
+inline SettingInfo buildOptionalBitmapSdFontSetting(const SdCardFontRegistry* registry, const StrId nameId,
+                                                    const StrId defaultLabelId, const char* key, char* fieldPtr,
+                                                    const size_t fieldCap) {
+  std::vector<std::string> labels;
+  size_t bitmapCount = 0;
+  if (registry) {
+    for (const auto& f : registry->getFamilies()) {
+      if (!f.vector) ++bitmapCount;
+    }
+  }
+  labels.reserve(bitmapCount + 1);
+  labels.push_back(I18N.get(defaultLabelId));
+  if (registry) {
+    for (const auto& f : registry->getFamilies()) {
+      if (!f.vector) labels.push_back(f.name);
+    }
+  }
+
+  SettingInfo s;
+  s.nameId = nameId;
+  s.type = SettingType::ENUM;
+  s.enumStringValues = std::move(labels);
+  s.key = key;
+  s.category = StrId::STR_CAT_READER;
+
+  // Read the registry directly (same lifetime guarantee as buildFontFamilySetting)
+  // rather than capturing heap copies of family name vectors in both lambdas.
+  s.valueGetter = [registry, fieldPtr, fieldCap]() -> uint8_t {
+    if (!registry || fieldPtr[0] == '\0') return 0;
+    uint8_t slot = 1;
+    for (const auto& f : registry->getFamilies()) {
+      if (f.vector) continue;
+      if (strncmp(f.name.c_str(), fieldPtr, fieldCap - 1) == 0) return slot;
+      ++slot;
+    }
+    return 0;
+  };
+
+  s.valueSetter = [registry, fieldPtr, fieldCap](const uint8_t v) {
+    if (!registry || v == 0) {
+      fieldPtr[0] = '\0';
+      return;
+    }
+    uint8_t slot = 1;
+    for (const auto& f : registry->getFamilies()) {
+      if (f.vector) continue;
+      if (slot == v) {
+        strncpy(fieldPtr, f.name.c_str(), fieldCap - 1);
+        fieldPtr[fieldCap - 1] = '\0';
+        return;
+      }
+      ++slot;
+    }
+    fieldPtr[0] = '\0';
+  };
+
+  return s;
+}
+
+inline SettingInfo buildZhFontFamilySetting(const SdCardFontRegistry* registry) {
+  return buildOptionalBitmapSdFontSetting(registry, StrId::STR_ZH_FONT_FAMILY, StrId::STR_CLOCK_DST_AUTO,
+                                          "zhFontFamilyName", SETTINGS.zhFontFamilyName,
+                                          sizeof(SETTINGS.zhFontFamilyName));
+}
+
+inline SettingInfo buildUiFontFamilySetting(const SdCardFontRegistry* registry) {
+  return buildOptionalBitmapSdFontSetting(registry, StrId::STR_UI_FONT_FAMILY, StrId::STR_NOTO_SANS, "uiFontFamilyName",
+                                          SETTINGS.uiFontFamilyName, sizeof(SETTINGS.uiFontFamilyName));
 }
 
 inline constexpr char DICTIONARY_SETTING_KEY[] = "dictionaryName";
@@ -249,13 +318,6 @@ inline SettingInfo buildShortPowerButtonSetting() {
                                   setShortPowerButtonFromDisplayValue, "shortPwrBtn", StrId::STR_CAT_CONTROLS);
 }
 
-inline std::vector<StrId> homeThemeValues() {
-  static constexpr StrId VALUES[] = {StrId::STR_THEME_CLASSIC, StrId::STR_THEME_LYRA, StrId::STR_THEME_LYRA_EXTENDED,
-                                     StrId::STR_THEME_ROUNDEDRAFF, StrId::STR_THEME_COVER_GRID};
-  const size_t count = UITheme::supportsCoverGrid() ? std::size(VALUES) : std::size(VALUES) - 1;
-  return {VALUES, VALUES + count};
-}
-
 using SettingVisitor = void (*)(void* context, SettingInfo& info);
 
 // Visits synchronously in list order. Borrowed references are valid only during
@@ -314,6 +376,10 @@ inline void buildFontOptions(SettingInfo& s, const SdCardFontRegistry* registry)
     // Unconditional: even with no SD fonts installed the sizes come from the
     // built-in family rather than a fixed Small/Medium/Large/XL enum.
     s = buildFontSizeSetting(registry);
+  } else if (s.nameId == StrId::STR_ZH_FONT_FAMILY) {
+    s = buildZhFontFamilySetting(registry);
+  } else if (s.nameId == StrId::STR_UI_FONT_FAMILY) {
+    s = buildUiFontFamilySetting(registry);
   }
 }
 

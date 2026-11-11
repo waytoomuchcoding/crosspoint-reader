@@ -255,13 +255,25 @@ void SettingsActivity::toggleSelectedSetting() {
                                     ? static_cast<uint8_t>(setting.enumLabels().size())
                                     : static_cast<uint8_t>(setting.enumStringValues.size());
     const uint8_t cur = setting.valueGetter();
+    const bool reloadsFonts =
+        (setting.nameId == StrId::STR_FONT_FAMILY || setting.nameId == StrId::STR_FONT_SIZE ||
+         setting.nameId == StrId::STR_UI_FONT_FAMILY || setting.nameId == StrId::STR_ZH_FONT_FAMILY);
+    const bool resetsUi = (setting.nameId == StrId::STR_UI_THEME || setting.nameId == StrId::STR_UI_FONT_FAMILY ||
+                           setting.nameId == StrId::STR_ZH_FONT_FAMILY);
     if (totalValues > 2) {
       const auto valueSetter = setting.valueSetter;
-      auto onSelect = [this, valueSetter, sleepScreenChanged, quickResumeTimeoutChanged](int idx) {
+      auto onSelect = [this, valueSetter, reloadsFonts, resetsUi, sleepScreenChanged,
+                       quickResumeTimeoutChanged](int idx) {
         valueSetter(idx);
         syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
         SETTINGS.saveToFile();
+        if (reloadsFonts) {
+          sdFontSystem.ensureLoaded(renderer);
+        }
         rebuildSettings();
+        if (resetsUi) {
+          resetUi();
+        }
       };
       if (!setting.enumStringValues.empty()) {
         optionPopup.show(setting.nameId, setting.enumStringValues, cur, std::move(onSelect));
@@ -274,6 +286,12 @@ void SettingsActivity::toggleSelectedSetting() {
       return;
     }
     setting.valueSetter((cur + 1) % totalValues);
+    if (reloadsFonts) {
+      sdFontSystem.ensureLoaded(renderer);
+    }
+    if (resetsUi) {
+      resetUi();
+    }
   } else if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
     const int8_t currentValue = SETTINGS.*(setting.valuePtr);
     if (currentValue + setting.valueRange.step > setting.valueRange.max) {

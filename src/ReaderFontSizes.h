@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <string>
 #include <vector>
 
 #include "fontIds.h"
@@ -51,6 +52,10 @@ inline constexpr uint8_t VECTOR_READER_POINT_SIZES[] = {8, 9, 10, 11, 12, 13, 14
 // or installed .cpfont sizes for a known SD family, otherwise the built-in set.
 // Never returns empty.
 std::vector<uint8_t> readerFontPointSizes(const SdCardFontRegistry* registry, const char* sdFamilyName);
+
+// Formats a selectable point size for UI display ("15 pt", or "15 pt (32 px)"
+// when the active SD family is a bitonal pixel font).
+std::string formatReaderFontSizeLabel(const SdCardFontRegistry* registry, const char* sdFamilyName, uint8_t pt);
 
 // Closest entry in `sizes` (ascending, `count` > 0) to `pt`; ties resolve to the
 // smaller size. Takes a raw range rather than a vector because getReaderFontId()

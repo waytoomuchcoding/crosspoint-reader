@@ -1,5 +1,8 @@
 #include "ReaderFontSizes.h"
 
+#include <SdCardFont.h>
+
+#include <cstdio>
 #include <iterator>
 
 std::vector<uint8_t> readerFontPointSizes(const SdCardFontRegistry* registry, const char* sdFamilyName) {
@@ -13,6 +16,25 @@ std::vector<uint8_t> readerFontPointSizes(const SdCardFontRegistry* registry, co
     }
   }
   return {std::begin(BUILTIN_READER_POINT_SIZES), std::end(BUILTIN_READER_POINT_SIZES)};
+}
+
+std::string formatReaderFontSizeLabel(const SdCardFontRegistry* registry, const char* sdFamilyName, const uint8_t pt) {
+  char buf[24];
+  if (registry && sdFamilyName && sdFamilyName[0] != '\0') {
+    if (const auto* family = registry->findFamily(sdFamilyName); family && !family->vector) {
+      if (const auto* file = family->findFile(pt)) {
+        char path[SdCardFontFamilyInfo::PATH_BUFFER_SIZE];
+        if (family->filePath(*file, path, sizeof(path))) {
+          if (const uint8_t px = SdCardFont::peekBitonalAdvanceY(path); px > 0) {
+            snprintf(buf, sizeof(buf), "%u pt (%u px)", pt, px);
+            return buf;
+          }
+        }
+      }
+    }
+  }
+  snprintf(buf, sizeof(buf), "%u pt", pt);
+  return buf;
 }
 
 uint8_t snapToNearestPointSize(const uint8_t* sizes, const size_t count, const uint8_t pt) {
