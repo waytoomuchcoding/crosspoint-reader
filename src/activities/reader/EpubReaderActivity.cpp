@@ -14,6 +14,7 @@
 #include <Logging.h>
 #include <Memory.h>
 #include <TrustedTime.h>
+#include <Txt.h>
 #include <Utf8.h>
 #include <WiFi.h>
 #include <ZhDict.h>
@@ -53,6 +54,7 @@
 #include "SdCardFont.h"
 #include "SdCardFontSystem.h"
 #include "SilentRestart.h"
+#include "TxtEncodingActivity.h"
 #include "ZhLookupActivity.h"
 #include "ZhRubyAdjustActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
@@ -371,22 +373,23 @@ void EpubReaderActivity::openReaderMenu() {
   const ChapterPosition position = chapterPosition();
   const int bookProgressPercent = bookPercentFor(position);
 
-  startActivityForResult(std::make_unique<EpubReaderMenuActivity>(
-                             renderer, mappedInput, epub->getTitle(), position.displayPage(), position.totalPages,
-                             bookProgressPercent, SETTINGS.orientation, !currentPageFootnotes.empty(),
-                             !cachedBookmarks.empty(), CLIPPINGS.hasClippings(), selectedMenuAction),
-                         [this](const ActivityResult& result) {
-                           const auto& menu = std::get<MenuResult>(result.data);
+  startActivityForResult(
+      std::make_unique<EpubReaderMenuActivity>(
+          renderer, mappedInput, epub->getTitle(), position.displayPage(), position.totalPages, bookProgressPercent,
+          SETTINGS.orientation, !currentPageFootnotes.empty(), !cachedBookmarks.empty(), CLIPPINGS.hasClippings(),
+          selectedMenuAction, Txt::isTxtOrMd(epub->getPath())),
+      [this](const ActivityResult& result) {
+        const auto& menu = std::get<MenuResult>(result.data);
 
-                           if (SETTINGS.orientation != menu.orientation) {
-                             applyOrientation(menu.orientation);
-                           }
+        if (SETTINGS.orientation != menu.orientation) {
+          applyOrientation(menu.orientation);
+        }
 
-                           toggleAutoPageTurn(menu.pageTurnOption);
-                           if (!result.isCancelled) {
-                             onReaderMenuConfirm(static_cast<EpubReaderMenuActivity::MenuAction>(menu.action));
-                           }
-                         });
+        toggleAutoPageTurn(menu.pageTurnOption);
+        if (!result.isCancelled) {
+          onReaderMenuConfirm(static_cast<EpubReaderMenuActivity::MenuAction>(menu.action));
+        }
+      });
 }
 
 // Runs on the render task, under its lock, right before every chapter build. The page turner's
@@ -1364,6 +1367,36 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
                                }
                                requestUpdate();
                              });
+      break;
+    }
+    case EpubReaderMenuActivity::MenuAction::TEXT_ENCODING: {
+      if (!epub || !Txt::isTxtOrMd(epub->getPath())) {
+        requestUpdate();
+        break;
+      }
+      auto encActivity =
+          makeUniqueNoThrow<TxtEncodingActivity>(renderer, mappedInput, epub->getPath(), epub->getCachePath(), 0);
+      if (!encActivity) {
+        LOG_ERR("ERS", "OOM: TxtEncodingActivity (%zu B)", sizeof(TxtEncodingActivity));
+        requestUpdate();
+        break;
+      }
+      startActivityForResult(std::move(encActivity), [this](const ActivityResult& result) {
+        if (!result.isCancelled && epub) {
+          RenderLock lock;
+          if (section) {
+            rememberCurrentContentOffset();
+            cachedSpineIndex = currentSpineIndex;
+            cachedChapterTotalPageCount = section->pageCount;
+            nextPageNumber = section->currentPage;
+          }
+          section.reset();
+          Txt::invalidateCache(epub->getCachePath());
+          Storage.remove((epub->getCachePath() + "/book.bin").c_str());
+          epub->load(true, false);
+        }
+        requestUpdate();
+      });
       break;
     }
     case EpubReaderMenuActivity::MenuAction::DISPLAY_QR: {
@@ -3224,7 +3257,7 @@ void EpubReaderActivity::applyReaderTextSettings() {
 void EpubReaderActivity::buildMoreActions() {
   using MA = EpubReaderMenuActivity::MenuAction;
   EpubReaderMenuActivity::buildMenuItems(moreItems, !currentPageFootnotes.empty(), !cachedBookmarks.empty(),
-                                         CLIPPINGS.hasClippings());
+                                         CLIPPINGS.hasClippings(), epub && Txt::isTxtOrMd(epub->getPath()));
   moreItems.erase(std::remove_if(moreItems.begin(), moreItems.end(),
                                  [](const auto& item) {
                                    return item.action == MA::SELECT_CHAPTER || item.action == MA::TEXT_SETTINGS;
