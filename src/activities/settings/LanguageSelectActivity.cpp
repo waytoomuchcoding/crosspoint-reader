@@ -9,6 +9,7 @@
 #include "CrossPointSettings.h"
 #include "I18nKeys.h"
 #include "MappedInputManager.h"
+#include "SdCardFontSystem.h"
 #include "components/UITheme.h"
 
 namespace fui = freeink::ui;
@@ -17,6 +18,11 @@ LanguageSelectActivity::LanguageSelectActivity(GfxRenderer& renderer, MappedInpu
     : UiListActivity("LanguageSelect", renderer, mappedInput) {}
 
 void LanguageSelectActivity::onEnter() {
+  {
+    RenderLock lock(*this);
+    sdFontSystem.ensureLoaded(renderer);
+    cjkReady_ = sdFontSystem.hasCjkUiFallback(renderer);
+  }
   UiListActivity::onEnter();
 
   // Open on the current language, which may sit past the first page; the first
@@ -32,7 +38,12 @@ void LanguageSelectActivity::onEnter() {
   // finishes the activity immediately on selection.
   for (int i = 0; i < totalItems; ++i) {
     fui::ListItem item;
-    item.label = I18N.getLanguageName(static_cast<Language>(SORTED_LANGUAGE_INDICES[i]));
+    const auto lang = static_cast<Language>(SORTED_LANGUAGE_INDICES[i]);
+    if (lang == Language::ZH_CN && !cjkReady_) {
+      item.label = tr(STR_LANG_CHINESE_SIMPLIFIED_FALLBACK);
+    } else {
+      item.label = I18N.getLanguageName(lang);
+    }
     if (SORTED_LANGUAGE_INDICES[i] == currentLang) {
       item.value = tr(STR_SELECTED);
     }
@@ -41,15 +52,18 @@ void LanguageSelectActivity::onEnter() {
   }
 }
 
+bool LanguageSelectActivity::handleCustomInput() {
+  return cjkWarningPopup_.handleInput(mappedInput, [this] { requestUpdate(); });
+}
+
+void LanguageSelectActivity::render(RenderLock&& lock) {
+  if (cjkWarningPopup_.processRender(renderer, mappedInput)) return;
+  UiListActivity::render(std::move(lock));
+}
+
 const char* LanguageSelectActivity::headerTitle() const { return tr(STR_LANGUAGE); }
 
-void LanguageSelectActivity::activateIndex(const int index) {
-  // The activated row leaves this screen; a lingering flash would gray an
-  // unrelated element on the next render.
-  app.clearTapFlash();
-  nav.selected = index;
-  const uint8_t langIndex = SORTED_LANGUAGE_INDICES[index];
-
+void LanguageSelectActivity::applyLanguageAndFinish(const uint8_t langIndex) {
   {
     RenderLock lock(*this);
     I18N.setLanguage(static_cast<Language>(langIndex));
@@ -60,6 +74,28 @@ void LanguageSelectActivity::activateIndex(const int index) {
 
   // Return to previous page
   finish();
+}
+
+void LanguageSelectActivity::activateIndex(const int index) {
+  // The activated row leaves this screen; a lingering flash would gray an
+  // unrelated element on the next render.
+  app.clearTapFlash();
+  nav.selected = index;
+  const uint8_t langIndex = SORTED_LANGUAGE_INDICES[index];
+
+  if (static_cast<Language>(langIndex) == Language::ZH_CN && !cjkReady_) {
+    const char* options[2] = {tr(STR_CANCEL), tr(STR_CONFIRM)};
+    cjkWarningPopup_.showMessage(tr(STR_CJK_FONT_WARNING_TITLE), tr(STR_CJK_FONT_WARNING_MSG), options, 2, 0,
+                                 [this, langIndex](const int choice) {
+                                   if (choice == 1) {
+                                     applyLanguageAndFinish(langIndex);
+                                   }
+                                 });
+    requestUpdate();
+    return;
+  }
+
+  applyLanguageAndFinish(langIndex);
 }
 
 void LanguageSelectActivity::buildScreen(UiScreen& screen) {

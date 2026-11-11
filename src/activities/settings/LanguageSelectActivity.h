@@ -4,6 +4,7 @@
 #include <I18n.h>
 
 #include "activities/UiListActivity.h"
+#include "components/OptionPopup.h"
 
 class MappedInputManager;
 
@@ -15,12 +16,17 @@ class LanguageSelectActivity final : public UiListActivity {
   explicit LanguageSelectActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
 
   void onEnter() override;
+  void render(RenderLock&& lock) override;
+
+ protected:
+  bool handleCustomInput() override;
 
  private:
   int listCount() const override { return totalItems; }
   void buildScreen(UiScreen& screen) override;
   void activateIndex(int index) override;
   const char* headerTitle() const override;
+  void applyLanguageAndFinish(uint8_t langIndex);
 
   // Only the languages compiled into this build (custom_i18n_builtin_langs), not the whole enum.
   constexpr static uint8_t totalItems = sizeof(SORTED_LANGUAGE_INDICES) / sizeof(SORTED_LANGUAGE_INDICES[0]);
@@ -31,4 +37,6 @@ class LanguageSelectActivity final : public UiListActivity {
   // selection, so buildScreen() never needs to see a different "Selected"
   // row within one visit.
   freeink::ui::ListItem rowItems[totalItems]{};
+  bool cjkReady_ = false;
+  OptionPopup cjkWarningPopup_;
 };
