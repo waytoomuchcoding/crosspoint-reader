@@ -2,9 +2,11 @@
 
 #include <Epub.h>
 #include <FsHelpers.h>
+#include <HalStorage.h>
 #include <Logging.h>
 #include <Xtc.h>
 
+#include "BookCoverStore.h"
 #include "ClippingStore.h"
 
 bool isBookCacheDirectoryName(const char* name) {
@@ -35,5 +37,16 @@ void clearBookCache(const std::string& path) {
 bool removeBookFile(const std::string& path) {
   if (!Storage.remove(path.c_str())) return false;
   clearBookCache(path);
+  BookCoverStore::removeBoundAssets(path);
+  for (const char* suffix : {".key", ".rights"}) {
+    const std::string sidecar = path + suffix;
+    if (Storage.exists(sidecar.c_str())) {
+      Storage.remove(sidecar.c_str());
+    }
+  }
   return ClippingStore::deleteForFilePath(path, "epub");
+}
+
+void moveBookSidecarState(const std::string& oldPath, const std::string& newPath) {
+  BookCoverStore::moveBoundAssets(oldPath, newPath);
 }

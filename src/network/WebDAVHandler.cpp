@@ -565,6 +565,7 @@ void WebDAVHandler::handleMove(WebServer& s) {
   const bool success = ClippingStore::moveBook(srcPath.c_str(), dstPath.c_str());
 
   if (success) {
+    moveBookSidecarState(srcPath.c_str(), dstPath.c_str());
     s.send(dstExists ? 204 : 201);
   } else {
     s.send(500, "text/plain", "Move failed");

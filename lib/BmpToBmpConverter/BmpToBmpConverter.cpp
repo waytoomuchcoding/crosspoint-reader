@@ -47,8 +47,9 @@ int upscaleSource(const int i, const int dst, const int src) {
 
 }  // namespace
 
-bool BmpToBmpConverter::bmpFileToBmpStream(HalFile& bmpFile, Print& bmpOut, const bool crop,
-                                           const bool originalThresholds) {
+bool BmpToBmpConverter::bmpFileToBmpStreamInternal(HalFile& bmpFile, Print& bmpOut, const int targetWidth,
+                                                   const int targetHeight, const bool forceOneBit, const bool crop,
+                                                   const bool originalThresholds) {
   Bitmap src(bmpFile);
   const BmpReaderError err = src.parseHeaders();
   if (err != BmpReaderError::Ok) {
@@ -56,10 +57,8 @@ bool BmpToBmpConverter::bmpFileToBmpStream(HalFile& bmpFile, Print& bmpOut, cons
     return false;
   }
 
-  // Display dimensions swapped for portrait, as for book covers.
   GifCommon::ImageLayout layout;
-  if (!GifCommon::calculateLayout(src.getWidth(), src.getHeight(), display.getDisplayHeight(),
-                                  display.getDisplayWidth(), crop, layout)) {
+  if (!GifCommon::calculateLayout(src.getWidth(), src.getHeight(), targetWidth, targetHeight, crop, layout)) {
     LOG_ERR("BMP", "Invalid BMP layout %dx%d", src.getWidth(), src.getHeight());
     return false;
   }
@@ -68,7 +67,7 @@ bool BmpToBmpConverter::bmpFileToBmpStream(HalFile& bmpFile, Print& bmpOut, cons
   const int dstW = layout.width;
   const int dstH = layout.height;
   const bool upscale = dstW > srcW;
-  const bool oneBit = src.is1Bit();
+  const bool oneBit = forceOneBit || src.is1Bit();
   const int bits = oneBit ? 1 : 2;
   const uint32_t outRowBytes = (static_cast<uint32_t>(dstW) * bits + 31) / 32 * 4;
 
@@ -175,4 +174,17 @@ bool BmpToBmpConverter::bmpFileToBmpStream(HalFile& bmpFile, Print& bmpOut, cons
     if ((i & 63) == 63) vTaskDelay(1);
   }
   return true;
+}
+
+bool BmpToBmpConverter::bmpFileToBmpStream(HalFile& bmpFile, Print& bmpOut, const bool crop,
+                                           const bool originalThresholds) {
+  // Display dimensions swapped for portrait, as for book covers.
+  return bmpFileToBmpStreamInternal(bmpFile, bmpOut, display.getDisplayHeight(), display.getDisplayWidth(),
+                                    /*forceOneBit=*/false, crop, originalThresholds);
+}
+
+bool BmpToBmpConverter::bmpFileTo1BitBmpStreamWithSize(HalFile& bmpFile, Print& bmpOut, const int targetMaxWidth,
+                                                       const int targetMaxHeight, const bool crop) {
+  return bmpFileToBmpStreamInternal(bmpFile, bmpOut, targetMaxWidth, targetMaxHeight, /*forceOneBit=*/true, crop,
+                                    /*originalThresholds=*/false);
 }

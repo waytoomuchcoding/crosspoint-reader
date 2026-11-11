@@ -18,20 +18,27 @@ uint32_t readLe32(const uint8_t* p) {
 int loadBookProgress(const std::string& path) {
   uint8_t data[10]{};
   if (FsHelpers::hasReflowableBookExtension(path)) {
-    // Metadata objects exceed the stack budget; only the featured book is loaded, once per entry.
+    // Metadata objects exceed the stack budget; check progress.bin first so unread books cost no parse.
     auto epub = makeUniqueNoThrow<Epub>(path, "/.crosspoint");
     if (!epub) {
       LOG_ERR("HOME", "OOM: progress metadata");
       return -1;
     }
-    if (!epub->load(false, true)) return -1;
     HalFile file;
     if (!Storage.openFileForRead("HOME", epub->getCachePath() + "/progress.bin", file)) return -1;
     const int size = file.read(data, sizeof(data));
+    file.close();
     if (size != 4 && size != 6 && size != 10) return -1;
     const int spine = data[0] | (data[1] << 8);
     const int page = data[2] | (data[3] << 8);
     const int total = size >= 6 ? data[4] | (data[5] << 8) : 0;
+
+    if (FsHelpers::hasTxtExtension(path) || FsHelpers::hasMarkdownExtension(path)) {
+      if (spine != 0 || total <= 0 || page == UINT16_MAX) return -1;
+      return std::clamp(static_cast<int>((static_cast<float>(page) / total) * 100.0f + 0.5f), 0, 100);
+    }
+
+    if (!epub->load(/*buildIfMissing=*/true, /*skipLoadingCss=*/true)) return -1;
     if (epub->getSpineItemsCount() <= 0 || epub->getBookSize() == 0) return -1;
     if (spine == epub->getSpineItemsCount()) return 100;
     if (spine > epub->getSpineItemsCount()) return -1;

@@ -8,6 +8,7 @@
 #include <HiddenItems.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <TxtCoverMeta.h>
 #include <Utf8.h>
 #include <Xtc.h>
 
@@ -314,6 +315,61 @@ int findPrior(WalkState& st, const uint64_t pathHash) {
   return -1;
 }
 
+struct TxtStageMetadata {
+  bool present = false;
+  bool hasBookTitle = false;
+  std::string title;
+  std::string author;
+};
+
+[[gnu::noinline]] bool resolveTxtStageMetadata(const std::string& fullPath, const std::string& stem,
+                                               TxtStageMetadata& out) {
+  out = {};
+  const std::string metaPath = txtmeta::getBoundMetaJsonPath(fullPath);
+  if (Storage.exists(metaPath.c_str())) {
+    txtmeta::BoundBookMeta boundMeta;
+    bool metaIoFailed = false;
+    if (txtmeta::readMetaJson(metaPath, boundMeta, &metaIoFailed)) {
+      out.present = true;
+      if (!boundMeta.title.empty()) {
+        out.title = std::move(boundMeta.title);
+        out.hasBookTitle = true;
+      }
+      out.author = std::move(boundMeta.author);
+    } else if (metaIoFailed) {
+      return false;
+    }
+  }
+  if (!out.present && txtmeta::parseTitleAuthorFromStem(stem, out.title, out.author)) {
+    out.present = true;
+    out.hasBookTitle = true;
+  }
+  return true;
+}
+
+[[gnu::noinline]] bool priorTxtMetadataMatches(LibraryIndexFile& previous, const ClixRecord& priorRecord,
+                                               const TxtStageMetadata& txtMeta, bool& ioFailedOut) {
+  ioFailedOut = false;
+  std::string priorAuthor;
+  if (!previous.readSourceAuthor(priorRecord, priorAuthor)) {
+    ioFailedOut = true;
+    return false;
+  }
+  std::string priorTitle;
+  const bool priorHasBookTitle = previous.readTitle(priorRecord, priorTitle);
+  if (!priorHasBookTitle && previous.ioFailed()) {
+    ioFailedOut = true;
+    return false;
+  }
+  std::string normalizedTxtAuthor = txtMeta.author;
+  if (!normalizedTxtAuthor.empty() && fold(normalizedTxtAuthor) == "unknown") {
+    normalizedTxtAuthor.clear();
+  }
+  const std::string cleanedTxtAuthor = cleanPersonName(normalizedTxtAuthor);
+  return priorAuthor == cleanedTxtAuthor && priorHasBookTitle == txtMeta.hasBookTitle &&
+         (!txtMeta.hasBookTitle || priorTitle == txtMeta.title);
+}
+
 // parentBasename and depth are gone with the folder-as-author rule they served:
 // nothing about a book's surroundings names its author any more.
 [[gnu::noinline]] bool stageRecord(WalkState& st, const std::string& name, const uint32_t fileSize,
@@ -321,9 +377,11 @@ int findPrior(WalkState& st, const uint64_t pathHash) {
                                    const uint32_t modificationTime) {
   StagedEntry& entry = *st.stagedEntry;
   memset(&entry, 0, sizeof(entry));
-  // The filename is a fallback for the title and nothing else: no parsing, and
-  // never an author. Per review on #2885 -- no other reader parses filenames,
-  // and a name pulled out of one by pattern is a guess wearing a fact's clothes.
+  // For EPUB/XTC, the filename is a fallback for the title only (no filename
+  // guessing over embedded container metadata). Plain-text (.txt/.md) files carry
+  // no embedded OPF/header block, so when metadata reading is enabled they check
+  // bound /.crosspoint/covers/<hash>.meta.json first and otherwise explicit CJK
+  // guillemet / spaced-delimiter stems via txtmeta::parseTitleAuthorFromStem().
   std::string title = stemOf(name);
   std::string author;
   bool titleFromBook = false;
@@ -333,7 +391,14 @@ int findPrior(WalkState& st, const uint64_t pathHash) {
   const int priorIndex = findPrior(st, entry.pathHash);
 
   const bool isXtc = FsHelpers::hasXtcExtension(name);
-  const bool extractionExpected = st.readMetadata && (FsHelpers::hasEpubExtension(name) || isXtc);
+  const bool isTxtOrMd = txtmeta::isTxtOrMdPath(name);
+  TxtStageMetadata txtMeta;
+  if (st.readMetadata && isTxtOrMd && !resolveTxtStageMetadata(fullPath, title, txtMeta)) {
+    st.failed = true;
+    return false;
+  }
+
+  const bool extractionExpected = st.readMetadata && (FsHelpers::hasEpubExtension(name) || isXtc || txtMeta.present);
   const uint8_t expectedStatus = extractionExpected ? CLIX_METADATA_EXTRACTED : CLIX_METADATA_NOT_ATTEMPTED;
   bool reuseMetadata = false;
   ClixRecord priorRecord{};
@@ -346,6 +411,16 @@ int findPrior(WalkState& st, const uint64_t pathHash) {
         st.prior[priorIndex].fileSize == fileSize && modificationTime != 0 &&
         priorRecord.modificationTime == modificationTime && st.previous->header().foldVersion == CLIX_FOLD_VERSION &&
         st.previous->header().metadataEnabled == st.readMetadata && priorRecord.metadataStatus == expectedStatus;
+    if (reuseMetadata && txtMeta.present) {
+      bool ioFailed = false;
+      if (!priorTxtMetadataMatches(*st.previous, priorRecord, txtMeta, ioFailed)) {
+        if (ioFailed) {
+          st.failed = true;
+          return false;
+        }
+        reuseMetadata = false;
+      }
+    }
   }
 
   if (reuseMetadata) {
@@ -375,7 +450,13 @@ int findPrior(WalkState& st, const uint64_t pathHash) {
     st.stats->parsed++;
     std::string bookTitle;
     bool loaded = false;
-    if (isXtc) {
+    if (txtMeta.present) {
+      loaded = true;
+      if (txtMeta.hasBookTitle) {
+        bookTitle = std::move(txtMeta.title);
+      }
+      author = std::move(txtMeta.author);
+    } else if (isXtc) {
       // XTC/XTCH carry title and author in their own header block; load() reads that and the
       // page table header, and writes no cache.
       Xtc xtc(fullPath, CACHE_DIR);

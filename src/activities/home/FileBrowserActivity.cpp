@@ -498,6 +498,7 @@ void FileBrowserActivity::renameSelectedFile(const std::string& oldPath, const s
     rollBackStatePath(oldCachePath, newCachePath, cacheMoved);
     return;
   }
+  moveBookSidecarState(oldPath, newPath);
 
   RECENT_BOOKS.updatePath(oldPath, newPath, oldCachePath, newCachePath);
   if (APP_STATE.openEpubPath == oldPath) {

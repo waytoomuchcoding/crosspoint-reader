@@ -63,6 +63,7 @@
 #include "clippings/ClippingsManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/BookCacheUtils.h"
 #include "util/BookmarkUtil.h"
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
@@ -206,6 +207,8 @@ void moveFinishedBookToReadFolder(const std::string& srcPath, const std::string&
     }
     return;
   }
+
+  moveBookSidecarState(srcPath, dstPath);
 
   const std::string newCachePath = "/.crosspoint/epub_" + std::to_string(std::hash<std::string>{}(dstPath));
   bool cacheMoved = false;

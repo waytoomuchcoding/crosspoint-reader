@@ -47,6 +47,7 @@ class UITheme {
   void reload();
   void setTheme(CrossPointSettings::UI_THEME type);
   static std::string getCoverThumbPath(std::string coverBmpPath, int coverHeight);
+  static std::string getCoverThumbPath(std::string coverBmpPath, int coverWidth, int coverHeight);
   static UIIcon getFileIcon(const std::string& filename);
   static int getStatusBarHeight();
   static int getProgressBarHeight();

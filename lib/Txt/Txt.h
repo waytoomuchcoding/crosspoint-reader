@@ -21,10 +21,12 @@ class Txt {
                                   std::string& utf8PreviewOut, TextEncoding* detectedOut = nullptr);
   static bool validateCache(const std::string& filepath, const std::string& cachePath, size_t cachedSize);
   static void invalidateCache(const std::string& cachePath);
+  static void removeCachedCoverBmps(const std::string& cachePath);
+  static void resolveTitleAndAuthor(const std::string& filepath, std::string& titleOut, std::string& authorOut);
   static bool streamTxtToHtml(const std::string& filepath, Print& out, const std::string& cachePath = "");
   static std::string findCompanionCoverImage(const std::string& filepath);
   static bool convertCoverImageToBmp(const std::string& imagePath, const std::string& destBmpPath, int thumbHeight = 0,
-                                     bool cropped = false, bool originalThresholds = false);
+                                     bool cropped = false, bool originalThresholds = false, int thumbWidth = 0);
   static bool buildTxtCache(const std::string& filepath, const std::string& cachePath,
-                            std::unique_ptr<BookMetadataCache>& bookMetadataCache);
+                            std::unique_ptr<BookMetadataCache>& bookMetadataCache, bool preserveContentCache = false);
 };

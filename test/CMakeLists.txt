@@ -22,6 +22,19 @@ set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
+FetchContent_Declare(
+  arduinojson
+  GIT_REPOSITORY https://github.com/bblanchon/ArduinoJson.git
+  GIT_TAG v7.4.2
+  SOURCE_SUBDIR no-build
+)
+FetchContent_MakeAvailable(arduinojson)
+
+add_library(crosspoint_arduinojson INTERFACE)
+target_include_directories(crosspoint_arduinojson SYSTEM INTERFACE
+  ${arduinojson_SOURCE_DIR}/src
+)
+
 set(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 
 add_library(crosspoint_test_common INTERFACE)
@@ -77,6 +90,7 @@ add_subdirectory(zip_file)
 add_subdirectory(fs_helpers)
 add_subdirectory(http_header)
 add_subdirectory(txt_to_html)
+add_subdirectory(txt_cover_meta)
 add_subdirectory(text_encoding)
 
 add_subdirectory(absolute_grayscale)

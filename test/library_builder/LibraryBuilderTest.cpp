@@ -10,6 +10,7 @@
 #include "Epub.h"
 #include "LibraryBuilder.h"
 #include "LibraryIndexFile.h"
+#include "TxtCoverMeta.h"
 
 using namespace library;
 
@@ -647,4 +648,74 @@ TEST_F(LibraryBuilderTest, SortAllocationFailureProducesValidDegradedIndex) {
   LibraryIndexFile index;
   ASSERT_TRUE(index.open(INDEX));
   EXPECT_EQ(index.bookCount(), 513);
+}
+
+TEST_F(LibraryBuilderTest, TxtBoundMetaJsonAndFilenameFallbackPopulateTitleAndAuthor) {
+  fake::add("/Books/novel.txt", "chapter 1");
+  fake::add("/Books/三体 - 刘慈欣.txt", "chapter 1");
+  fake::add("/Books/plain.txt", "notes");
+
+  txtmeta::BoundBookMeta meta;
+  meta.title = "诡秘之主";
+  meta.author = "爱潜水的乌贼";
+  meta.updatedAt = 1700000000u;
+  ASSERT_TRUE(txtmeta::writeMetaJson(txtmeta::getBoundMetaJsonPath("/Books/novel.txt"), meta));
+
+  initial();
+
+  LibraryIndexFile index;
+  ASSERT_TRUE(index.open(INDEX));
+  ASSERT_EQ(index.header().bookCount, 5u);
+
+  auto checkBook = [&](const std::string& targetPath, const std::string& expectedTitle, const bool expectBookTitle,
+                       const std::string& expectedAuthor) {
+    for (uint16_t ord = 0; ord < index.header().bookCount; ++ord) {
+      ClixRecord rec{};
+      std::string path;
+      ASSERT_TRUE(index.readRecord(ord, rec));
+      ASSERT_TRUE(index.readPath(rec, path));
+      if (path != targetPath) continue;
+      std::string title;
+      std::string author;
+      EXPECT_EQ(index.readTitle(rec, title), expectBookTitle) << targetPath;
+      if (expectBookTitle) {
+        EXPECT_EQ(title, expectedTitle) << targetPath;
+      }
+      if (expectedAuthor.empty()) {
+        EXPECT_FALSE(index.readAuthor(rec, author)) << targetPath;
+      } else {
+        ASSERT_TRUE(index.readAuthor(rec, author)) << targetPath;
+        EXPECT_EQ(author, expectedAuthor) << targetPath;
+      }
+      return;
+    }
+    FAIL() << "Book not found in index: " << targetPath;
+  };
+
+  checkBook("/Books/novel.txt", "诡秘之主", true, "爱潜水的乌贼");
+  checkBook("/Books/三体 - 刘慈欣.txt", "三体", true, "刘慈欣");
+  checkBook("/Books/plain.txt", "", false, "");
+  index.close();
+
+  // Unchanged rebuild reuses TXT metadata without replacing the index
+  ASSERT_TRUE(buildLibraryIndex("/", stats, true));
+  EXPECT_EQ(stats.metadataReused, 5);
+  EXPECT_FALSE(stats.indexReplaced);
+
+  // Updating .meta.json refreshes the TXT title & author even when novel.txt itself was not modified
+  meta.title = "Lord of the Mysteries";
+  meta.author = "Cuttlefish That Loves Diving";
+  ASSERT_TRUE(txtmeta::writeMetaJson(txtmeta::getBoundMetaJsonPath("/Books/novel.txt"), meta));
+  ASSERT_TRUE(buildLibraryIndex("/", stats, true));
+  EXPECT_TRUE(stats.indexReplaced);
+  ASSERT_TRUE(index.open(INDEX));
+  checkBook("/Books/novel.txt", "Lord of the Mysteries", true, "Cuttlefish That Loves Diving");
+  index.close();
+
+  // Removing .meta.json reverts novel.txt cleanly to filename stem with no author
+  ASSERT_TRUE(Storage.remove(txtmeta::getBoundMetaJsonPath("/Books/novel.txt").c_str()));
+  ASSERT_TRUE(buildLibraryIndex("/", stats, true));
+  EXPECT_TRUE(stats.indexReplaced);
+  ASSERT_TRUE(index.open(INDEX));
+  checkBook("/Books/novel.txt", "", false, "");
 }

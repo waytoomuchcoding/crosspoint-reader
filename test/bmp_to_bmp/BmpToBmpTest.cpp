@@ -129,4 +129,23 @@ TEST_F(BmpToBmpTest, OneBitSourceStaysOneBit) {
   EXPECT_EQ(level(out, 3, 61), 1);
 }
 
+TEST_F(BmpToBmpTest, Converts24BitAnd1BitSourcesToExactSize1BitBmp) {
+  for (const bool srcOneBit : {false, true}) {
+    {
+      const auto bmp = splitBmp(148, 222, false, srcOneBit);
+      std::ofstream outFile(path, std::ios::binary);
+      outFile.write(reinterpret_cast<const char*>(bmp.data()), bmp.size());
+    }
+    ASSERT_TRUE(file.open(path.c_str(), "rb"));
+    Output out;
+    ASSERT_TRUE(BmpToBmpConverter::bmpFileTo1BitBmpStreamWithSize(file, out, 52, 78, true));
+    file.close();
+    EXPECT_EQ(out.bytes[28], 1);
+    EXPECT_EQ(le32(out.bytes, 18), 52u);
+    EXPECT_EQ(le32(out.bytes, 22), 78u);
+    EXPECT_EQ(level(out, 26, 8), 0);
+    EXPECT_EQ(level(out, 26, 70), 1);
+  }
+}
+
 }  // namespace
