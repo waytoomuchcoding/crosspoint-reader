@@ -7,6 +7,7 @@
 #include <Memory.h>
 #include <MemoryManager.h>
 #include <Utf8.h>
+#include <XmlCjkEncodings.h>
 #include <XmlParserUtils.h>
 #include <expat.h>
 
@@ -375,7 +376,7 @@ int ChapterHtmlSlimParser::lastLineGlyphBottom() const {
   const TextBlock& line = *static_cast<const PageLine&>(last).getBlock();
   const int lineFontId = line.blockFontId(fontId);
   return last.yPos + renderer.getLineHeight(lineFontId) + line.extraAscent(renderer, fontId) +
-         line.getRubyShift(renderer.getFontAscenderSize(lineFontId));
+         line.getRubyShift(renderer.getFontAscenderSize(lineFontId)) + line.getRubyUnderHeight(renderer, lineFontId);
 }
 
 void ChapterHtmlSlimParser::openBoxScope(BlockStyle& ownStyle, const CssStyle& cssStyle) {
@@ -1264,10 +1265,13 @@ void ChapterHtmlSlimParser::finishTableRow() {
         const TextBlock& line = *tableCellLines[column][lineIndex];
         const int lineFontId = line.blockFontId(fontId);
         const int spacedHeight = renderer.getLineHeight(lineFontId, lineCompression);
+        const int unspacedGap = std::max(0, renderer.getLineHeight(lineFontId) - spacedHeight);
+        const int rubyUnder = line.getRubyUnderHeight(renderer, lineFontId);
         const int height = spacedHeight + line.extraAscent(renderer, fontId) +
-                           line.getRubyShift(renderer.getFontAscenderSize(lineFontId));
+                           line.getRubyShift(renderer.getFontAscenderSize(lineFontId)) +
+                           (rubyUnder > 0 ? rubyUnder + unspacedGap : 0);
         rowLineHeight = std::max<int16_t>(rowLineHeight, static_cast<int16_t>(height));
-        const int contentHeight = height + std::max(0, renderer.getLineHeight(lineFontId) - spacedHeight);
+        const int contentHeight = height + (rubyUnder > 0 ? 0 : unspacedGap);
         rowContentHeight = std::max<int16_t>(rowContentHeight, static_cast<int16_t>(contentHeight));
       }
     }
@@ -2876,6 +2880,7 @@ bool ChapterHtmlSlimParser::beginParse() {
     LOG_ERR("EHP", "Couldn't allocate memory for parser");
     return false;
   }
+  registerExpatCjkEncodingHandler(xmlParser_);
 
   // Handle HTML entities (like &nbsp;) that aren't in XML spec or DTD
   // Using DefaultHandlerExpand preserves normal entity expansion from DOCTYPE
@@ -3154,12 +3159,14 @@ void ChapterHtmlSlimParser::addLineToPage(std::unique_ptr<TextBlock> line, const
   if (stopRequested) return;
   const int lineFontId = line->blockFontId(fontId);
   const int rubyShift = line->getRubyShift(renderer.getFontAscenderSize(lineFontId));
+  const int rubyUnder = line->getRubyUnderHeight(renderer, lineFontId);
   const int spacedHeight = renderer.getLineHeight(lineFontId, lineCompression);
+  const int unspacedGap = std::max(0, renderer.getLineHeight(lineFontId) - spacedHeight);
   // Taller inline words push the shared baseline down.
   const int baseLineHeight = spacedHeight + line->extraAscent(renderer, fontId);
-  const int lineHeight = baseLineHeight + rubyShift;
+  const int lineHeight = baseLineHeight + rubyShift + (rubyUnder > 0 ? rubyUnder + unspacedGap : 0);
   // Spacing can be shorter than the font's own line height; fit and frame the full glyphs.
-  const int contentHeight = lineHeight + std::max(0, renderer.getLineHeight(lineFontId) - spacedHeight);
+  const int contentHeight = lineHeight + (rubyUnder > 0 ? 0 : unspacedGap);
 
   if (!currentPage) {
     currentPage.reset(new Page());

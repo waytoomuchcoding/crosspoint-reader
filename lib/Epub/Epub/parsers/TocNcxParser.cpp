@@ -2,6 +2,7 @@
 
 #include <FsHelpers.h>
 #include <Logging.h>
+#include <XmlCjkEncodings.h>
 #include <XmlParserUtils.h>
 
 #include "Epub/BookMetadataCache.h"
@@ -12,6 +13,7 @@ bool TocNcxParser::setup() {
     LOG_DBG("TOC", "Couldn't allocate memory for parser");
     return false;
   }
+  registerExpatCjkEncodingHandler(parser);
 
   XML_SetUserData(parser, this);
   XML_SetElementHandler(parser, startElement, endElement);

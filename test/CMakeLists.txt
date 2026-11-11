@@ -77,6 +77,7 @@ add_subdirectory(zip_file)
 add_subdirectory(fs_helpers)
 add_subdirectory(http_header)
 add_subdirectory(txt_to_html)
+add_subdirectory(text_encoding)
 
 add_subdirectory(absolute_grayscale)
 

@@ -3,6 +3,7 @@
 #include <FsHelpers.h>
 #include <Logging.h>
 #include <Serialization.h>
+#include <XmlCjkEncodings.h>
 #include <XmlParserUtils.h>
 
 #include <cctype>
@@ -117,6 +118,7 @@ bool ContentOpfParser::setup() {
     LOG_DBG("COF", "Couldn't allocate memory for parser");
     return false;
   }
+  registerExpatCjkEncodingHandler(parser);
 
   XML_SetUserData(parser, this);
   XML_SetElementHandler(parser, startElement, endElement);
