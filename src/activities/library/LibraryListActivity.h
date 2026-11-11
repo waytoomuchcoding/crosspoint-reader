@@ -11,6 +11,11 @@
 #include "activities/UiTabListActivity.h"
 #include "components/OptionPopup.h"
 
+namespace shibadesk {
+struct ShibaLibraryViewContext;
+class ShibaLibraryPresenter;
+}  // namespace shibadesk
+
 // One Library screen: every indexed book on the card shown by recency, title,
 // or author. The Recent shelf orders by file modification time (when a book
 // landed on the card) and pins the recently OPENED books from RecentBooksStore
@@ -32,6 +37,7 @@
 class LibraryListActivity final : public UiTabListActivity {
  public:
   LibraryListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
+  ~LibraryListActivity() override;
 
   void onEnter() override;
   void onExit() override;
@@ -80,7 +86,8 @@ class LibraryListActivity final : public UiTabListActivity {
   void openBookByPath(const std::string& path);
   void promptRebuildIndex();
   void resetAfterRebuild();
-  // Recent-row long-press menu: open / remove from recents / delete / rebuild.
+  // Recent-row (and Shiba Mini-Cover row) long-press menu: open / TXT cover & encoding / remove / delete / rebuild.
+  bool bookOptionsMenuEligible() const;
   void showRecentBookOptions(int entry);
   void promptRemoveRecentBook(const std::string& path, const std::string& title);
   // Long-press delete owns the gesture where grouping does not apply: the
@@ -122,8 +129,22 @@ class LibraryListActivity final : public UiTabListActivity {
   static void formatInitialHeading(uint32_t initial, std::string& out);
   void formatAuthorHeading(const std::string& author, std::string& out) const;
   void drawPositionReadout() const;
+  const char* currentHoldHelpText() const;
   void drawHoldHelp() const;
   const char* headerTitle() const override;
+
+  bool resolveBookEntry(int entry, std::string& path, std::string& title, std::string& author);
+  shibadesk::ShibaLibraryViewContext makeShibaViewContext(const char* backLabel = nullptr,
+                                                          const char* confirmLabel = nullptr,
+                                                          const char* prevLabel = nullptr,
+                                                          const char* nextLabel = nullptr);
+  void invalidateShibaCaches();
+  void launchChildTxtTool(std::unique_ptr<Activity> child, const char* oomLabel);
+  static bool shibaResolveBookTrampoline(void* user, int entry, std::string& pathOut, std::string& titleOut,
+                                         std::string& authorOut);
+  static bool shibaResolveGroupTrampoline(void* user, int groupEntry, std::string& headingOut, int& countOut);
+  static void shibaCloseIndexTrampoline(void* user);
+  static void shibaReopenIndexTrampoline(void* user);
 
   // Ring 0 is the strip; the selected BOOK is ring - 1, with the strip keeping
   // row 0 as the working selection exactly as the pre-ring code did.
@@ -193,4 +214,5 @@ class LibraryListActivity final : public UiTabListActivity {
   // Row options modal (Recent long-press menu); owned here so it outlives the
   // touch event that opened it.
   OptionPopup optionPopup;
+  std::unique_ptr<shibadesk::ShibaLibraryPresenter> shibaPresenter;
 };

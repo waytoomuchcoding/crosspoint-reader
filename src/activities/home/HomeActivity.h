@@ -6,12 +6,14 @@
 #include "RecentBooksStore.h"
 #include "activities/Activity.h"
 #include "components/CoverGridHomeUi.h"
+#include "components/themes/shibadesk/ShibaDeskHomeUi.h"
 #include "util/ButtonNavigator.h"
 
 struct Rect;
 
 class HomeActivity final : public Activity {
   std::unique_ptr<CoverGridHomeUi> coverGridUi;
+  std::unique_ptr<ShibaDeskHomeUi> shibaDeskUi;
   ButtonNavigator buttonNavigator;
   int selectorIndex = 0;
   bool recentsLoading = false;
@@ -80,6 +82,7 @@ class HomeActivity final : public Activity {
   void loadRecentBooks(int maxBooks);
   void loadRecentCovers(int coverHeight);
   void fillCoverGridFromLibrary();
+  void reloadShibaDeskBooks();
   void resolveGridCoverPaths();
   void loadGridCover(RecentBook& book, int height, bool& showingLoading, Rect& popupRect);
 

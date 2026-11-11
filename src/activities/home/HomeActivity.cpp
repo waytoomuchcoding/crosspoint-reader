@@ -40,7 +40,7 @@ int HomeActivity::getMenuItemCount() const {
 void HomeActivity::loadRecentBooks(int maxBooks) {
   recentBooks.clear();
   const auto& books = RECENT_BOOKS.getBooks();
-  recentBooks.reserve(coverGridUi ? maxBooks : std::min(static_cast<int>(books.size()), maxBooks));
+  recentBooks.reserve((coverGridUi || shibaDeskUi) ? maxBooks : std::min(static_cast<int>(books.size()), maxBooks));
 
   for (const RecentBook& book : books) {
     // Limit to maximum number of recent books
@@ -58,7 +58,8 @@ void HomeActivity::loadRecentBooks(int maxBooks) {
 }
 
 void HomeActivity::fillCoverGridFromLibrary() {
-  if (recentBooks.size() >= CoverGridHomeUi::MAX_BOOKS) return;
+  const size_t targetMax = shibaDeskUi ? ShibaDeskHomeUi::MAX_BOOKS : CoverGridHomeUi::MAX_BOOKS;
+  if (recentBooks.size() >= targetMax) return;
   // Keep the index and record together off the task stack; reuse for every row.
   struct LibraryReader {
     library::LibraryIndexFile index;
@@ -81,7 +82,7 @@ void HomeActivity::fillCoverGridFromLibrary() {
       return;
     }
   }
-  for (uint16_t row = 0; row < index.bookCount() && recentBooks.size() < CoverGridHomeUi::MAX_BOOKS; ++row) {
+  for (uint16_t row = 0; row < index.bookCount() && recentBooks.size() < targetMax; ++row) {
     RecentBook book;
     if (!index.readRecord(index.ordinalForRow(library::SortOrder::RecentDesc, row), record) ||
         !index.readPath(record, book.path))
@@ -95,6 +96,21 @@ void HomeActivity::fillCoverGridFromLibrary() {
     if (index.ioFailed()) break;
     recentBooks.push_back(std::move(book));
   }
+}
+
+void HomeActivity::reloadShibaDeskBooks() {
+  if (!shibaDeskUi) return;
+  RECENT_BOOKS.pruneMissing();
+  loadRecentBooks(ShibaDeskHomeUi::MAX_BOOKS);
+  fillCoverGridFromLibrary();
+  hasContinueReading = !recentBooks.empty();
+  recentsLoaded = false;
+  recentsLoading = false;
+  shibaDeskUi->begin(recentBooks, hasPlugins, hasOpdsServers, [this] {
+    reloadShibaDeskBooks();
+    requestUpdate();
+  });
+  selectorIndex = std::clamp(selectorIndex, 0, std::max(0, shibaDeskUi->menuItemCount() - 1));
 }
 
 void HomeActivity::resolveGridCoverPaths() {
@@ -236,10 +252,30 @@ void HomeActivity::onEnter() {
   hasPlugins = SETTINGS.pluginsEnabled != 0;
 
   const auto& metrics = UITheme::getInstance().getMetrics();
-  if (UITheme::getInstance().hasCoverGridHome()) {
+  if (UITheme::isShibaDesk()) {
+    shibaDeskUi = makeUniqueNoThrow<ShibaDeskHomeUi>(*this, renderer, mappedInput);
+    if (!shibaDeskUi) LOG_ERR("HOME", "OOM: Shiba desk UI; using standard home");
+  } else if (UITheme::getInstance().hasCoverGridHome()) {
     // Screen-lifetime interaction tables and component properties exceed the stack budget.
     coverGridUi = makeUniqueNoThrow<CoverGridHomeUi>(renderer);
     if (!coverGridUi) LOG_ERR("HOME", "OOM: cover grid UI; using standard home");
+  }
+  if (shibaDeskUi) {
+    reloadShibaDeskBooks();
+    const int base = static_cast<int>(recentBooks.size());
+    if (initialMenuItem == HomeMenuItem::LIBRARY) {
+      selectorIndex = base + 0;
+    } else if (initialMenuItem == HomeMenuItem::FILE_BROWSER) {
+      selectorIndex = base + 1;
+    } else if (initialMenuItem == HomeMenuItem::FILE_TRANSFER || initialMenuItem == HomeMenuItem::OPDS_BROWSER) {
+      selectorIndex = base + 2;
+    } else if (initialMenuItem == HomeMenuItem::SETTINGS_MENU) {
+      selectorIndex = base + 3;
+    } else {
+      selectorIndex = 0;
+    }
+    requestUpdate();
+    return;
   }
   loadRecentBooks(coverGridUi ? CoverGridHomeUi::MAX_BOOKS : metrics.homeRecentBooksCount);
   hasContinueReading = !recentBooks.empty();
@@ -260,6 +296,7 @@ void HomeActivity::onExit() {
   Activity::onExit();
 
   coverGridUi.reset();
+  shibaDeskUi.reset();
 
   // Free the stored cover buffer if any
   freeCoverBuffer();
@@ -303,6 +340,10 @@ void HomeActivity::freeCoverBuffer() {
 }
 
 void HomeActivity::loop() {
+  if (shibaDeskUi) {
+    shibaDeskUi->handleInput(selectorIndex, buttonNavigator);
+    return;
+  }
   const int menuCount = getMenuItemCount();
   const auto& metrics = UITheme::getInstance().getMetrics();
 
@@ -473,6 +514,20 @@ void HomeActivity::render(RenderLock&&) {
   const Rect content = UITheme::getInstance().getContentArea(renderer);
 
   renderer.clearScreen();
+  if (shibaDeskUi) {
+    shibaDeskUi->render(selectorIndex, cleanInitialRefresh, firstRenderDone);
+    if (!firstRenderDone) {
+      firstRenderDone = true;
+      requestUpdate();
+    } else if (!recentsLoaded && !recentsLoading) {
+      recentsLoading = true;
+      const bool changed = shibaDeskUi->ensureCoversGenerated();
+      recentsLoaded = true;
+      recentsLoading = false;
+      if (changed) requestUpdate();
+    }
+    return;
+  }
   if (coverGridUi) {
     coverGridUi->setSelection(selectorIndex);
     UITheme::getInstance().drawCoverGridHome(*coverGridUi);
