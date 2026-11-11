@@ -157,10 +157,12 @@ class CrossPointWebServer {
   void handlePostWifiNetwork();
   void handleDeleteWifiNetwork();
 
+  // Telegram, Libby, and plain-text cover/metadata handlers
   void handleGetTelegram() const;
   void handlePostTelegram();
   void handleGetLibby() const;
   void handlePostLibby();
+  void handlePostTxtCoverMeta();
 
   // Missing or malformed JSON sends a 400 response and returns false.
   bool readJsonBody(JsonDocument& out) const;

@@ -775,3 +775,17 @@ Returns Libby link status and cached OverDrive loans (`{"linked":true,"loans":[.
 ### `POST /api/libby`
 
 Links an 8-digit Libby setup code (`{"action":"pair","code":"12345678"}`) or refreshes active loans (`{"action":"sync"}`).
+
+### `POST /api/txt-cover-meta`
+
+Binds or clears a 1-bit Atkinson BMP cover (`148x222`, base64-encoded) and/or custom `title` & `author` metadata (`<= 256` bytes each) for an existing `.txt` or `.md` file under a non-hidden user path, storing assets under `/.crosspoint/covers/<fnv1a64>.bmp` and `<fnv1a64>.meta.json` while preserving `progress.bin`.
+
+```json
+{
+  "path": "/Books/novel.txt",
+  "title": "Novel Title",
+  "author": "Author Name",
+  "coverBmpB64": "Qk0...",
+  "clearCover": false
+}
+```

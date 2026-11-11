@@ -1102,6 +1102,7 @@
         <div class="image-grid" id="imageGrid"></div>
       </div>
       </div><!-- end picker-columns -->
+<!--#include file="shared/TxtCoverDrawer.html.inc" -->
       <!-- Sync compatibility warning - outside picker-columns -->
       <div class="convert-warning" id="convertWarning" style="display:none;" role="alert" aria-live="polite">
         ⚠️ Converting will modify files and can break hash‑based sync. ⚠️<br>
@@ -1589,6 +1590,7 @@
     if (imageGrid) imageGrid.innerHTML = '';
     document.querySelector('#uploadModal .modal').classList.remove('picker-mode');
     document.getElementById('pickerColumns').classList.remove('picker-active');
+    resetTxtCoverDrawer();
     // Hide log section
     if (logSection) logSection.classList.remove('visible');
     // Reset advanced options
@@ -2342,6 +2344,7 @@
     startConversionBtn.style.display = 'none';
     document.querySelector('#uploadModal .modal').classList.remove('picker-mode');
     document.getElementById('pickerColumns').classList.remove('picker-active');
+    resetTxtCoverDrawer();
 
     // Show upload button and trigger upload
     uploadBtn.style.display = 'block';
@@ -2679,9 +2682,11 @@
       }
 
       updateBatchModeUI(files.length > 1);
+      updateTxtCoverDrawerForFiles(files);
       uploadBtn.disabled = isUploadInProgress;
     } else {
       updateBatchModeUI(false);
+      resetTxtCoverDrawer();
       uploadBtn.disabled = true;
     }
   }
@@ -2693,6 +2698,7 @@ let operationCancelled = false; // Set by Cancel to stop conversion loops and up
 let uploadGeneration = 0;       // Incremented each uploadFile() call; guards stale restoreAfterCancel()
 let currentUploadWs = null;     // Active WebSocket reference for external abort
 let currentUploadXhr = null;    // Active XHR reference for external abort
+<!--#include file="shared/TxtCoverDrawerScript.html.inc" -->
 // On-device HTTP uses port 80 and WebSocket uses 81. The simulator maps the
 // same adjacent-port contract to an unprivileged host pair such as 8080/8081.
 const HTTP_PORT = Number(window.location.port || 80);
@@ -3738,6 +3744,7 @@ async function uploadFile() {
       } else {
         await uploadFileHTTP(file, onProgress, null, null);
       }
+      await maybeBindUploadedTxtCoverMeta(file, files.length);
       // Ensure progress bar shows 100% before moving to next file
       progressFill.style.width = '100%';
       progressText.textContent = `Upload complete: ${file.name}`;
@@ -3757,6 +3764,7 @@ async function uploadFile() {
         // Retry this file with HTTP
         try {
           await uploadFileHTTP(file, onProgress, null, null);
+          await maybeBindUploadedTxtCoverMeta(file, files.length);
           onComplete();
         } catch (httpError) {
           onError(httpError.message);

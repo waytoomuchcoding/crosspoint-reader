@@ -17,6 +17,7 @@
 #include <Memory.h>
 #include <ResumableFetch.h>
 #include <SecureHttpClient.h>
+#include <TxtCoverMeta.h>
 #include <Utf8.h>
 #include <Util.h>
 #include <WiFi.h>
@@ -63,6 +64,7 @@
 #include "network/LibbyClient.h"
 #include "network/TelegramBookSync.h"
 #include "util/BookCacheUtils.h"
+#include "util/BookCoverStore.h"
 #include "util/DictionaryRegistry.h"
 #include "util/FirmwareIdentity.h"
 #include "util/PluginHttp.h"
@@ -367,6 +369,7 @@ class CrossPointWebServer::RouteHandler final : public RequestHandler {
         {"/api/telegram", HTTP_POST, [](S& s) { s.handlePostTelegram(); }, nullptr},
         {"/api/libby", HTTP_GET, [](S& s) { s.handleGetLibby(); }, nullptr},
         {"/api/libby", HTTP_POST, [](S& s) { s.handlePostLibby(); }, nullptr},
+        {"/api/txt-cover-meta", HTTP_POST, [](S& s) { s.handlePostTxtCoverMeta(); }, nullptr},
     };
     for (const Route& route : ROUTES) {
       if (route.method == method && uri == route.path) return &route;
@@ -3642,4 +3645,89 @@ void CrossPointWebServer::handlePostLibby() {
     return;
   }
   server->send(400, "application/json", "{\"error\":\"unknown action\"}");
+}
+
+void CrossPointWebServer::handlePostTxtCoverMeta() {
+  JsonDocument req;
+  if (!readJsonBody(req)) return;
+
+  const std::string rawPath = req["path"] | "";
+  if (rawPath.empty() || rawPath[0] != '/' || rawPath.find("..") != std::string::npos ||
+      rawPath.find('\\') != std::string::npos) {
+    server->send(400, "application/json", "{\"error\":\"invalid txt/md path\"}");
+    return;
+  }
+  const std::string path = FsHelpers::normalisePath(rawPath);
+  if (!protectedpaths::isPluginPath(path) || path.find("/.") != std::string::npos || !txtmeta::isTxtOrMdPath(path) ||
+      !Storage.exists(path.c_str())) {
+    server->send(400, "application/json", "{\"error\":\"invalid txt/md path\"}");
+    return;
+  }
+
+  static constexpr size_t kMaxMetaFieldBytes = 256;
+  const std::string title = req["title"] | "";
+  const std::string author = req["author"] | "";
+  if (title.size() > kMaxMetaFieldBytes || author.size() > kMaxMetaFieldBytes) {
+    server->send(400, "application/json", "{\"error\":\"metadata field exceeds 256 bytes\"}");
+    return;
+  }
+
+  const bool clearCover = req["clearCover"] | false;
+  const char* coverB64 = req["coverBmpB64"].is<const char*>() ? req["coverBmpB64"].as<const char*>() : nullptr;
+  const size_t encodedLen = coverB64 ? std::strlen(coverB64) : 0;
+
+  std::unique_ptr<uint8_t[]> bmpData;
+  int32_t decodedBytes = 0;
+  if (encodedLen > 0) {
+    static constexpr size_t kMaxEncodedBmp = 16 * 1024;
+    static constexpr size_t kMaxDecodedBmp = 8 * 1024;
+    if (encodedLen > kMaxEncodedBmp) {
+      server->send(400, "application/json", "{\"error\":\"cover too large\"}");
+      return;
+    }
+    const size_t cap = encodedLen * 3 / 4 + 4;
+    bmpData = makeUniqueNoThrow<uint8_t[]>(cap);
+    if (!bmpData) {
+      LOG_ERR("WEB", "OOM: txt cover bmp decode (%zu B)", cap);
+      server->send(503, "application/json", "{\"error\":\"out of memory\"}");
+      return;
+    }
+    decodedBytes = freeink::content::base64Decode(coverB64, encodedLen, bmpData.get(), cap);
+    if (decodedBytes < 62 || static_cast<size_t>(decodedBytes) > kMaxDecodedBmp || bmpData[0] != 'B' ||
+        bmpData[1] != 'M') {
+      server->send(400, "application/json", "{\"error\":\"invalid 1-bit bmp\"}");
+      return;
+    }
+  }
+
+  // Reclaim parsed JSON body DRAM before running SD / BookCoverStore updates.
+  req.clear();
+
+  const bool hasMeta = !title.empty() || !author.empty();
+  if (encodedLen > 0) {
+    if (!BookCoverStore::bindCoverAndMetaFrom1BitBmpBytes(path, bmpData.get(), static_cast<size_t>(decodedBytes),
+                                                          title.empty() ? nullptr : &title,
+                                                          author.empty() ? nullptr : &author)) {
+      server->send(500, "application/json", "{\"error\":\"failed to store cover\"}");
+      return;
+    }
+  } else if (clearCover && hasMeta) {
+    const std::string coverPath = BookCoverStore::getBoundCoverBmpPath(path);
+    if (Storage.exists(coverPath.c_str())) {
+      Storage.remove(coverPath.c_str());
+    }
+    if (!BookCoverStore::bindMetadataOnly(path, title, author)) {
+      server->send(500, "application/json", "{\"error\":\"failed to store metadata\"}");
+      return;
+    }
+  } else if (clearCover) {
+    BookCoverStore::clearBoundCover(path);
+  } else if (hasMeta) {
+    if (!BookCoverStore::bindMetadataOnly(path, title, author)) {
+      server->send(500, "application/json", "{\"error\":\"failed to store metadata\"}");
+      return;
+    }
+  }
+
+  server->send(200, "application/json", "{\"ok\":true}");
 }
