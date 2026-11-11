@@ -92,6 +92,7 @@ add_subdirectory(http_header)
 add_subdirectory(txt_to_html)
 add_subdirectory(txt_cover_meta)
 add_subdirectory(text_encoding)
+add_subdirectory(adept_drm)
 
 add_subdirectory(absolute_grayscale)
 

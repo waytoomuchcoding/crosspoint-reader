@@ -32,6 +32,7 @@
 #include "activities/util/DetailsActivity.h"
 #include "components/CatalogScreens.h"
 #include "components/UITheme.h"
+#include "network/AdeptFulfiller.h"
 #include "network/HttpDownloader.h"
 #include "network/ProtectedPaths.h"
 #include "util/BookCacheUtils.h"
@@ -80,6 +81,18 @@ constexpr auto DETAIL_DESCRIPTION = JsonListParser::F_URL;
 constexpr auto DETAIL_REPOSITORY = JsonListParser::F_BASE;
 constexpr auto DETAIL_PAGE_URL = JsonListParser::F_URL;
 constexpr auto DETAIL_PAGE_FORMAT = JsonListParser::F_BASE;
+
+bool fulfillDownloadedIfAcsm(std::string& destPath) {
+  if (!adept::isAcsmFile(destPath)) return true;
+  std::string fulfilledDest;
+  std::string acsmErr;
+  if (!adept::fulfillAcsmFile(destPath, fulfilledDest, acsmErr)) {
+    LOG_ERR("PCAT", "On-device ACSM fulfillment failed for %s: %s", destPath.c_str(), acsmErr.c_str());
+    return false;
+  }
+  destPath = std::move(fulfilledDest);
+  return true;
+}
 
 std::string md5Hex(const std::string& text) {
   MD5Builder md5;
@@ -1343,6 +1356,9 @@ HttpDownloader::DownloadError PluginCatalogActivity::downloadBundle(const Item& 
     }
     const auto result = downloadFile(pluginhttp::escapeUrl(base + rel), dest + ".new");
     if (result != HttpDownloader::OK) return result;
+    if (!fulfillDownloadedIfAcsm(dest)) {
+      return HttpDownloader::FILE_ERROR;
+    }
     staged.push_back(dest);
   }
   // ponytail: a failed swap mid-loop leaves a mixed old/new bundle; a
