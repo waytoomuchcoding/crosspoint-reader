@@ -34,7 +34,8 @@ constexpr unsigned long REPEAT_FIRST_MS = 280;
 constexpr unsigned long REPEAT_MS = 90;
 constexpr unsigned long REPEAT_FAST_AFTER_MS = 1200;
 constexpr unsigned long REPEAT_FAST_MS = 45;
-constexpr unsigned long PREVIEW_DWELL_MS = 250;  // DESIGN 4.3
+// After a held-button sweep only; single presses draw the preview in-frame.
+constexpr unsigned long PREVIEW_DWELL_MS = 600;
 // Large headword font shipped with the dictionary (a 48 px Ming bitmap face).
 constexpr char HEADWORD_FONT_PATH[] = "/zh/headword.cpfont";
 constexpr int HEADWORD_FONT_ID = 0x5A48574F;  // "ZHWO"; outside the FNV-hashed SD ids in practice
@@ -84,6 +85,7 @@ void ZhLookupActivity::onEnter() {
     held(keyDown, mappedInput.isPressed(B::ScreenDown));
   }
   lastMove = millis();
+  if (focus == Focus::Cursor) showPreviewNow();
   ready = true;
   requestUpdate();
 }
@@ -635,6 +637,14 @@ void ZhLookupActivity::saveToVocabulary() {
   }
 }
 
+// Draws the preview in the frame being built, so a single press costs one
+// panel refresh instead of a second one after the dwell.
+void ZhLookupActivity::showPreviewNow() {
+  if (!SETTINGS.zhLookupPreview) return;
+  buildPreview();
+  previewShown = true;
+}
+
 void ZhLookupActivity::buildPreview() {
   // DESIGN 4.4: every dictionary word starting at the cursor, longest first,
   // one line each in the small font: word, first reading, first sense.
@@ -933,6 +943,7 @@ void ZhLookupActivity::render(RenderLock&& lock) {
   // panel refresh (~380 ms on the X3). Presses made meanwhile are drawn as one
   // frame when it finishes, so a held button sweeps several words per refresh.
   lock.unlock();
+  LOG_DBG("ZH", "lookup refresh%s", previewShown ? " (with preview)" : "");
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
 
@@ -952,7 +963,8 @@ bool ZhLookupActivity::repeatDue(Key& key, const unsigned long now) {
 void ZhLookupActivity::loop() {
   if (!ready) return;
   handleInput();
-  if (focus == Focus::Cursor && !previewShown && millis() - lastMove >= PREVIEW_DWELL_MS) {
+  // Only reached after a held-button sweep, which skips the in-frame preview.
+  if (SETTINGS.zhLookupPreview && focus == Focus::Cursor && !previewShown && millis() - lastMove >= PREVIEW_DWELL_MS) {
     {
       RenderLock lock;
       buildPreview();
@@ -1060,6 +1072,8 @@ void ZhLookupActivity::handleInput() {
     if (changed) {
       lastMove = now;
       previewShown = false;
+      const bool sweeping = left == REPEAT || right == REPEAT || up == REPEAT || down == REPEAT;
+      if (focus == Focus::Cursor && !sweeping) showPreviewNow();
     }
   }
   if (exit) {

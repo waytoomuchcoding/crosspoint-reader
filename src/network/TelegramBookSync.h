@@ -68,6 +68,8 @@ bool parseGetFilePathJson(std::string_view getFileJson, std::string& filePathOut
 // Network operations against api.telegram.org
 bool pairLatestChat(std::string_view botToken, std::string& chatIdOut, std::string& usernameOut, std::string& errOut);
 
-bool syncPendingFiles(SyncSummary& summaryOut, std::string& errOut, ProgressCallback progressCb = nullptr);
+// shouldStop (optional): checked before each update batch; true ends the sync.
+bool syncPendingFiles(SyncSummary& summaryOut, std::string& errOut, ProgressCallback progressCb = nullptr,
+                      const std::function<bool()>& shouldStop = nullptr);
 
 }  // namespace telegram

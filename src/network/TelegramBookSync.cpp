@@ -498,7 +498,8 @@ bool pairLatestChat(std::string_view botToken, std::string& chatIdOut, std::stri
   return true;
 }
 
-bool syncPendingFiles(SyncSummary& summaryOut, std::string& errOut, ProgressCallback progressCb) {
+bool syncPendingFiles(SyncSummary& summaryOut, std::string& errOut, ProgressCallback progressCb,
+                      const std::function<bool()>& shouldStop) {
   summaryOut = {};
   if (!TELEGRAM_STORE.hasCredentials()) {
     errOut = "Telegram bot token or chat ID not configured";
@@ -521,6 +522,8 @@ bool syncPendingFiles(SyncSummary& summaryOut, std::string& errOut, ProgressCall
   };
 
   for (int batch = 0; batch < 10; ++batch) {
+    // Batches are the unit of progress: the update offset is saved after each one.
+    if (shouldStop && shouldStop()) break;
     const std::string updatesUrl = std::string(kTelegramApiBase) + "/bot" + botToken +
                                    "/getUpdates?offset=" + std::to_string(nextOffset) +
                                    "&limit=4&timeout=0&allowed_updates=%5B%22message%22%5D";

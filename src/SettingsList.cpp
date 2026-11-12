@@ -63,6 +63,8 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
   // applies it to every activity), so it lives in the Display category.
   emit(SettingInfo::Toggle(StrId::STR_NIGHT_MODE, &CrossPointSettings::screenInverted, "screenInverted",
                            StrId::STR_CAT_DISPLAY));
+  emit(SettingInfo::Toggle(StrId::STR_SLEEP_CARD_ORNAMENTS, &CrossPointSettings::sleepCardOrnaments,
+                           "sleepCardOrnaments", StrId::STR_CAT_DISPLAY));
 
   // --- Reader ---
   // Built-in font-family entry. Replaced per-call with a registry-aware
@@ -111,6 +113,13 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
       "zhRuby", StrId::STR_CAT_READER));
   emit(SettingInfo::Enum(StrId::STR_ZH_RUBY_STYLE, &CrossPointSettings::zhRubyStyle,
                          {StrId::STR_ZH_RUBY_BESIDE, StrId::STR_ZH_RUBY_UNDER}, "zhRubyStyle", StrId::STR_CAT_READER));
+  emit(SettingInfo::Toggle(StrId::STR_ZH_LOOKUP_PREVIEW, &CrossPointSettings::zhLookupPreview, "zhLookupPreview",
+                           StrId::STR_CAT_READER));
+  // Values follow page_ornament::Theme.
+  emit(SettingInfo::Enum(StrId::STR_PAGE_ORNAMENTS, &CrossPointSettings::deadSpaceOrnamentTheme,
+                         {StrId::STR_STATE_OFF, StrId::STR_ORN_BOTANICAL, StrId::STR_ORN_PLUM_BAMBOO,
+                          StrId::STR_ORN_CELESTIAL, StrId::STR_ORN_FILIGREE, StrId::STR_ORN_WAVES, StrId::STR_ORN_AUTO},
+                         "deadSpaceOrnamentTheme", StrId::STR_CAT_READER));
   emit(SettingInfo::Toggle(StrId::STR_FOCUS_READING, &CrossPointSettings::focusReadingEnabled, "focusReadingEnabled",
                            StrId::STR_CAT_READER)
            .withTextSettings());
@@ -216,6 +225,21 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
       StrId::STR_TIME_TO_SLEEP, &CrossPointSettings::sleepTimeoutMinutes,
       {CrossPointSettings::MIN_SLEEP_TIMEOUT_MINUTES, CrossPointSettings::MAX_SLEEP_TIMEOUT_MINUTES, 1},
       "sleepTimeoutMinutes", StrId::STR_CAT_SYSTEM));
+  // Owned by TelegramCredentialStore (also toggled on the Telegram sync screen).
+  emit(SettingInfo::DynamicEnum(
+      StrId::STR_TELEGRAM_AUTO_SYNC, {StrId::STR_STATE_OFF, StrId::STR_STATE_ON},
+      [] { return static_cast<uint8_t>(TELEGRAM_STORE.getAutoSyncOnSleep() ? 1 : 0); },
+      [](const uint8_t v) {
+        TELEGRAM_STORE.setAutoSyncOnSleep(v != 0);
+        TELEGRAM_STORE.saveToFile();
+      },
+      nullptr, StrId::STR_CAT_SYSTEM));
+  emit(SettingInfo::Enum(StrId::STR_SLEEP_SYNC_INTERVAL, &CrossPointSettings::sleepSyncInterval,
+                         {StrId::STR_SLEEP_SYNC_EVERY, StrId::STR_HOURS_1, StrId::STR_HOURS_3, StrId::STR_HOURS_6,
+                          StrId::STR_HOURS_12, StrId::STR_HOURS_24},
+                         "sleepSyncInterval", StrId::STR_CAT_SYSTEM));
+  emit(SettingInfo::Toggle(StrId::STR_SLEEP_SYNC_ON_BATTERY, &CrossPointSettings::sleepSyncOnBattery,
+                           "sleepSyncOnBattery", StrId::STR_CAT_SYSTEM));
   emit(SettingInfo::Toggle(StrId::STR_SHOW_HIDDEN_FILES, &CrossPointSettings::showHiddenFiles, "showHiddenFiles",
                            StrId::STR_CAT_SYSTEM));
   emit(SettingInfo::Toggle(StrId::STR_LIBRARY_USE_METADATA, &CrossPointSettings::libraryUseMetadata,

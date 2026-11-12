@@ -32,12 +32,15 @@ still missing for every item; add them under "Measurements" when you have them.
 up to 10 s, polls Telegram, checks Libby and can download and fulfil books over
 TLS. The only guard was battery >= 20%.
 
-- [ ] Rate limit: store the last sync time; skip if newer than the interval
-      setting (Every sleep / 1 h / 3 h / 6 h / 12 h / 24 h; default 3 h).
-- [ ] On battery: setting "Sleep sync on battery" (default on, needs >= 50%);
-      off means sync only while USB is connected.
-- [ ] Time budget: stop starting new sync work after 30 s.
-- [ ] Settings menu (System): auto-sync toggle, interval, on-battery toggle.
+- [x] Rate limit: `APP_STATE.lastSleepSyncAt` (time(), kept through deep
+      sleep); skip until the interval setting passes (Every sleep / 1 h / 3 h /
+      6 h / 12 h / 24 h; default 3 h). Not due = no Wi-Fi join at all.
+- [x] On battery: setting "Sleep Sync on Battery" (default on, needs >= 50%,
+      was 20%); off means sync only while USB is connected.
+- [x] Time budget: no new Telegram batch or Libby download starts after 30 s
+      (`shouldStop` callbacks; Telegram saves its offset per batch).
+- [x] Settings menu (System): Auto-Sync on Sleep, Sleep Sync Interval, Sleep
+      Sync on Battery. `TELEGRAM_STORE` now loads at boot for the toggle row.
 
 ### 2. Lookup does two full refreshes per cursor move
 
@@ -45,11 +48,14 @@ TLS. The only guard was battery >= 20%.
 refreshes the panel, then the preview appears 250 ms later with a second full
 refresh. Opening the lookup also gets the second refresh.
 
-- [ ] Build the preview in the same frame for single presses (no second
-      refresh). Held-button sweeps skip it and keep the dwell timer.
-- [ ] Setting "Lookup preview" (Reader, default on); off = no preview at all.
+- [x] Build the preview in the same frame for single presses and on open
+      (`showPreviewNow()`). Held-button sweeps skip it; the dwell after a sweep
+      is now 600 ms (was 250). Sim: one `lookup refresh (with preview)` log per
+      press, no dwell refresh.
+- [x] Setting "Chinese Lookup Preview" (Reader, default on); off = no preview.
 - [ ] Keep the 48 px headword font loaded between lookups in the same book
-      (it is reloaded from SD on every open). Lower priority.
+      (it is reloaded from SD on every open). Deferred: holding it costs heap
+      while reading; measure the load time on the X3 first.
 
 ### 3. Vocabulary sleep cards do heavy work on every sleep
 
@@ -58,11 +64,13 @@ refresh. Opening the lookup also gets the second refresh.
 the dictionary and draws full-screen ornaments (soft float). Ornament "Off" was
 forced to AutoCycle (line ~885).
 
-- [ ] Setting "Sleep card ornaments" (Display, default on); off skips the
-      ornament pass.
-- [ ] Read the vocabulary file in blocks, not one byte per call.
-- [ ] Cache the parsed and enriched card pool on SD; rebuild only when the
-      vocabulary file size or the zhuyin threshold changes.
+- [x] Setting "Sleep Card Ornaments" (Display, default on); off skips the
+      ornament pass. Sim (host CPU): 600 ms with, 22 ms without.
+- [x] Read the vocabulary file in 512-byte blocks.
+- [x] Dictionary entries are read only for the 2-3 picked cards
+      (`enrichFromDict()`), not for every word in the history (up to 160).
+      This replaced the planned SD cache of the card pool.
+- [ ] If sleep entry is still slow on the X3: cache ranks per word on SD.
 
 ### 4. Page ornaments cost CPU on every page render
 
@@ -72,14 +80,16 @@ the rasterizer runs float maths (`std::hypot`, `sqrt`, noise) per pixel and
 scans the whole framebuffer. It reruns on every render of the same page
 (menu close, lookup close).
 
-- [ ] Settings menu (Reader): "Page ornaments" theme picker. Before this it was
-      JSON only.
-- [ ] Cache the ornament layer of the last rendered page (XOR diff, RLE) and
-      replay it when the same page is drawn again.
-- [ ] Cheaper rasterizer maths: squared distance tests before `hypot`, skip
-      pixels outside the stroke radius early.
-- [ ] Measure on the X3 with the `tBwRender` timing log; if still slow, move
-      to fixed point or limit ornaments to chapter-end pages.
+- [x] Settings menu (Reader): "Page Ornaments" (Off + 5 themes + Auto).
+      Before this it was JSON only; it now uses the generic settings loop.
+- [x] Cache the last page's ornament pixels as row runs (about 8 KB, only
+      while ornaments are on; freed when the reader closes). Keyed by a hash of
+      the frame + context, so redraws of the same page replay (sim: 9 ms -> 0).
+- [x] Stroke rasterizer: squared-distance reject before `sqrt`. Output is
+      bit-identical to the old code (sim screenshot compare).
+- [ ] Same early reject for disc, petal, leaf and creature rasterizers.
+- [ ] Measure on the X3: serial log `Page ornaments: N ms`. If slow, move to
+      fixed point or limit ornaments to chapter-end pages.
 
 ### 5. Chinese page turns read many glyphs from SD (verify only)
 
@@ -88,7 +98,15 @@ screen renders each frame twice (prewarm scan + draw).
 
 - [ ] Measure page-turn time and SD reads on the X3 for a Chinese chapter.
 
+## Notes for the next agent
+
+- Verify on the simulator: `~/.venvs/pio/bin/pio run -e simulator_x3`, then
+  run with `CROSSPOINT_SIM_SD`, `CROSSPOINT_SIM_INPUT_SCRIPT` (keys include
+  `SLEEP`, `DOWN`, `ENTER:900` for a hold) and `CROSSPOINT_SIM_SCREENSHOTS`.
+- Host test `TelegramSyncTest.CredentialStoreObfuscatesBotTokenAndSanitizesDestFolder`
+  already failed before this work (dest folder "/Books" vs "/Reading/Novels").
+
 ## Measurements
 
-None yet. Record: firmware commit, device, setting, time per action
+None on device yet. Record: firmware commit, device, setting, time per action
 (serial `LOG_DBG` timings) or battery % per hour.

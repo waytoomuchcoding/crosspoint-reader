@@ -43,7 +43,12 @@ struct KeepoutRect {
 // Page element spans and the actual 1-bit framebuffer ink occupancy) and fills
 // qualifying dead spaces with procedural 1-bit dithered designs.
 // Strictly preserves a clear breathing halo around all text, images, borders, and chrome.
+// The last page's ornament pixels are cached (about 8 KB) and replayed when
+// the same frame is drawn again.
 void renderDeadSpaceOrnaments(const GfxRenderer& renderer, const Page& page, const RenderContext& ctx);
+
+// Frees the page cache. Call when the reader closes.
+void releaseOrnamentCache();
 
 // Fills open negative space on an arbitrary full-screen B/W canvas (such as staggered
 // sleep-screen vocabulary cards) while strictly respecting explicit keepout rectangles

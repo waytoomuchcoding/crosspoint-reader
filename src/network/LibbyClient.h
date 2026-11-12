@@ -51,6 +51,8 @@ bool downloadLoan(const Loan& loan, std::string& destEpubPathOut, std::string& e
 
 // Syncs active loans via `/chip/sync` and automatically downloads/fulfills any downloadable EPUB loan
 // not yet present on the SD card.
-bool syncAndFulfillNewLoans(int& fulfilledCountOut, std::string& errOut);
+// shouldStop (optional): checked before each loan download; true ends the sync.
+bool syncAndFulfillNewLoans(int& fulfilledCountOut, std::string& errOut,
+                            const std::function<bool()>& shouldStop = nullptr);
 
 }  // namespace libby

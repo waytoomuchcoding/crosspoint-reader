@@ -111,6 +111,7 @@ class ZhLookupActivity final : public Activity {
   void stepStart(int delta);
   void buildPopup();
   void buildPreview();
+  void showPreviewNow();
   void wrapInto(int font, const std::string& text, int maxWidth, int indent, std::vector<std::string>& out) const;
   int popupTextWidth() const;
   void fitPopupHeight();

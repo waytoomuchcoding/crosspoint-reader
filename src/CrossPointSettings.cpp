@@ -117,9 +117,6 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   doc["longPressMenuFunction"] = longPressMenuFunction;
   doc["shortPwrBtn"] = shortPwrBtn;
   doc["uiTheme"] = uiTheme;
-  if (deadSpaceOrnamentTheme != 0) {
-    doc["deadSpaceOrnamentTheme"] = deadSpaceOrnamentTheme;
-  }
 
   // Language -- managed by LanguageSelectActivity, not in SettingsList.
   // Stored as ISO code string ("EN", "DE", ...) for stability across enum reorders.
@@ -323,7 +320,6 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   if (doc["keyboardLayouts"].is<uint16_t>()) {
     keyboardLayouts = doc["keyboardLayouts"].as<uint16_t>();
   }
-  deadSpaceOrnamentTheme = clamp(doc["deadSpaceOrnamentTheme"] | (uint8_t)0, (uint8_t)7, (uint8_t)0);
 
   if (!bleturner::readJson(ble, doc)) {
     needsResave = true;

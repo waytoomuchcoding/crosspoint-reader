@@ -20,10 +20,13 @@ struct SyncAllSummary {
 // Returns true when either Telegram Bot credentials or a Libby account token is configured.
 bool hasConfiguredCloudSync();
 
-// Returns true when auto-sync on sleep is enabled and at least one cloud sync service is configured.
+// True when auto-sync on sleep is enabled, a cloud service is configured, the
+// interval since the last run has passed and power allows it (USB, or battery
+// >= 50% with Sleep sync on battery on). False means sleep should not join Wi-Fi.
 bool wantsSleepAutoSync();
 
-// Runs configured cloud syncs during sleep entry if battery >= 20% and Wi-Fi is connected.
+// Runs configured cloud syncs during sleep entry when wantsSleepAutoSync() and
+// Wi-Fi is connected. New work stops starting after 30 s.
 void runSleepAutoSync(GfxRenderer* renderer);
 
 // Brings up Wi-Fi STA if needed (restoring radio-off state on exit when it was previously off),

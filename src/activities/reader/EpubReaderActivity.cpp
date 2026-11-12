@@ -255,6 +255,7 @@ EpubReaderActivity::~EpubReaderActivity() {
 
   section.reset();
   CLIPPINGS.unload();
+  page_ornament::releaseOrnamentCache();
   if (pendingReadFolderMove && epub) {
     const std::string srcPath = epub->getPath();
     const std::string oldCachePath = epub->getCachePath();
@@ -2316,7 +2317,9 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     ornCtx.marginLeft = orientedMarginLeft;
     ornCtx.theme = static_cast<page_ornament::Theme>(SETTINGS.deadSpaceOrnamentTheme);
     ornCtx.darkMode = (SETTINGS.screenInverted != 0);
+    const auto tOrnaments = millis();
     page_ornament::renderDeadSpaceOrnaments(renderer, *page, ornCtx);
+    LOG_DBG("ERS", "Page ornaments: %lu ms", millis() - tOrnaments);
   }
   const auto tBwRender = millis();
 

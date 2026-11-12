@@ -379,6 +379,23 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t zhRubyStyle = ZH_RUBY_BESIDE;
   // Dead-space procedural page ornament theme (see page_ornament::Theme, 0 = Off .. 6 = AutoCycle).
   uint8_t deadSpaceOrnamentTheme = 0;
+  // Sleep auto-sync: minimum time between runs (see SLEEP_SYNC_INTERVAL) and
+  // whether it may run on battery (needs >= 50%) or only on USB power.
+  enum SLEEP_SYNC_INTERVAL {
+    SLEEP_SYNC_EVERY = 0,
+    SLEEP_SYNC_1H = 1,
+    SLEEP_SYNC_3H = 2,
+    SLEEP_SYNC_6H = 3,
+    SLEEP_SYNC_12H = 4,
+    SLEEP_SYNC_24H = 5,
+    SLEEP_SYNC_INTERVAL_COUNT
+  };
+  uint8_t sleepSyncInterval = SLEEP_SYNC_3H;
+  uint8_t sleepSyncOnBattery = 1;
+  // Chinese lookup: one-line preview of words at the cursor.
+  uint8_t zhLookupPreview = 1;
+  // Procedural ornaments in the gaps between vocabulary sleep cards.
+  uint8_t sleepCardOrnaments = 1;
   uint8_t readerMenuStyle = READER_MENU_LIST;
   // SD card font family name (empty = use built-in fontFamily)
   char sdFontFamilyName[32] = "";

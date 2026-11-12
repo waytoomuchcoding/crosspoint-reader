@@ -2427,8 +2427,15 @@ void rasterizeStrokeInStrip(const ScenePrim& p, int stripY0, int stripH, int W, 
 
       const float projX = p.x0 + t * dx;
       const float projY = p.y0 + t * dy;
-      const float dist = std::hypot(fx - projX, fy - projY);
       const float rHere = lerpf(p.r0, p.r1, t);
+      // Most bbox pixels lie outside the stroke and its halo: skip them before
+      // the square root (soft float on the ESP32-C3).
+      const float ex = fx - projX;
+      const float ey = fy - projY;
+      const float dist2 = ex * ex + ey * ey;
+      const float reach = whiteHalo ? rHere + 1.45f : rHere;
+      if (dist2 > reach * reach) continue;
+      const float dist = std::sqrt(dist2);
 
       if (!nocturne) {
         if (dist <= rHere) {
@@ -3652,9 +3659,68 @@ void rasterizeWashInStrip(const ScenePrim& p, const ClearanceField& field, int s
   }
 }
 
+// Pixel runs drawn by the compositor, in row-major order. Replaying them
+// redraws a page's ornaments without rebuilding the scene.
+struct PixelRun {
+  uint16_t y;
+  uint16_t x;
+  uint16_t len;
+};
+
+class RunRecorder {
+ public:
+  // About 8 KB; a scene with more runs is not cached.
+  static constexpr size_t kMaxRuns = 1360;
+
+  bool begin() {
+    if (!runs_) runs_ = makeUniqueNoThrow<PixelRun[]>(kMaxRuns);
+    count_ = 0;
+    overflow_ = !runs_;
+    return !overflow_;
+  }
+  void add(const int x, const int y) {
+    if (overflow_) return;
+    if (count_ > 0) {
+      PixelRun& last = runs_[count_ - 1];
+      if (last.y == y && last.x + last.len == x) {
+        ++last.len;
+        return;
+      }
+    }
+    if (count_ == kMaxRuns) {
+      overflow_ = true;
+      return;
+    }
+    runs_[count_++] = {static_cast<uint16_t>(y), static_cast<uint16_t>(x), 1};
+  }
+  bool ok() const { return runs_ && !overflow_; }
+  void replay(const GfxRenderer& renderer) const {
+    for (size_t i = 0; i < count_; ++i) {
+      const PixelRun& r = runs_[i];
+      for (uint16_t k = 0; k < r.len; ++k) renderer.drawPixel(r.x + k, r.y, true);
+    }
+  }
+  void release() {
+    runs_.reset();
+    count_ = 0;
+    overflow_ = false;
+  }
+
+ private:
+  std::unique_ptr<PixelRun[]> runs_;
+  size_t count_ = 0;
+  bool overflow_ = false;
+};
+
 void compositeAndDitherScene(const GfxRenderer& renderer, const ClearanceField& field, SceneGraph& sg, bool nocturne,
-                             bool whiteBitVal) {
+                             bool whiteBitVal, RunRecorder* recorder = nullptr) {
   if (sg.prims.empty()) return;
+  // Only ink pixels are recordable; the reader always passes whiteBitVal = true.
+  if (!whiteBitVal) recorder = nullptr;
+  const auto plot = [&](const int x, const int y, const bool v) {
+    renderer.drawPixel(x, y, v);
+    if (recorder && v) recorder->add(x, y);
+  };
 
   std::stable_sort(sg.prims.begin(), sg.prims.end(),
                    [](const ScenePrim& a, const ScenePrim& b) { return a.zLayer < b.zLayer; });
@@ -3724,7 +3790,7 @@ void compositeAndDitherScene(const GfxRenderer& renderer, const ClearanceField& 
           if (field.clearanceAt(static_cast<float>(x), static_cast<float>(y)) <= 0.0f) continue;
 
           if (m == PM_FORCE_BLACK) {
-            renderer.drawPixel(x, y, true);
+            plot(x, y, true);
             continue;
           }
 
@@ -3747,7 +3813,7 @@ void compositeAndDitherScene(const GfxRenderer& renderer, const ClearanceField& 
           err2[x + 2] += static_cast<int16_t>(err);
 
           if (inkBlack) {
-            renderer.drawPixel(x, y, true);
+            plot(x, y, true);
           }
         } else {
           if (m == PM_BG || m == PM_FORCE_BLACK) continue;
@@ -3756,14 +3822,14 @@ void compositeAndDitherScene(const GfxRenderer& renderer, const ClearanceField& 
           if (field.clearanceAt(static_cast<float>(x), static_cast<float>(y)) <= 0.0f) continue;
 
           if (m == PM_FORCE_WHITE) {
-            renderer.drawPixel(x, y, whiteBitVal);
+            plot(x, y, whiteBitVal);
             continue;
           }
 
           const int rawLum = lumBuf[rowOff + x];
           if (rawLum <= 12) continue;  // Keep deep night shadows velvet black without stray snow dots!
           if (rawLum >= 246) {
-            renderer.drawPixel(x, y, whiteBitVal);
+            plot(x, y, whiteBitVal);
             continue;
           }
 
@@ -3783,7 +3849,7 @@ void compositeAndDitherScene(const GfxRenderer& renderer, const ClearanceField& 
           err2[x + 2] += static_cast<int16_t>(err);
 
           if (emitWhite) {
-            renderer.drawPixel(x, y, whiteBitVal);
+            plot(x, y, whiteBitVal);
           }
         }
       }
@@ -3799,9 +3865,59 @@ void compositeAndDitherScene(const GfxRenderer& renderer, const ClearanceField& 
 
 }  // namespace
 
+namespace {
+
+// Last page's ornaments, keyed by the frame they were drawn on. Redraws of
+// the same page (menu or lookup closed) replay instead of recomputing.
+struct PageCache {
+  RunRecorder runs;
+  uint32_t key = 0;
+  bool valid = false;
+};
+PageCache pageCache;
+
+uint32_t fnv1a(uint32_t h, const void* data, const size_t len) {
+  const auto* p = static_cast<const uint8_t*>(data);
+  for (size_t i = 0; i < len; ++i) h = (h ^ p[i]) * 16777619u;
+  return h;
+}
+
+uint32_t pageCacheKey(const GfxRenderer& renderer, const RenderContext& ctx) {
+  // Field by field: struct padding is not initialized.
+  const int32_t fields[] = {static_cast<int32_t>(ctx.bookSeed),
+                            ctx.spineIndex,
+                            ctx.pageIndex,
+                            ctx.fontId,
+                            ctx.marginTop,
+                            ctx.marginRight,
+                            ctx.marginBottom,
+                            ctx.marginLeft,
+                            static_cast<int32_t>(ctx.theme),
+                            ctx.darkMode ? 1 : 0,
+                            renderer.getScreenWidth(),
+                            renderer.getScreenHeight()};
+  uint32_t h = fnv1a(2166136261u, fields, sizeof(fields));
+  // The frame holds the text, highlights and status bar the scene avoids.
+  return fnv1a(h, renderer.getFrameBuffer(), renderer.getBufferSize());
+}
+
+}  // namespace
+
+void releaseOrnamentCache() {
+  pageCache.runs.release();
+  pageCache.valid = false;
+}
+
 void renderDeadSpaceOrnaments(const GfxRenderer& renderer, const Page& page, const RenderContext& ctx) {
   if (ctx.theme == Theme::Off) return;
   if (renderer.isFontCacheScanning() || !renderer.hasFrameBuffer()) return;
+
+  const uint32_t key = pageCacheKey(renderer, ctx);
+  if (pageCache.valid && pageCache.key == key) {
+    pageCache.runs.replay(renderer);
+    return;
+  }
+  pageCache.valid = false;
 
   ClearanceField field;
   int contentTop = 0;
@@ -3810,7 +3926,13 @@ void renderDeadSpaceOrnaments(const GfxRenderer& renderer, const Page& page, con
 
   std::vector<int16_t> cellComp;
   const auto regions = extractDeadRegions(field, contentTop, contentBottom, cellComp);
-  if (regions.empty()) return;
+  if (regions.empty()) {
+    // Cache "nothing to draw" too, so a redraw skips the field scan.
+    pageCache.runs.begin();
+    pageCache.key = key;
+    pageCache.valid = pageCache.runs.ok();
+    return;
+  }
 
   const uint32_t pageSeed = ctx.bookSeed ^ (static_cast<uint32_t>(ctx.spineIndex + 1) * 0x9E3779B1u) ^
                             (static_cast<uint32_t>(ctx.pageIndex + 1) * 0x85EBCA77u);
@@ -3849,7 +3971,11 @@ void renderDeadSpaceOrnaments(const GfxRenderer& renderer, const Page& page, con
 
   // In Reader Night Mode (ctx.darkMode == true), HalDisplay inverts at output (fb bit 0 -> visible white),
   // so emitting drawPixel(x, y, true) draws visible white Nocturne strokes on the inverted black page!
-  compositeAndDitherScene(renderer, field, sg, ctx.darkMode, /*whiteBitVal=*/true);
+  const bool recording = pageCache.runs.begin();
+  compositeAndDitherScene(renderer, field, sg, ctx.darkMode, /*whiteBitVal=*/true,
+                          recording ? &pageCache.runs : nullptr);
+  pageCache.key = key;
+  pageCache.valid = pageCache.runs.ok();
 }
 
 void renderCanvasOrnaments(const GfxRenderer& renderer, Theme theme, uint32_t seed, const KeepoutRect* keepouts,

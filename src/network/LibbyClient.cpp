@@ -442,7 +442,7 @@ bool downloadLoan(const Loan& loan, std::string& destEpubPathOut, std::string& e
   return true;
 }
 
-bool syncAndFulfillNewLoans(int& fulfilledCountOut, std::string& errOut) {
+bool syncAndFulfillNewLoans(int& fulfilledCountOut, std::string& errOut, const std::function<bool()>& shouldStop) {
   fulfilledCountOut = 0;
   std::vector<Loan> loans;
   if (!fetchLoans(loans, errOut)) {
@@ -453,6 +453,7 @@ bool syncAndFulfillNewLoans(int& fulfilledCountOut, std::string& errOut) {
     if (!loan.isDownloadable()) continue;
     const std::string expectedPath = loanDestEpubPath(loan);
     if (Storage.exists(expectedPath.c_str())) continue;
+    if (shouldStop && shouldStop()) break;
 
     std::string actualPath;
     std::string dlErr;

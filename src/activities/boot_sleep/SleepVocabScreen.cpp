@@ -87,6 +87,10 @@ struct PreparedCard {
   uint32_t rank = zh::NO_RANK;
   uint8_t hsk = 0;
   float weight = 1.0f;
+  // Dictionary entry, read only once the card is picked for this sleep.
+  bool hasEntry = false;
+  uint32_t entryOff = 0;
+  std::string rawDef;
 
   // Measured geometry
   int x = 0;
@@ -253,11 +257,24 @@ bool readRecentVocabulary(std::vector<RawVocabItem>& itemsOut, uint32_t& maxTsOu
   if (fSize == 0) return false;
   // Seek near the tail if file is huge so RAM and latency stay tiny on ESP32-C3.
   constexpr size_t MAX_TAIL_BYTES = 48 * 1024;
+  // Block reads: one SD call per 512 bytes instead of one per byte.
+  uint8_t block[512];
+  int blockLen = 0;
+  int blockPos = 0;
+  const auto nextByte = [&]() -> int {
+    if (blockPos >= blockLen) {
+      blockLen = file.read(block, sizeof(block));
+      blockPos = 0;
+      if (blockLen <= 0) return -1;
+    }
+    return block[blockPos++];
+  };
+
   if (fSize > MAX_TAIL_BYTES) {
     file.seek(fSize - MAX_TAIL_BYTES);
     // Discard partial first line
     int c = 0;
-    while ((c = file.read()) >= 0 && c != '\n') {
+    while ((c = nextByte()) >= 0 && c != '\n') {
     }
   }
 
@@ -266,12 +283,14 @@ bool readRecentVocabulary(std::vector<RawVocabItem>& itemsOut, uint32_t& maxTsOu
   uint32_t seqFallback = 1000;
   maxTsOut = 0;
 
-  while (file.available()) {
+  bool atEnd = false;
+  while (!atEnd) {
     line.clear();
     int c = 0;
-    while ((c = file.read()) >= 0 && c != '\n') {
+    while ((c = nextByte()) >= 0 && c != '\n') {
       if (c != '\r' && line.size() < 3072) line.push_back(static_cast<char>(c));
     }
+    atEnd = c < 0;
     if (line.size() < 8 || line.front() != '{') continue;
 
     JsonDocument doc;
@@ -600,6 +619,82 @@ void drawPreparedCard(GfxRenderer& renderer, const PreparedCard& card, int reade
   }
 }
 
+// Fills readings and senses from the card's dictionary entry. False when the
+// entry has no usable reading.
+bool enrichFromDict(PreparedCard& card, uint8_t* entryBuf) {
+  bool enriched = false;
+  const size_t got = zh::sharedDict().readEntry(card.entryOff, entryBuf, ENTRY_BUF_BYTES);
+  if (got > 0) {
+    zh::EntryReader reader(entryBuf, got);
+    struct ParsedReading {
+      std::string pinyin;
+      std::string trad;
+      uint32_t zhuyin[zh::MAX_WORD_CHARS] = {};
+      uint8_t syllables = 0;
+      std::vector<std::string> senses;
+      bool surnameOnly = false;
+    };
+    std::vector<ParsedReading> lexical;
+    std::vector<ParsedReading> fallbackSurname;
+
+    zh::EntryReading er;
+    while (reader.next(er)) {
+      ParsedReading pr;
+      pr.pinyin.assign(er.pinyin, er.pinyinLen);
+      if (er.tradLen > 0 && card.word.compare(0, std::string::npos, er.trad, er.tradLen) != 0) {
+        pr.trad.assign(er.trad, er.tradLen);
+      }
+      pr.syllables = er.syllables;
+      std::copy(er.zhuyin, er.zhuyin + er.syllables, pr.zhuyin);
+
+      const bool isCap = !pr.pinyin.empty() && std::isupper(static_cast<unsigned char>(pr.pinyin[0]));
+      std::vector<std::string> cleanSenses;
+      std::vector<std::string> rawSenses;
+      splitSenses(er.senses, er.sensesLen, isCap, cleanSenses, rawSenses);
+
+      if (!cleanSenses.empty()) {
+        pr.senses = std::move(cleanSenses);
+        lexical.push_back(std::move(pr));
+      } else if (!rawSenses.empty()) {
+        pr.senses = std::move(rawSenses);
+        pr.surnameOnly = true;
+        fallbackSurname.push_back(std::move(pr));
+      }
+    }
+
+    const auto& chosenList = !lexical.empty() ? lexical : fallbackSurname;
+    if (!chosenList.empty()) {
+      const auto& prim = chosenList[0];
+      card.pinyinLine = prim.pinyin;
+      card.trad = prim.trad;
+      card.syllables = prim.syllables;
+      std::copy(prim.zhuyin, prim.zhuyin + prim.syllables, card.zhuyin);
+      card.badge = formatRankBadge(card.hsk, card.rank);
+
+      // Combine up to first 2 concise senses for the primary pronunciation when both fit cleanly.
+      std::string gloss = "1. " + prim.senses[0];
+      if (prim.senses.size() >= 2 && (gloss.size() + prim.senses[1].size()) <= 44) {
+        gloss += "  2. " + prim.senses[1];
+      }
+      card.primaryLines.push_back(std::move(gloss));
+
+      // One compact line from each secondary pronunciation (deduplicating identical pinyin)!
+      for (size_t r = 1; r < chosenList.size() && card.otherProns.size() < 2; ++r) {
+        const auto& sec = chosenList[r];
+        if (sec.pinyin == prim.pinyin) continue;
+        SecondaryPron sp;
+        sp.pinyin = sec.pinyin;
+        sp.syllables = sec.syllables;
+        std::copy(sec.zhuyin, sec.zhuyin + sec.syllables, sp.zhuyin);
+        sp.sense = sec.senses[0];
+        card.otherProns.push_back(std::move(sp));
+      }
+      enriched = true;
+    }
+  }
+  return enriched;
+}
+
 uint32_t nextSleepVocabSeed() {
   // Optional deterministic seed file on SD for reproducible simulator previews.
   HalFile sf;
@@ -666,7 +761,6 @@ bool renderVocabSleepScreen(GfxRenderer& renderer, bool darkMode) {
     }
     card.isChinese = allHan && !card.cps.empty() && card.cps.size() <= zh::MAX_WORD_CHARS;
 
-    bool enrichedFromZhDict = false;
     if (card.isChinese && zhDictReady) {
       zh::WordMatch matches[zh::MAX_MATCHES];
       const int mCount = zh::sharedDict().matchesAt(card.cps.data(), card.cps.size(), 0, matches, zh::MAX_MATCHES);
@@ -686,82 +780,12 @@ bool renderVocabSleepScreen(GfxRenderer& renderer, bool darkMode) {
           continue;
         }
 
-        const size_t got = zh::sharedDict().readEntry(exact->entryOff, entryBuf.get(), ENTRY_BUF_BYTES);
-        if (got > 0) {
-          zh::EntryReader reader(entryBuf.get(), got);
-          struct ParsedReading {
-            std::string pinyin;
-            std::string trad;
-            uint32_t zhuyin[zh::MAX_WORD_CHARS] = {};
-            uint8_t syllables = 0;
-            std::vector<std::string> senses;
-            bool surnameOnly = false;
-          };
-          std::vector<ParsedReading> lexical;
-          std::vector<ParsedReading> fallbackSurname;
-
-          zh::EntryReading er;
-          while (reader.next(er)) {
-            ParsedReading pr;
-            pr.pinyin.assign(er.pinyin, er.pinyinLen);
-            if (er.tradLen > 0 && card.word.compare(0, std::string::npos, er.trad, er.tradLen) != 0) {
-              pr.trad.assign(er.trad, er.tradLen);
-            }
-            pr.syllables = er.syllables;
-            std::copy(er.zhuyin, er.zhuyin + er.syllables, pr.zhuyin);
-
-            const bool isCap = !pr.pinyin.empty() && std::isupper(static_cast<unsigned char>(pr.pinyin[0]));
-            std::vector<std::string> cleanSenses;
-            std::vector<std::string> rawSenses;
-            splitSenses(er.senses, er.sensesLen, isCap, cleanSenses, rawSenses);
-
-            if (!cleanSenses.empty()) {
-              pr.senses = std::move(cleanSenses);
-              lexical.push_back(std::move(pr));
-            } else if (!rawSenses.empty()) {
-              pr.senses = std::move(rawSenses);
-              pr.surnameOnly = true;
-              fallbackSurname.push_back(std::move(pr));
-            }
-          }
-
-          const auto& chosenList = !lexical.empty() ? lexical : fallbackSurname;
-          if (!chosenList.empty()) {
-            const auto& prim = chosenList[0];
-            card.pinyinLine = prim.pinyin;
-            card.trad = prim.trad;
-            card.syllables = prim.syllables;
-            std::copy(prim.zhuyin, prim.zhuyin + prim.syllables, card.zhuyin);
-            card.badge = formatRankBadge(card.hsk, card.rank);
-
-            // Combine up to first 2 concise senses for the primary pronunciation when both fit cleanly.
-            std::string gloss = "1. " + prim.senses[0];
-            if (prim.senses.size() >= 2 && (gloss.size() + prim.senses[1].size()) <= 44) {
-              gloss += "  2. " + prim.senses[1];
-            }
-            card.primaryLines.push_back(std::move(gloss));
-
-            // One compact line from each secondary pronunciation (deduplicating identical pinyin)!
-            for (size_t r = 1; r < chosenList.size() && card.otherProns.size() < 2; ++r) {
-              const auto& sec = chosenList[r];
-              if (sec.pinyin == prim.pinyin) continue;
-              SecondaryPron sp;
-              sp.pinyin = sec.pinyin;
-              sp.syllables = sec.syllables;
-              std::copy(sec.zhuyin, sec.zhuyin + sec.syllables, sp.zhuyin);
-              sp.sense = sec.senses[0];
-              card.otherProns.push_back(std::move(sp));
-            }
-            enrichedFromZhDict = true;
-          }
-        }
+        card.hasEntry = true;
+        card.entryOff = exact->entryOff;
       }
     }
-
-    if (!enrichedFromZhDict) {
-      if (item.rawDef.empty()) continue;
-      card.primaryLines.push_back(item.rawDef);
-    }
+    if (!card.hasEntry && item.rawDef.empty()) continue;
+    card.rawDef = item.rawDef;
 
     // Compute sampling weight = DifficultySweetSpot(rank, threshold) * RecencyDecay * RepeatBoost!
     float wDiff = 0.72f;
@@ -780,11 +804,10 @@ bool renderVocabSleepScreen(GfxRenderer& renderer, bool darkMode) {
     pool.push_back(std::move(card));
   }
 
-  if (zhDictReady) {
-    zh::sharedDict().close();
+  if (pool.empty()) {
+    if (zhDictReady) zh::sharedDict().close();
+    return false;
   }
-
-  if (pool.empty()) return false;
 
   const uint32_t sleepSeed = nextSleepVocabSeed();
   Rng32 rng(sleepSeed);
@@ -815,11 +838,21 @@ bool renderVocabSleepScreen(GfxRenderer& renderer, bool darkMode) {
   const bool preferTwoCardCourtyard = (pool.size() == 2) || ((sleepSeed & 3u) == 3u);
   const size_t wantCards = std::min<size_t>(pool.size(), preferTwoCardCourtyard ? 2 : 3);
 
+  // Read dictionary entries for the picked cards only; skip cards left with nothing to show.
   std::vector<PreparedCard> selected;
   selected.reserve(wantCards);
-  for (size_t i = 0; i < wantCards; ++i) {
-    selected.push_back(std::move(pool[keyed[i].idx]));
+  for (size_t i = 0; i < keyed.size() && selected.size() < wantCards; ++i) {
+    PreparedCard& card = pool[keyed[i].idx];
+    if (!(card.hasEntry && zhDictReady && enrichFromDict(card, entryBuf.get()))) {
+      if (card.rawDef.empty()) continue;
+      card.primaryLines.push_back(card.rawDef);
+    }
+    selected.push_back(std::move(card));
   }
+  if (zhDictReady) {
+    zh::sharedDict().close();
+  }
+  if (selected.empty()) return false;
 
   const int baseCardW = std::clamp(static_cast<int>(W * 0.62f), 280, 344);
   for (size_t i = 0; i < selected.size(); ++i) {
@@ -881,6 +914,8 @@ bool renderVocabSleepScreen(GfxRenderer& renderer, bool darkMode) {
   }
 
   // Fill all gaps, channels & alcoves between the cards with 1-bit procedural ornaments!
+  if (!SETTINGS.sleepCardOrnaments) return true;
+  // Page ornaments Off still decorates the cards; Sleep card ornaments is the switch here.
   auto theme = static_cast<page_ornament::Theme>(SETTINGS.deadSpaceOrnamentTheme);
   if (theme == page_ornament::Theme::Off) {
     theme = page_ornament::Theme::AutoCycle;
