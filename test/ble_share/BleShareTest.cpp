@@ -4,6 +4,7 @@
 
 #include <cstring>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -26,9 +27,12 @@ class FakeSessionHost final : public xpbt::SessionHost {
   int offerPendingCalls = 0;
   std::vector<uint8_t> txWire;
   std::map<std::string, std::vector<uint8_t>> committedFiles;
+  std::set<std::string> dirs{"/", "/Books"};
 
   std::string activePath;
   std::vector<uint8_t> activeBytes;
+  std::string getActivePath;
+  size_t getReadCursor = 0;
   uint8_t rngByte = 0x11;
 
   void readerIdentity(uint8_t outReaderId[xpbt::kIdBytes], std::string& outReaderName) override {
@@ -88,6 +92,124 @@ class FakeSessionHost final : public xpbt::SessionHost {
   void abortFileWrite() override {
     activePath.clear();
     activeBytes.clear();
+  }
+
+  xpbt::FsStatus fsStat(const std::string& path, xpbt::FsStatEntry& out) override {
+    if (protectedpaths::isSensitivePath(path.c_str())) return xpbt::FsStatus::Forbidden;
+    if (dirs.count(path)) {
+      out = {true, true, 0};
+      return xpbt::FsStatus::Ok;
+    }
+    auto it = committedFiles.find(path);
+    if (it != committedFiles.end()) {
+      out = {true, false, it->second.size()};
+      return xpbt::FsStatus::Ok;
+    }
+    return xpbt::FsStatus::NotFound;
+  }
+
+  xpbt::FsStatus fsList(const std::string& path,
+                        const std::function<bool(const xpbt::FsDirItem&)>& emit) override {
+    if (protectedpaths::isSensitivePath(path.c_str())) return xpbt::FsStatus::Forbidden;
+    if (!dirs.count(path)) return xpbt::FsStatus::NotFound;
+    const std::string prefix = (path == "/") ? "/" : (path + "/");
+    for (const auto& d : dirs) {
+      if (d == "/" || d.rfind(prefix, 0) != 0) continue;
+      const std::string rem = d.substr(prefix.size());
+      if (!rem.empty() && rem.find('/') == std::string::npos) {
+        if (!emit({rem, true, 0})) return xpbt::FsStatus::IoError;
+      }
+    }
+    for (const auto& [fp, bytes] : committedFiles) {
+      if (fp.rfind(prefix, 0) != 0) continue;
+      const std::string rem = fp.substr(prefix.size());
+      if (!rem.empty() && rem.find('/') == std::string::npos && !protectedpaths::isSensitivePath(fp.c_str())) {
+        if (!emit({rem, false, bytes.size()})) return xpbt::FsStatus::IoError;
+      }
+    }
+    return xpbt::FsStatus::Ok;
+  }
+
+  xpbt::FsStatus fsMkdir(const std::string& path) override {
+    if (protectedpaths::isSensitivePath(path.c_str())) return xpbt::FsStatus::Forbidden;
+    if (dirs.count(path) || committedFiles.count(path)) return xpbt::FsStatus::AlreadyExists;
+    dirs.insert(path);
+    return xpbt::FsStatus::Ok;
+  }
+
+  xpbt::FsStatus fsDelete(const std::string& path, uint8_t mode) override {
+    if (protectedpaths::isSensitivePath(path.c_str())) return xpbt::FsStatus::Forbidden;
+    if (dirs.count(path)) {
+      if (mode == 2) return xpbt::FsStatus::InvalidType;
+      dirs.erase(path);
+      return xpbt::FsStatus::Ok;
+    }
+    auto it = committedFiles.find(path);
+    if (it == committedFiles.end()) return xpbt::FsStatus::NotFound;
+    if (mode == 1) return xpbt::FsStatus::InvalidType;
+    committedFiles.erase(it);
+    return xpbt::FsStatus::Ok;
+  }
+
+  xpbt::FsStatus fsRename(const std::string& srcPath, const std::string& dstPath, bool overwrite) override {
+    if (protectedpaths::isSensitivePath(srcPath.c_str()) || protectedpaths::isSensitivePath(dstPath.c_str())) {
+      return xpbt::FsStatus::Forbidden;
+    }
+    auto it = committedFiles.find(srcPath);
+    if (it == committedFiles.end()) return xpbt::FsStatus::NotFound;
+    if (!overwrite && committedFiles.count(dstPath)) return xpbt::FsStatus::AlreadyExists;
+    committedFiles[dstPath] = std::move(it->second);
+    committedFiles.erase(it);
+    return xpbt::FsStatus::Ok;
+  }
+
+  xpbt::FsStatus fsPutBegin(const std::string& path) override {
+    if (protectedpaths::isSensitivePath(path.c_str())) return xpbt::FsStatus::Forbidden;
+    activePath = path;
+    activeBytes.clear();
+    return xpbt::FsStatus::Ok;
+  }
+
+  bool fsPutChunk(const uint8_t* data, size_t len) override {
+    activeBytes.insert(activeBytes.end(), data, data + len);
+    return true;
+  }
+
+  xpbt::FsStatus fsPutFinish() override {
+    committedFiles[activePath] = activeBytes;
+    activePath.clear();
+    activeBytes.clear();
+    return xpbt::FsStatus::Ok;
+  }
+
+  void fsPutAbort() override { abortFileWrite(); }
+
+  xpbt::FsStatus fsGetBegin(const std::string& path, uint32_t startOffset, uint64_t& outRemainingBytes) override {
+    if (protectedpaths::isSensitivePath(path.c_str())) return xpbt::FsStatus::Forbidden;
+    auto it = committedFiles.find(path);
+    if (it == committedFiles.end()) return xpbt::FsStatus::NotFound;
+    if (startOffset > it->second.size()) return xpbt::FsStatus::IoError;
+    getActivePath = path;
+    getReadCursor = startOffset;
+    outRemainingBytes = it->second.size() - startOffset;
+    return xpbt::FsStatus::Ok;
+  }
+
+  int fsGetRead(uint8_t* buf, size_t maxLen) override {
+    auto it = committedFiles.find(getActivePath);
+    if (it == committedFiles.end()) return -1;
+    const size_t avail = it->second.size() - getReadCursor;
+    const size_t n = std::min(avail, maxLen);
+    if (n > 0) {
+      memcpy(buf, it->second.data() + getReadCursor, n);
+      getReadCursor += n;
+    }
+    return static_cast<int>(n);
+  }
+
+  void fsGetClose() override {
+    getActivePath.clear();
+    getReadCursor = 0;
   }
 
   bool sendRawBytes(const uint8_t* data, size_t len) override {
@@ -287,4 +409,160 @@ TEST(BleShareSessionTest, FullPairAuthPromptAndMultiFileChunkedTransfer) {
   EXPECT_EQ(session.state(), xpbt::SessionState::Completed);
   EXPECT_EQ(host.committedFiles["/Books/Journey.epub"], book1);
   EXPECT_EQ(host.committedFiles["/Books/西游记.txt"], book2);
+}
+
+TEST(BleShareProtocolTest, FsPathSanitizerNormalizesAndRejectsAttacks) {
+  EXPECT_EQ(xpbt::sanitizeFsPath("/"), "/");
+  EXPECT_EQ(xpbt::sanitizeFsPath("///Books//SciFi/./Dune.epub/"), "/Books/SciFi/Dune.epub");
+  EXPECT_EQ(xpbt::sanitizeFsPath("/.sleep/wallpaper.bmp"), "/.sleep/wallpaper.bmp");
+  EXPECT_TRUE(xpbt::sanitizeFsPath("/Books/../.crosspoint/wifi.json").empty());
+  EXPECT_TRUE(xpbt::sanitizeFsPath("/CROSSP~1/wifi.json").empty());
+  EXPECT_TRUE(xpbt::sanitizeFsPath("/Books\\evil.epub").empty());
+}
+
+TEST(BleShareSessionTest, AuthenticatedFsRpcListPutRenameGetAndProtect) {
+  FakeSessionHost host;
+  host.hasPaired = true;
+  for (size_t i = 0; i < xpbt::kIdBytes; ++i) host.pairedPhoneId[i] = static_cast<uint8_t>(0x30 + i);
+  for (size_t i = 0; i < xpbt::kSha256Bytes; ++i) host.pairedSharedKey[i] = static_cast<uint8_t>(0x70 + i);
+  host.committedFiles["/.crosspoint/ble_share.json"] = {1, 2, 3};
+
+  xpbt::ReceiverSession session(host);
+
+  // Authenticate once
+  uint8_t clientNonce[xpbt::kNonceBytes];
+  for (size_t i = 0; i < xpbt::kNonceBytes; ++i) clientNonce[i] = static_cast<uint8_t>(0x50 + i);
+  std::vector<uint8_t> authHello;
+  authHello.insert(authHello.end(), host.pairedPhoneId, host.pairedPhoneId + xpbt::kIdBytes);
+  authHello.insert(authHello.end(), clientNonce, clientNonce + xpbt::kNonceBytes);
+  authHello.push_back(4);
+  authHello.insert(authHello.end(), {'F', 'o', 'l', 'd'});
+  sendFrameFragmented(session, xpbt::PacketType::AuthHello, 1, authHello);
+
+  auto pkts = host.drainTxPackets();
+  ASSERT_EQ(pkts.size(), 1u);
+  uint8_t serverNonce[xpbt::kNonceBytes];
+  memcpy(serverNonce, pkts[0].second.data() + xpbt::kIdBytes, xpbt::kNonceBytes);
+  uint8_t authProof[xpbt::kSha256Bytes];
+  xpbt::computeAuthProof(host.pairedSharedKey, clientNonce, serverNonce, host.pairedPhoneId, authProof);
+  sendFrameFragmented(session, xpbt::PacketType::AuthVerify, 2,
+                      std::vector<uint8_t>(authProof, authProof + xpbt::kSha256Bytes));
+  pkts = host.drainTxPackets();
+  ASSERT_EQ(pkts.size(), 1u);
+  ASSERT_EQ(pkts[0].first, xpbt::PacketType::AuthOk);
+  ASSERT_EQ(session.state(), xpbt::SessionState::Authenticated);
+
+  auto makePathPayload = [](const std::string& p) {
+    std::vector<uint8_t> b(2 + p.size());
+    xpbt::writeU16(b.data(), static_cast<uint16_t>(p.size()));
+    memcpy(b.data() + 2, p.data(), p.size());
+    return b;
+  };
+
+  // 1. Sensitive path access is Forbidden
+  sendFrameFragmented(session, xpbt::PacketType::FsStatReq, 3, makePathPayload("/.crosspoint/ble_share.json"));
+  pkts = host.drainTxPackets();
+  ASSERT_EQ(pkts.size(), 1u);
+  EXPECT_EQ(pkts[0].first, xpbt::PacketType::FsStatResp);
+  EXPECT_EQ(pkts[0].second[0], static_cast<uint8_t>(xpbt::FsStatus::Forbidden));
+
+  // 2. Mkdir /Archive
+  sendFrameFragmented(session, xpbt::PacketType::FsMkdirReq, 4, makePathPayload("/Archive"));
+  pkts = host.drainTxPackets();
+  ASSERT_EQ(pkts.size(), 1u);
+  EXPECT_EQ(pkts[0].first, xpbt::PacketType::FsOpResp);
+  EXPECT_EQ(pkts[0].second[0], static_cast<uint8_t>(xpbt::FsStatus::Ok));
+
+  // 3. FsPut a 5,000-byte file (> 8 chunks, testing FsPutAck window + CRC32)
+  std::vector<uint8_t> bigPayload(5000);
+  for (size_t i = 0; i < bigPayload.size(); ++i) bigPayload[i] = static_cast<uint8_t>((i * 13 + 7) & 0xFF);
+  const uint32_t expectedCrc =
+      xpbt::crc32Final(xpbt::crc32Update(xpbt::crc32Init(), bigPayload.data(), bigPayload.size()));
+
+  sendFrameFragmented(session, xpbt::PacketType::FsPutBegin, 5, makePathPayload("/Books/Novel.epub"));
+  pkts = host.drainTxPackets();
+  ASSERT_EQ(pkts.size(), 1u);
+  EXPECT_EQ(pkts[0].second[0], static_cast<uint8_t>(xpbt::FsStatus::Ok));
+
+  for (size_t off = 0; off < bigPayload.size(); off += 480) {
+    const size_t n = std::min<size_t>(480, bigPayload.size() - off);
+    std::vector<uint8_t> chunk(4 + n);
+    xpbt::writeU32(chunk.data(), static_cast<uint32_t>(off));
+    memcpy(chunk.data() + 4, bigPayload.data() + off, n);
+    sendFrameFragmented(session, xpbt::PacketType::FsPutChunk, 10 + static_cast<uint32_t>(off), chunk, 31);
+  }
+  pkts = host.drainTxPackets();
+  ASSERT_FALSE(pkts.empty());
+  EXPECT_EQ(pkts[0].first, xpbt::PacketType::FsPutAck);
+
+  std::vector<uint8_t> putEnd(8);
+  xpbt::writeU32(putEnd.data(), static_cast<uint32_t>(bigPayload.size()));
+  xpbt::writeU32(putEnd.data() + 4, expectedCrc);
+  sendFrameFragmented(session, xpbt::PacketType::FsPutEnd, 99, putEnd);
+  pkts = host.drainTxPackets();
+  ASSERT_EQ(pkts.size(), 1u);
+  EXPECT_EQ(pkts[0].first, xpbt::PacketType::FsOpResp);
+  EXPECT_EQ(pkts[0].second[0], static_cast<uint8_t>(xpbt::FsStatus::Ok));
+  EXPECT_EQ(session.state(), xpbt::SessionState::Authenticated);
+
+  // 4. Instant FsRename /Books/Novel.epub -> /Archive/Novel.epub
+  const std::string sPath = "/Books/Novel.epub";
+  const std::string dPath = "/Archive/Novel.epub";
+  std::vector<uint8_t> ren(1 + 2 + sPath.size() + 2 + dPath.size());
+  ren[0] = 1;
+  xpbt::writeU16(ren.data() + 1, static_cast<uint16_t>(sPath.size()));
+  memcpy(ren.data() + 3, sPath.data(), sPath.size());
+  xpbt::writeU16(ren.data() + 3 + sPath.size(), static_cast<uint16_t>(dPath.size()));
+  memcpy(ren.data() + 5 + sPath.size(), dPath.data(), dPath.size());
+  sendFrameFragmented(session, xpbt::PacketType::FsRenameReq, 100, ren);
+  pkts = host.drainTxPackets();
+  ASSERT_EQ(pkts.size(), 1u);
+  EXPECT_EQ(pkts[0].second[0], static_cast<uint8_t>(xpbt::FsStatus::Ok));
+  EXPECT_EQ(host.committedFiles.count("/Books/Novel.epub"), 0u);
+  EXPECT_EQ(host.committedFiles["/Archive/Novel.epub"], bigPayload);
+
+  // 5. FsList /Archive
+  sendFrameFragmented(session, xpbt::PacketType::FsListReq, 101, makePathPayload("/Archive"));
+  pkts = host.drainTxPackets();
+  ASSERT_EQ(pkts.size(), 2u);
+  EXPECT_EQ(pkts[0].first, xpbt::PacketType::FsListChunk);
+  EXPECT_EQ(pkts[1].first, xpbt::PacketType::FsListEnd);
+  EXPECT_EQ(pkts[1].second[0], static_cast<uint8_t>(xpbt::FsStatus::Ok));
+  EXPECT_EQ(xpbt::readU16(pkts[1].second.data() + 1), 1u);
+
+  // 6. FsGet /Archive/Novel.epub (5,000 B -> 8 chunks in window 1 + FsGetAck -> 3 chunks + FsGetEnd)
+  std::vector<uint8_t> getReq(4 + 2 + dPath.size());
+  xpbt::writeU32(getReq.data(), 0);
+  xpbt::writeU16(getReq.data() + 4, static_cast<uint16_t>(dPath.size()));
+  memcpy(getReq.data() + 6, dPath.data(), dPath.size());
+  sendFrameFragmented(session, xpbt::PacketType::FsGetBegin, 102, getReq);
+
+  std::vector<uint8_t> downloaded;
+  uint32_t endCrc = 0;
+  bool gotEnd = false;
+  while (!gotEnd) {
+    pkts = host.drainTxPackets();
+    ASSERT_FALSE(pkts.empty());
+    for (const auto& [pt, pl] : pkts) {
+      if (pt == xpbt::PacketType::FsStatResp) {
+        ASSERT_EQ(pl[0], static_cast<uint8_t>(xpbt::FsStatus::Ok));
+        EXPECT_EQ(xpbt::readU64(pl.data() + 2), bigPayload.size());
+      } else if (pt == xpbt::PacketType::FsGetChunk) {
+        EXPECT_EQ(xpbt::readU32(pl.data()), downloaded.size());
+        downloaded.insert(downloaded.end(), pl.begin() + 4, pl.end());
+      } else if (pt == xpbt::PacketType::FsGetEnd) {
+        EXPECT_EQ(xpbt::readU32(pl.data()), bigPayload.size());
+        endCrc = xpbt::readU32(pl.data() + 4);
+        gotEnd = true;
+      }
+    }
+    if (!gotEnd) {
+      std::vector<uint8_t> ack(4);
+      xpbt::writeU32(ack.data(), static_cast<uint32_t>(downloaded.size()));
+      sendFrameFragmented(session, xpbt::PacketType::FsGetAck, 103, ack);
+    }
+  }
+  EXPECT_EQ(downloaded, bigPayload);
+  EXPECT_EQ(endCrc, expectedCrc);
+  EXPECT_EQ(session.state(), xpbt::SessionState::Authenticated);
 }

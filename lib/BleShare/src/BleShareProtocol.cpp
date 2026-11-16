@@ -131,7 +131,7 @@ void sha256Finish(Sha256Ctx& ctx, uint8_t out[kSha256Bytes]) {
 }
 
 bool isValidType(const uint8_t raw) {
-  return raw >= static_cast<uint8_t>(PacketType::PairHello) && raw <= static_cast<uint8_t>(PacketType::ErrorPacket);
+  return raw >= static_cast<uint8_t>(PacketType::PairHello) && raw <= static_cast<uint8_t>(PacketType::FsAbort);
 }
 
 int hexNibble(const char c) {
@@ -478,6 +478,43 @@ std::string sanitizeDestFolder(std::string_view rawFolder) {
       out.find("/.") != std::string::npos || out.find("//") != std::string::npos || out.find('~') != std::string::npos) {
     return "/Books";
   }
+  return out;
+}
+
+std::string sanitizeFsPath(std::string_view rawPath) {
+  if (rawPath.empty() || rawPath.size() > kMaxFsPathBytes) return {};
+  for (const unsigned char ch : rawPath) {
+    if (ch < 0x20 || ch == 0x7F || ch == '\\' || ch == ':' || ch == '*' || ch == '?' || ch == '"' || ch == '<' ||
+        ch == '>' || ch == '|' || ch == '~') {
+      return {};
+    }
+  }
+
+  std::string out;
+  out.reserve(rawPath.size() + 2);
+  size_t pos = 0;
+  while (pos < rawPath.size()) {
+    while (pos < rawPath.size() && rawPath[pos] == '/') ++pos;
+    if (pos >= rawPath.size()) break;
+    const size_t nextSlash = rawPath.find('/', pos);
+    std::string_view seg =
+        (nextSlash == std::string_view::npos) ? rawPath.substr(pos) : rawPath.substr(pos, nextSlash - pos);
+    pos = (nextSlash == std::string_view::npos) ? rawPath.size() : nextSlash + 1;
+
+    if (seg == ".") continue;
+    if (seg == "..") return {};
+
+    // Match SdFat name trimming: strip leading spaces and trailing spaces/dots.
+    while (!seg.empty() && seg.front() == ' ') seg.remove_prefix(1);
+    while (!seg.empty() && (seg.back() == ' ' || seg.back() == '.')) seg.remove_suffix(1);
+    if (seg.empty() || seg == "." || seg == "..") return {};
+
+    out.push_back('/');
+    out.append(seg.data(), seg.size());
+    if (out.size() > kMaxFsPathBytes) return {};
+  }
+
+  if (out.empty()) return "/";
   return out;
 }
 

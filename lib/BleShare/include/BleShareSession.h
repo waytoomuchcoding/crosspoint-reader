@@ -2,12 +2,25 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
 #include "BleShareProtocol.h"
 
 namespace xpbt {
+
+struct FsStatEntry {
+  bool exists = false;
+  bool isDir = false;
+  uint64_t sizeBytes = 0;
+};
+
+struct FsDirItem {
+  std::string name;
+  bool isDir = false;
+  uint64_t sizeBytes = 0;
+};
 
 struct BatchOfferInfo {
   std::string phoneName;
@@ -35,6 +48,8 @@ enum class SessionState : uint8_t {
   OfferPendingDecision,
   ReadyForFiles,
   ReceivingFile,
+  FsPutting,
+  FsGetting,
   Completed,
   Deferred,
   Error,
@@ -65,6 +80,26 @@ class SessionHost {
   virtual bool writeFileChunk(const uint8_t* data, size_t len) = 0;
   virtual bool finalizeFileWrite(std::string& outSavedPath) = 0;
   virtual void abortFileWrite() = 0;
+
+  // Authenticated file-system RPC hooks (used by the localhost FTP-over-BLE bridge).
+  virtual FsStatus fsStat(const std::string& /*path*/, FsStatEntry& /*out*/) { return FsStatus::Forbidden; }
+  virtual FsStatus fsList(const std::string& /*path*/, const std::function<bool(const FsDirItem&)>& /*emit*/) {
+    return FsStatus::Forbidden;
+  }
+  virtual FsStatus fsMkdir(const std::string& /*path*/) { return FsStatus::Forbidden; }
+  virtual FsStatus fsDelete(const std::string& /*path*/, uint8_t /*mode*/) { return FsStatus::Forbidden; }
+  virtual FsStatus fsRename(const std::string& /*srcPath*/, const std::string& /*dstPath*/, bool /*overwrite*/) {
+    return FsStatus::Forbidden;
+  }
+  virtual FsStatus fsPutBegin(const std::string& /*path*/) { return FsStatus::Forbidden; }
+  virtual bool fsPutChunk(const uint8_t* /*data*/, size_t /*len*/) { return false; }
+  virtual FsStatus fsPutFinish() { return FsStatus::Forbidden; }
+  virtual void fsPutAbort() {}
+  virtual FsStatus fsGetBegin(const std::string& /*path*/, uint32_t /*startOffset*/, uint64_t& /*outRemainingBytes*/) {
+    return FsStatus::Forbidden;
+  }
+  virtual int fsGetRead(uint8_t* /*buf*/, size_t /*maxLen*/) { return -1; }
+  virtual void fsGetClose() {}
 
   // Outgoing packet bytes to write to BLE TX characteristic or TCP socket.
   virtual bool sendRawBytes(const uint8_t* data, size_t len) = 0;
@@ -103,6 +138,20 @@ class ReceiverSession {
   void handleFileEnd(const PacketView& pkt);
   void handleBatchDone(const PacketView& pkt);
 
+  void handleFsStat(const PacketView& pkt);
+  void handleFsList(const PacketView& pkt);
+  void handleFsMkdir(const PacketView& pkt);
+  void handleFsDelete(const PacketView& pkt);
+  void handleFsRename(const PacketView& pkt);
+  void handleFsPutBegin(const PacketView& pkt);
+  void handleFsPutChunk(const PacketView& pkt);
+  void handleFsPutEnd(const PacketView& pkt);
+  void handleFsGetBegin(const PacketView& pkt);
+  void handleFsGetAck(const PacketView& pkt);
+  void handleFsAbort();
+  void pumpFsGetWindow();
+  void sendFsOpResp(FsStatus status, const char* msg = "");
+
   bool sendPacket(PacketType type, const void* payload, uint16_t payloadLen);
   void sendError(ErrorCode code, const char* msg);
 
@@ -127,6 +176,9 @@ class ReceiverSession {
   uint32_t expectedFileCrc_ = 0;
   uint32_t runningFileCrc_ = 0;
   uint16_t chunksSinceAck_ = 0;
+  uint32_t fsStreamOffset_ = 0;
+  uint32_t fsGetSentBytes_ = 0;
+  uint64_t fsGetRemainingBytes_ = 0;
   uint16_t filesSaved_ = 0;
   std::vector<std::string> savedPaths_;
   std::string errorMessage_;

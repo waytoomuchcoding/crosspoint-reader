@@ -3,12 +3,16 @@
 #include <Arduino.h>
 #include <BlePageTurner.h>
 #include <BoardConfig.h>
+#include <Epub.h>
 #include <FontCacheManager.h>
+#include <FsHelpers.h>
 #include <HalGPIO.h>
 #include <HalMemory.h>
 #include <HalStorage.h>
+#include <HiddenItems.h>
 #include <LibraryBuilder.h>
 #include <Logging.h>
+#include <Xtc.h>
 #include <esp_random.h>
 
 #include <algorithm>
@@ -16,10 +20,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <strings.h>
 
 #include "BleShareStore.h"
+#include "ClippingStore.h"
+#include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
 #include "activities/Activity.h"
+#include "network/ProtectedPaths.h"
+#include "util/BookCacheUtils.h"
 
 #if defined(SIMULATOR)
 #include <arpa/inet.h>
@@ -53,6 +62,57 @@ HalFile g_outFile;
 bool g_outFileOpen = false;
 std::string g_tempFilePath;
 std::string g_finalFilePath;
+HalFile g_inFile;
+bool g_inFileOpen = false;
+std::string g_activeReaderBookPath;
+
+bool isHiddenListEntryName(const char* name) {
+  if (!name || name[0] == '\0') return true;
+  if (std::strcmp(name, ".") == 0 || std::strcmp(name, "..") == 0) return true;
+  for (const char* hidden : FsHelpers::HIDDEN_ITEMS) {
+    if (strcasecmp(name, hidden) == 0) return true;
+  }
+  const size_t len = std::strlen(name);
+  if (len >= 5 && strcasecmp(name + len - 5, ".xpbt") == 0) return true;
+  if (len >= 7 && strcasecmp(name + len - 7, ".davtmp") == 0) return true;
+  if (strcasecmp(name, ".xpbt_put.tmp") == 0) return true;
+  return false;
+}
+
+bool isBusyActiveBookOrParent(const std::string& path) {
+  if (g_activeReaderBookPath.empty() || path.empty()) return false;
+  if (strcasecmp(path.c_str(), g_activeReaderBookPath.c_str()) == 0) return true;
+  if (path.size() < g_activeReaderBookPath.size() &&
+      strncasecmp(g_activeReaderBookPath.c_str(), path.c_str(), path.size()) == 0 &&
+      g_activeReaderBookPath[path.size()] == '/') {
+    return true;
+  }
+  return false;
+}
+
+std::string parentDirectoryOf(const std::string& path) {
+  const size_t slash = path.find_last_of('/');
+  if (slash == std::string::npos || slash == 0) return "/";
+  return path.substr(0, slash);
+}
+
+std::string bookCachePathFor(const std::string& path) {
+  if (FsHelpers::hasReflowableBookExtension(path)) {
+    return Epub(path, "/.crosspoint").getCachePath();
+  }
+  if (FsHelpers::hasXtcExtension(path)) {
+    return Xtc(path, "/.crosspoint").getCachePath();
+  }
+  return {};
+}
+
+void notifyStorageMutation(const std::string& path) {
+  if (path.size() > 7 && strcasecmp(path.c_str() + path.size() - 7, ".cpfont") == 0) {
+    sdFontSystem.markRegistryDirty();
+  } else if (library::isLibraryBookFile(path)) {
+    library::markLibraryIndexDirty();
+  }
+}
 
 #if defined(SIMULATOR)
 int g_listenFd = -1;
@@ -424,6 +484,247 @@ class FirmwareSessionHost final : public xpbt::SessionHost {
     g_tempFilePath.clear();
   }
 
+  xpbt::FsStatus fsStat(const std::string& path, xpbt::FsStatEntry& out) override {
+    out = xpbt::FsStatEntry{};
+    if (protectedpaths::isSensitivePath(path.c_str())) return xpbt::FsStatus::Forbidden;
+    if (path == "/") {
+      out.exists = true;
+      out.isDir = true;
+      out.sizeBytes = 0;
+      return xpbt::FsStatus::Ok;
+    }
+    if (!Storage.exists(path.c_str())) return xpbt::FsStatus::NotFound;
+    HalFile f = Storage.open(path.c_str());
+    if (!f) return xpbt::FsStatus::IoError;
+    out.exists = true;
+    out.isDir = f.isDirectory();
+    out.sizeBytes = out.isDir ? 0 : static_cast<uint64_t>(f.size());
+    f.close();
+    return xpbt::FsStatus::Ok;
+  }
+
+  xpbt::FsStatus fsList(const std::string& path,
+                        const std::function<bool(const xpbt::FsDirItem&)>& emit) override {
+    if (protectedpaths::isSensitivePath(path.c_str())) return xpbt::FsStatus::Forbidden;
+    if (path != "/" && !Storage.exists(path.c_str())) return xpbt::FsStatus::NotFound;
+    HalFile dir = Storage.open(path.c_str());
+    if (!dir) return xpbt::FsStatus::NotFound;
+    if (!dir.isDirectory()) {
+      dir.close();
+      return xpbt::FsStatus::InvalidType;
+    }
+
+    char nameBuf[204];
+    for (HalFile entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
+      nameBuf[0] = '\0';
+      entry.getName(nameBuf, sizeof(nameBuf));
+      if (!isHiddenListEntryName(nameBuf)) {
+        const std::string childPath = (path == "/") ? ("/" + std::string(nameBuf)) : (path + "/" + nameBuf);
+        if (!protectedpaths::isSensitivePath(childPath.c_str())) {
+          xpbt::FsDirItem item;
+          item.name = nameBuf;
+          item.isDir = entry.isDirectory();
+          item.sizeBytes = item.isDir ? 0 : static_cast<uint64_t>(entry.size());
+          if (!emit(item)) {
+            entry.close();
+            dir.close();
+            return xpbt::FsStatus::IoError;
+          }
+        }
+      }
+      entry.close();
+    }
+    dir.close();
+    return xpbt::FsStatus::Ok;
+  }
+
+  xpbt::FsStatus fsMkdir(const std::string& path) override {
+    if (path == "/" || protectedpaths::isSensitivePath(path.c_str())) return xpbt::FsStatus::Forbidden;
+    if (Storage.exists(path.c_str())) return xpbt::FsStatus::AlreadyExists;
+    const std::string parent = parentDirectoryOf(path);
+    if (parent != "/" && !Storage.exists(parent.c_str())) return xpbt::FsStatus::NotFound;
+    return Storage.mkdir(path.c_str()) ? xpbt::FsStatus::Ok : xpbt::FsStatus::IoError;
+  }
+
+  xpbt::FsStatus fsDelete(const std::string& path, const uint8_t mode) override {
+    if (path == "/" || protectedpaths::isSensitivePath(path.c_str())) return xpbt::FsStatus::Forbidden;
+    if (isBusyActiveBookOrParent(path)) return xpbt::FsStatus::Busy;
+    if (!Storage.exists(path.c_str())) return xpbt::FsStatus::NotFound;
+
+    HalFile f = Storage.open(path.c_str());
+    if (!f) return xpbt::FsStatus::IoError;
+    const bool isDir = f.isDirectory();
+    f.close();
+
+    if (mode == 1 && !isDir) return xpbt::FsStatus::InvalidType;
+    if (mode == 2 && isDir) return xpbt::FsStatus::InvalidType;
+
+    if (isDir) {
+      return Storage.rmdir(path.c_str()) ? xpbt::FsStatus::Ok : xpbt::FsStatus::InvalidType;
+    }
+
+    const bool wasBook = library::isLibraryBookFile(path);
+    const bool ok = removeBookFile(path);
+    if (ok) {
+      RECENT_BOOKS.removeByPath(path);
+      if (wasBook) library::markLibraryIndexDirty();
+      notifyStorageMutation(path);
+      return xpbt::FsStatus::Ok;
+    }
+    return xpbt::FsStatus::IoError;
+  }
+
+  xpbt::FsStatus fsRename(const std::string& srcPath, const std::string& dstPath, const bool overwrite) override {
+    if (srcPath == "/" || dstPath == "/" || protectedpaths::isSensitivePath(srcPath.c_str()) ||
+        protectedpaths::isSensitivePath(dstPath.c_str())) {
+      return xpbt::FsStatus::Forbidden;
+    }
+    if (isBusyActiveBookOrParent(srcPath) || isBusyActiveBookOrParent(dstPath)) {
+      return xpbt::FsStatus::Busy;
+    }
+    if (srcPath == dstPath) return xpbt::FsStatus::Ok;
+    if (!Storage.exists(srcPath.c_str())) return xpbt::FsStatus::NotFound;
+
+    const std::string dstParent = parentDirectoryOf(dstPath);
+    if (dstParent != "/" && !Storage.exists(dstParent.c_str())) return xpbt::FsStatus::NotFound;
+
+    if (Storage.exists(dstPath.c_str())) {
+      if (!overwrite) return xpbt::FsStatus::AlreadyExists;
+      HalFile existing = Storage.open(dstPath.c_str());
+      if (!existing) return xpbt::FsStatus::IoError;
+      const bool dstDir = existing.isDirectory();
+      existing.close();
+      if (dstDir || !removeBookFile(dstPath)) return xpbt::FsStatus::IoError;
+    }
+
+    HalFile srcFile = Storage.open(srcPath.c_str());
+    if (!srcFile) return xpbt::FsStatus::IoError;
+    const bool srcIsDir = srcFile.isDirectory();
+    srcFile.close();
+
+    if (srcIsDir) {
+      if (!Storage.rename(srcPath.c_str(), dstPath.c_str())) return xpbt::FsStatus::IoError;
+      library::markLibraryIndexDirty();
+      return xpbt::FsStatus::Ok;
+    }
+
+    const std::string oldCachePath = bookCachePathFor(srcPath);
+    const std::string newCachePath = bookCachePathFor(dstPath);
+    const bool isManagedBook = !oldCachePath.empty() && !newCachePath.empty();
+
+    if (isManagedBook) {
+      if (!ClippingStore::moveBook(srcPath, dstPath)) return xpbt::FsStatus::IoError;
+      moveBookSidecarState(srcPath, dstPath);
+      bool cacheMoved = false;
+      if (Storage.exists(oldCachePath.c_str())) {
+        if (Storage.exists(newCachePath.c_str())) {
+          clearBookCache(dstPath);
+        }
+        cacheMoved = Storage.rename(oldCachePath.c_str(), newCachePath.c_str());
+      }
+      RECENT_BOOKS.updatePath(srcPath, dstPath, oldCachePath, cacheMoved ? newCachePath : oldCachePath);
+    } else {
+      if (!Storage.rename(srcPath.c_str(), dstPath.c_str())) return xpbt::FsStatus::IoError;
+    }
+
+    notifyStorageMutation(srcPath);
+    notifyStorageMutation(dstPath);
+    return xpbt::FsStatus::Ok;
+  }
+
+  xpbt::FsStatus fsPutBegin(const std::string& path) override {
+    fsPutAbort();
+    if (path == "/" || protectedpaths::isSensitivePath(path.c_str())) return xpbt::FsStatus::Forbidden;
+    if (isBusyActiveBookOrParent(path)) return xpbt::FsStatus::Busy;
+
+    const std::string parent = parentDirectoryOf(path);
+    if (parent != "/" && !Storage.exists(parent.c_str())) return xpbt::FsStatus::NotFound;
+
+    if (Storage.exists(path.c_str())) {
+      HalFile existing = Storage.open(path.c_str());
+      if (existing) {
+        const bool isDir = existing.isDirectory();
+        existing.close();
+        if (isDir) return xpbt::FsStatus::InvalidType;
+      }
+    }
+
+    g_finalFilePath = path;
+    g_tempFilePath = (parent == "/") ? "/.xpbt_put.tmp" : (parent + "/.xpbt_put.tmp");
+    if (Storage.exists(g_tempFilePath.c_str())) {
+      Storage.remove(g_tempFilePath.c_str());
+    }
+    if (!Storage.openFileForWrite("BLS", g_tempFilePath.c_str(), g_outFile)) {
+      g_tempFilePath.clear();
+      return xpbt::FsStatus::IoError;
+    }
+    g_outFileOpen = true;
+    return xpbt::FsStatus::Ok;
+  }
+
+  bool fsPutChunk(const uint8_t* data, const size_t len) override {
+    if (!g_outFileOpen) return false;
+    return g_outFile.write(data, len) == len;
+  }
+
+  xpbt::FsStatus fsPutFinish() override {
+    if (!g_outFileOpen) return xpbt::FsStatus::IoError;
+    g_outFile.close();
+    g_outFileOpen = false;
+    if (Storage.exists(g_finalFilePath.c_str())) {
+      Storage.remove(g_finalFilePath.c_str());
+    }
+    if (!Storage.rename(g_tempFilePath.c_str(), g_finalFilePath.c_str())) {
+      Storage.remove(g_tempFilePath.c_str());
+      g_tempFilePath.clear();
+      return xpbt::FsStatus::IoError;
+    }
+    g_tempFilePath.clear();
+    notifyStorageMutation(g_finalFilePath);
+    LOG_INF("BLESHARE", "FTP saved file: %s", g_finalFilePath.c_str());
+    return xpbt::FsStatus::Ok;
+  }
+
+  void fsPutAbort() override { abortFileWrite(); }
+
+  xpbt::FsStatus fsGetBegin(const std::string& path, const uint32_t startOffset,
+                            uint64_t& outRemainingBytes) override {
+    fsGetClose();
+    outRemainingBytes = 0;
+    if (path == "/" || protectedpaths::isSensitivePath(path.c_str())) return xpbt::FsStatus::Forbidden;
+    if (!Storage.exists(path.c_str())) return xpbt::FsStatus::NotFound;
+
+    if (!Storage.openFileForRead("BLS", path.c_str(), g_inFile)) return xpbt::FsStatus::IoError;
+    if (g_inFile.isDirectory()) {
+      g_inFile.close();
+      return xpbt::FsStatus::InvalidType;
+    }
+    const uint64_t total = static_cast<uint64_t>(g_inFile.size());
+    if (startOffset > total) {
+      g_inFile.close();
+      return xpbt::FsStatus::IoError;
+    }
+    if (startOffset > 0 && !g_inFile.seek(startOffset)) {
+      g_inFile.close();
+      return xpbt::FsStatus::IoError;
+    }
+    g_inFileOpen = true;
+    outRemainingBytes = total - startOffset;
+    return xpbt::FsStatus::Ok;
+  }
+
+  int fsGetRead(uint8_t* buf, const size_t maxLen) override {
+    if (!g_inFileOpen) return -1;
+    return g_inFile.read(buf, maxLen);
+  }
+
+  void fsGetClose() override {
+    if (g_inFileOpen) {
+      g_inFile.close();
+      g_inFileOpen = false;
+    }
+  }
+
   bool sendRawBytes(const uint8_t* data, const size_t len) override { return transportSend(data, len); }
 };
 
@@ -455,6 +756,7 @@ bool hasLiveLink() { return g_radioRunning && transportConnected(); }
 
 void stopRadio() {
   g_host.abortFileWrite();
+  g_host.fsGetClose();
   g_session.reset();
   stopTransport();
 }
@@ -498,6 +800,7 @@ bool respondToOffer(const bool accept) { return g_session.respondToOffer(accept)
 
 void cancelTransfer() {
   g_host.abortFileWrite();
+  g_host.fsGetClose();
   g_session.reset();
 #if defined(SIMULATOR)
   closeClientSocket();
@@ -521,6 +824,7 @@ bool consumeIncomingLaunch(std::string& outReturnBookPath) {
 
 bool tick(const Scene& scene) {
   const unsigned long now = millis();
+  g_activeReaderBookPath = scene.inReader ? scene.currentBookPath : std::string();
   if (scene.localActivity || scene.shareScreenForeground) {
     g_windowArmedAtMs = now;
   }

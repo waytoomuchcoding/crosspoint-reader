@@ -24,6 +24,7 @@ inline constexpr size_t kPinDigits = 6;
 inline constexpr size_t kMaxNameBytes = 48;
 inline constexpr size_t kMaxFileNameBytes = 160;
 inline constexpr size_t kMaxFolderBytes = 64;
+inline constexpr size_t kMaxFsPathBytes = 220;
 
 enum class PacketType : uint8_t {
   PairHello = 1,
@@ -45,6 +46,36 @@ enum class PacketType : uint8_t {
   BatchDone = 17,
   BatchComplete = 18,
   ErrorPacket = 19,
+  // Authenticated file-system RPCs for localhost FTP / SD browser bridge:
+  FsStatReq = 20,
+  FsStatResp = 21,
+  FsListReq = 22,
+  FsListChunk = 23,
+  FsListEnd = 24,
+  FsMkdirReq = 25,
+  FsDeleteReq = 26,
+  FsRenameReq = 27,
+  FsOpResp = 28,
+  FsPutBegin = 29,
+  FsPutChunk = 30,
+  FsPutAck = 31,
+  FsPutEnd = 32,
+  FsGetBegin = 33,
+  FsGetChunk = 34,
+  FsGetAck = 35,
+  FsGetEnd = 36,
+  FsAbort = 37,
+};
+
+enum class FsStatus : uint8_t {
+  Ok = 0,
+  NotFound = 1,
+  AlreadyExists = 2,
+  Forbidden = 3,
+  Busy = 4,
+  InvalidType = 5,
+  IoError = 6,
+  CrcMismatch = 7,
 };
 
 enum class FileStatus : uint8_t {
@@ -129,5 +160,9 @@ bool hexToBytes(std::string_view hex, uint8_t* outBytes, size_t expectedBytes);
 // Validates and strips directory components from an incoming filename; allows .epub, .txt, .md, .xtc, .xtch, .acsm, .cpfont.
 std::string sanitizeBookFileName(std::string_view rawName);
 std::string sanitizeDestFolder(std::string_view rawFolder);
+
+// Normalizes an SD path for authenticated FS RPCs ("/" or "/dir/name"), rejecting "..",
+// control characters, backslashes, and FAT 8.3 tilde aliases. Returns empty string if invalid.
+std::string sanitizeFsPath(std::string_view rawPath);
 
 }  // namespace xpbt
