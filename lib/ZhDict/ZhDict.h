@@ -150,8 +150,11 @@ class Dict {
 // One dictionary instance shared by layout and the lookup screen. Opened on
 // first use; close it when leaving a Chinese book to release its RAM.
 Dict& sharedDict();
-// Opens sharedDict() from /zh. After a failure it does not retry until
-// resetSharedDict() (the files are missing or unreadable).
+// True when /zh dictionary files exist on SD (allocates no heap; safe to call
+// while the BLE stack still holds ~50 KB before a screen transition).
+bool hasSharedDictFiles(const char* dir = "/zh");
+// Opens sharedDict() from /zh. After a missing/corrupt-file failure it does not
+// retry until resetSharedDict().
 bool openSharedDict();
 void resetSharedDict();
 

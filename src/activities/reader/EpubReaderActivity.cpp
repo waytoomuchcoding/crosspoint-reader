@@ -514,7 +514,13 @@ bool EpubReaderActivity::openZhLookup(const bool startInJump) {
     }
     if (!hasHan) return false;
   }
-  if (!zh::openSharedDict()) return false;
+  // Check file presence without allocating ~19 KB of dictionary buffers yet:
+  // ActivityManager::loop() stops any active ~50 KB BLE radio before calling
+  // ZhLookupActivity::onEnter(), where openSharedDict() runs on a roomy heap.
+  if (!zh::hasSharedDictFiles()) return false;
+  if (auto* fcm = renderer.getFontCacheManager()) {
+    fcm->releaseSdFontCaches();
+  }
   int top, right, bottom, left;
   renderer.getOrientedViewableTRBL(&top, &right, &bottom, &left);
   // The lookup screen turns pages itself; the reader follows to the page it ends on.

@@ -321,12 +321,34 @@ uint32_t currentRubyThreshold = 0;
 bool currentRubyUnderLine = false;
 }  // namespace
 
+bool hasSharedDictFiles(const char* dir) {
+  if (sharedDict().isOpen()) return true;
+  if (sharedOpenFailed) return false;
+  char path[160];
+  const char* names[] = {"chars.bin", "pairs.bin", "words.bin", "entries.bin"};
+  for (const char* name : names) {
+    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    if (!Storage.exists(path)) {
+      sharedOpenFailed = true;
+      return false;
+    }
+  }
+  return true;
+}
+
 bool openSharedDict() {
   Dict& d = sharedDict();
   if (d.isOpen()) return true;
-  if (sharedOpenFailed) return false;
-  sharedOpenFailed = !d.open("/zh");
-  return !sharedOpenFailed;
+  if (!hasSharedDictFiles("/zh")) return false;
+  if (!d.open("/zh")) {
+    // Only latch permanent failure if files vanished; transient OOM can succeed
+    // once the caller releases font caches or tears down the BLE radio.
+    char checkPath[64];
+    snprintf(checkPath, sizeof(checkPath), "/zh/chars.bin");
+    if (!Storage.exists(checkPath)) sharedOpenFailed = true;
+    return false;
+  }
+  return true;
 }
 
 void resetSharedDict() {
