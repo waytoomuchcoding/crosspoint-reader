@@ -64,6 +64,7 @@
 #include "clippings/ClippingsManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/BleShareService.h"
 #include "util/BookCacheUtils.h"
 #include "util/BookmarkUtil.h"
 #include "util/ButtonNavigator.h"
@@ -406,6 +407,9 @@ void EpubReaderActivity::openReaderMenu() {
 // refused rather than run next to it. The stop finishes on the main loop (the module's tick) and
 // the start on its own task; neither needs the render lock this task holds.
 bool EpubReaderActivity::makeRoomForChapterBuild() {
+  if (bleshare::ownsRadio()) {
+    bleshare::stopRadio();
+  }
   bool asked = false;
   const auto roomMade = [this, &asked] {
     // The first ask stops the radio. A later one asks again only once a start that was still

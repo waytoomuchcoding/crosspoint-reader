@@ -23,6 +23,8 @@
 #include "home/FileBrowserActivity.h"
 #include "home/HomeActivity.h"
 #include "library/LibraryListActivity.h"
+#include "network/BleShareActivity.h"
+#include "network/BleShareService.h"
 #include "network/CrossPointWebServerActivity.h"
 #include "network/UsbDriveActivity.h"
 #include "plugins/PluginCatalogActivity.h"
@@ -156,6 +158,10 @@ void ActivityManager::loop() {
         !bleturner::beforeScreenChange(0, pendingActivity && pendingActivity->isReaderActivity())) {
       return;
     }
+    const bool enteringBleShare = pendingActivity && pendingActivity->name == "BleShare";
+    if (!enteringBleShare && bleshare::ownsRadio()) {
+      bleshare::stopRadio();
+    }
     if (pendingAction == PendingAction::Pop) {
       RenderLock lock;
 
@@ -272,6 +278,16 @@ void ActivityManager::replaceActivity(std::unique_ptr<Activity>&& newActivity) {
 
 void ActivityManager::goToFileTransfer() {
   replaceActivity(std::make_unique<CrossPointWebServerActivity>(renderer, mappedInput));
+}
+
+void ActivityManager::goToBleShare(const bool backgroundLaunch, std::string returnBookPath) {
+  auto activity =
+      makeUniqueNoThrow<BleShareActivity>(renderer, mappedInput, backgroundLaunch, std::move(returnBookPath));
+  if (!activity) {
+    LOG_ERR("ACT", "OOM: BleShareActivity");
+    return;
+  }
+  replaceActivity(std::move(activity));
 }
 
 void ActivityManager::goToJoinNetwork() {
@@ -426,6 +442,24 @@ bool ActivityManager::remoteClick(const RemoteButton button) {
 bool ActivityManager::isForegroundHomeShown() const {
   return pendingAction == PendingAction::None && currentActivity && currentActivity->name == "Home" &&
          paintedVisit.load(std::memory_order_acquire) == screenVisit;
+}
+
+bool ActivityManager::isForegroundBleShare() const {
+  return pendingAction == PendingAction::None && currentActivity && currentActivity->name == "BleShare";
+}
+
+bool ActivityManager::canInterruptForBleShare() const {
+  if (pendingAction != PendingAction::None || !currentActivity ||
+      paintedVisit.load(std::memory_order_acquire) != screenVisit) {
+    return false;
+  }
+  const auto& n = currentActivity->name;
+  if (n == "Home" || n == "Library" || n == "FileBrowser") return true;
+  if (isForegroundReader()) {
+    auto* reader = static_cast<ReaderActivity*>(currentActivity.get());
+    return reader->pageRendered.load(std::memory_order_acquire) && !reader->inputOverPage();
+  }
+  return false;
 }
 
 bool ActivityManager::remoteShortcut(const bool readerMenu) {

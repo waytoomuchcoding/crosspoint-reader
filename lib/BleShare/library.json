@@ -1,0 +1,11 @@
+{
+  "name": "BleShare",
+  "version": "0.1.0",
+  "description": "Authenticated BLE/stream companion file transfer protocol and receiver state machine for CrossPoint readers.",
+  "build": {
+    "srcDir": "src",
+    "includeDir": "include"
+  },
+  "frameworks": "*",
+  "platforms": "*"
+}

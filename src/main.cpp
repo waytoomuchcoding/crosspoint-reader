@@ -46,6 +46,7 @@
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/BleShareService.h"
 #include "network/BookSyncService.h"
 #include "platform/UsbSerialJtagHandoff.h"
 #include "util/ButtonNavigator.h"
@@ -319,7 +320,7 @@ bool deliver(const bleturner::Action action) {
 }
 
 bool yieldForRadio() { return true; }        // the reader keeps no parser alive between pages
-bool fileTransferActive() { return false; }  // file transfer is a screen of its own: the radio is off there
+bool fileTransferActive() { return bleshare::ownsRadio(); }
 void restartIntoBook() { silentRestartToReader(); }
 
 // The radio needs a steady clock while it is up or changing state.
@@ -480,6 +481,7 @@ void enterDeepSleep(bool fromTimeout = false) {
 
   // Stop Bluetooth before plugin delivery can start WiFi; a timeout defers delivery.
   deepSleepInProgress = true;
+  bleshare::stopRadio();
   const bool bluetoothStopped = bleturner::beforeSleep(2000);
   if (!bluetoothStopped) LOG_ERR("SLP", "Bluetooth did not stop; deferring sleep-event delivery");
   deliverSleepPluginEvents(bluetoothStopped);
@@ -696,6 +698,7 @@ void setup() {
   // timestamps, loan-expiry checks).
   trustedtime::init();
   bleturner::begin(pageturner::host, SETTINGS.ble);
+  bleshare::begin(&fontCacheManager);
 
   // Brightness and warmth are always restored. A normal wake starts with the
   // light off unless Restore Light on Wake is enabled; silent maintenance
@@ -876,6 +879,24 @@ void loop() {
   scene.wifiOn = WiFi.getMode() != WIFI_MODE_NULL;
   const bool remoteActed = bleturner::tick(scene);
 
+  bleshare::Scene shareScene{};
+  shareScene.shareScreenForeground = activityManager.isForegroundBleShare();
+  shareScene.canShowIncomingPopup = activityManager.canInterruptForBleShare();
+  shareScene.inReader = activityManager.isReaderActivity();
+  shareScene.pageTurnerWantsRadio =
+      bleturner::holdsHeap() || (remoteContext && SETTINGS.ble.enabled != 0 && SETTINGS.ble.peerAddr[0] != '\0');
+  shareScene.storageBusy = scene.storageBusy;
+  shareScene.wifiOn = scene.wifiOn;
+  shareScene.localActivity = gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.wasTouchActivity();
+  if (shareScene.inReader) {
+    shareScene.currentBookPath = APP_STATE.openEpubPath;
+  }
+  const bool bleShareActed = bleshare::tick(shareScene);
+  std::string bleReturnBook;
+  if (bleshare::consumeIncomingLaunch(bleReturnBook)) {
+    activityManager.goToBleShare(/*backgroundLaunch=*/true, std::move(bleReturnBook));
+  }
+
   if (activityManager.requiresExclusiveStorageLoop()) {
     // USB Drive handed the raw SD card to the host. Do not run screenshots,
     // sleep, shortcuts, or normal navigation while its filesystem is detached.
@@ -938,7 +959,7 @@ void loop() {
   // Check for any user activity (button press or release) or active background work
   static unsigned long lastActivityTime = millis();
   if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.wasTouchActivity() || halTiltSensor.hadActivity() ||
-      remoteActed || activityManager.preventAutoSleep()) {
+      remoteActed || bleShareActed || activityManager.preventAutoSleep()) {
     lastActivityTime = millis();         // Reset inactivity timer
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
   }
@@ -1113,7 +1134,8 @@ void loop() {
     powerManager.setPowerSaving(false);  // Make sure we're at full performance when skipLoopDelay is requested
     yield();                             // Give FreeRTOS a chance to run tasks, but return immediately
   } else {
-    if (millis() - lastActivityTime >= HalPowerManager::IDLE_POWER_SAVING_MS && !pageturner::holdsCpu.load()) {
+    if (millis() - lastActivityTime >= HalPowerManager::IDLE_POWER_SAVING_MS && !pageturner::holdsCpu.load() &&
+        !bleshare::ownsRadio()) {
       // If we've been inactive for a while, increase the delay to save power
       powerManager.setPowerSaving(true);  // Lower CPU frequency after extended inactivity
       // Sleep in short slices and wake the poll as soon as a button contact closes.
