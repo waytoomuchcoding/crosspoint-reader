@@ -177,6 +177,13 @@ TEST_F(TxtCoverMetaTest, BookCoverStoreValidatesBmpPayloadAndMigratesAssetsOnRen
   auto badBpp = validCanonical;
   badBpp[28] = 24;
   EXPECT_FALSE(BookCoverStore::validate1BitBmpPayload(badBpp.data(), badBpp.size()));
+  // INT32_MIN biHeight must not overflow or wrap 32-bit size computation
+  auto intMinH = validCanonical;
+  intMinH[22] = 0x00;
+  intMinH[23] = 0x00;
+  intMinH[24] = 0x00;
+  intMinH[25] = 0x80;
+  EXPECT_FALSE(BookCoverStore::validate1BitBmpPayload(intMinH.data(), intMinH.size()));
 
   const std::string oldBook = "/Books/draft.txt";
   const std::string newBook = "/Books/final.txt";

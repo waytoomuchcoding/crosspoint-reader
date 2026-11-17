@@ -70,6 +70,6 @@ bool pairLatestChat(std::string_view botToken, std::string& chatIdOut, std::stri
 
 // shouldStop (optional): checked before each update batch; true ends the sync.
 bool syncPendingFiles(SyncSummary& summaryOut, std::string& errOut, ProgressCallback progressCb = nullptr,
-                      const std::function<bool()>& shouldStop = nullptr);
+                      const std::function<bool()>& shouldStop = nullptr, const bool* cancelFlag = nullptr);
 
 }  // namespace telegram

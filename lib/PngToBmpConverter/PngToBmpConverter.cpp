@@ -502,8 +502,13 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
     return false;
   }
 
-  // Initialize decode context
-  PngDecodeContext ctx = {};
+  // Initialize decode context on heap so ~2.85 KB never sits on loopTask's 8 KB stack.
+  auto ctxOwner = makeUniqueNoThrow<PngDecodeContext>();
+  if (!ctxOwner) {
+    LOG_ERR("PNG", "OOM: PngDecodeContext (%zu bytes)", sizeof(PngDecodeContext));
+    return false;
+  }
+  PngDecodeContext& ctx = *ctxOwner;
   ctx.file = &pngFile;
   ctx.width = width;
   ctx.height = height;

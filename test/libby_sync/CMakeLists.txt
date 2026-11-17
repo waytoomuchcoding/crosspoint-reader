@@ -5,7 +5,6 @@ add_executable(LibbySyncTest
   ${REPO_ROOT}/test/adept_drm/stubs/HostSyncFakes.cpp
   ${REPO_ROOT}/src/network/LibbyClient.cpp
   ${REPO_ROOT}/src/network/AdeptFulfiller.cpp
-  ${REPO_ROOT}/src/util/LoanBadgeUtils.cpp
   ${REPO_ROOT}/src/util/StringUtils.cpp
   ${REPO_ROOT}/lib/Utf8/Utf8.cpp
 )

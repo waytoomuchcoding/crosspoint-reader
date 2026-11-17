@@ -189,6 +189,7 @@ class ZhLookupActivity final : public Activity {
   // Pop-up selection: a dictionary word starting at selStart.
   size_t selStart = 0;
   zh::WordMatch matches[zh::MAX_MATCHES];
+  zh::WordMatch previewMatches[zh::MAX_MATCHES];
   int matchCount = 0;
   int matchIndex = 0;
   std::unique_ptr<uint8_t[]> entryBuf;

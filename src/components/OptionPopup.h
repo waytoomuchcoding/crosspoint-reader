@@ -186,25 +186,6 @@ class OptionPopup {
     const int totalOptions = static_cast<int>(ownedStrings.size());
     const uint8_t count = static_cast<uint8_t>(totalOptions > MAX_OPTIONS ? MAX_OPTIONS : totalOptions);
 
-    Rect customDialogRect{};
-    std::vector<Rect> customOptionRects;
-    if (GUI.renderCustomOptionPopup(renderer, title.c_str(), headline.c_str(), message.c_str(), ownedStrings, count,
-                                    selectedIndex, customDialogRect, customOptionRects)) {
-      frame.hit(fui::Rect{static_cast<int16_t>(customDialogRect.x), static_cast<int16_t>(customDialogRect.y),
-                          static_cast<int16_t>(customDialogRect.width), static_cast<int16_t>(customDialogRect.height)},
-                ACTION_CHROME, 0, fui::InputTouch);
-      const size_t hitCount = std::min<size_t>(count, customOptionRects.size());
-      for (size_t i = 0; i < hitCount; ++i) {
-        const Rect& r = customOptionRects[i];
-        frame.hit(fui::Rect{static_cast<int16_t>(r.x), static_cast<int16_t>(r.y), static_cast<int16_t>(r.width),
-                            static_cast<int16_t>(r.height)},
-                  ACTION_OPTION, static_cast<int16_t>(i), fui::InputTouch);
-      }
-      interactions.publish();
-      uiReady = true;
-      return;
-    }
-
     fui::DialogOption options[MAX_OPTIONS];
     for (uint8_t i = 0; i < count; ++i) {
       options[i].label = ownedStrings[i].c_str();
@@ -267,14 +248,10 @@ class OptionPopup {
     const int16_t height = fui::clampI16(fui::optionDialogHeight(target, props, width), 0, screen.height);
     const fui::Rect dialogRect = fui::centeredRect(screen, fui::Size{width, height});
 
-    const Rect popupRect{dialogRect.x, dialogRect.y, dialogRect.width, dialogRect.height};
-    GUI.drawOptionPopupBackdrop(renderer, popupRect);
-
     // Chrome guard first, options after: route() scans newest-first, so the
     // option buttons win inside the dialog and the guard absorbs the rest.
     frame.hit(dialogRect, ACTION_CHROME, 0, fui::InputTouch);
     fui::optionDialog(frame, dialogRect, props);
-    GUI.drawOptionPopupForeground(renderer, popupRect);
     // Atomically make this generation the one handleInput() reads, now that
     // every hit() call for this frame is done.
     interactions.publish();

@@ -49,4 +49,13 @@ bool removeBookFile(const std::string& path) {
 
 void moveBookSidecarState(const std::string& oldPath, const std::string& newPath) {
   BookCoverStore::moveBoundAssets(oldPath, newPath);
+  for (const char* suffix : {".key", ".rights"}) {
+    const std::string src = oldPath + suffix;
+    if (!Storage.exists(src.c_str())) continue;
+    const std::string dst = newPath + suffix;
+    if (Storage.exists(dst.c_str())) Storage.remove(dst.c_str());
+    if (!Storage.rename(src.c_str(), dst.c_str())) {
+      LOG_ERR("BookCache", "Failed to move sidecar %s -> %s", src.c_str(), dst.c_str());
+    }
+  }
 }

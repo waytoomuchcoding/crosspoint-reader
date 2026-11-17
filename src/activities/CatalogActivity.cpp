@@ -157,7 +157,11 @@ void CatalogActivity::onDownloadProgress(const size_t downloaded, const size_t t
   // Home cancels immediately; other configured actions are deferred to the
   // next main-loop pass by the transfer input pump.
   mappedInput.update(true);
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) cancelDownload = true;
+  if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
+      mappedInput.wasReleased(MappedInputManager::Button::Back) ||
+      mappedInput.isPressed(MappedInputManager::Button::Back)) {
+    cancelDownload = true;
+  }
   if (mappedInput.wasHomeGesture()) cancelDownload = goHomeAfterCancel = true;
   routeTouch(mappedInput);
   const int percent = total > 0 ? static_cast<int>(static_cast<uint64_t>(downloaded) * 100 / total) : 0;

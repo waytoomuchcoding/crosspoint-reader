@@ -9,6 +9,7 @@
 #include <Memory.h>
 #include <Txt.h>
 #include <TxtCoverMeta.h>
+#include <Utf8.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -16,11 +17,7 @@
 #include "I18nKeys.h"
 #include "MappedInputManager.h"
 #include "activities/ActivityResult.h"
-#include "components/ProceduralBookCover.h"
 #include "components/UITheme.h"
-#include "components/themes/shibadesk/ShibaArt.h"
-#include "components/themes/shibadesk/ShibaDeskChrome.h"
-#include "components/themes/shibadesk/ShibaStatusBar.h"
 #include "fontIds.h"
 #include "util/BookCoverStore.h"
 
@@ -35,23 +32,67 @@ bool isSupportedImageFilename(const std::string& name) {
   return FsHelpers::hasJpgExtension(name) || FsHelpers::hasPngExtension(name) || FsHelpers::hasBmpExtension(name);
 }
 
+bool hasCjkCodepoints(const char* s) {
+  if (!s) return false;
+  const auto* p = reinterpret_cast<const unsigned char*>(s);
+  while (*p) {
+    const uint32_t cp = utf8NextCodepoint(&p);
+    if ((cp >= 0x2E80 && cp <= 0x9FFF) || (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0xFF00 && cp <= 0xFFEF) ||
+        (cp >= 0x20000 && cp <= 0x2FA1F)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+EpdFontFamily::Style styleForText(const char* s, const bool wantBold) {
+  return (wantBold && !hasCjkCodepoints(s)) ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
+}
+
 std::string formatKbSize(const size_t bytes) {
   char buf[32];
   if (bytes >= 1024 * 1024) {
-    std::snprintf(buf, sizeof(buf), "%.1f MB", static_cast<double>(bytes) / (1024.0 * 1024.0));
+    const unsigned tenths = static_cast<unsigned>((bytes * 10u + (512u * 1024u)) / (1024u * 1024u));
+    std::snprintf(buf, sizeof(buf), "%u.%u MB", tenths / 10u, tenths % 10u);
   } else {
     std::snprintf(buf, sizeof(buf), "%u KB", static_cast<unsigned>(std::max<size_t>(1, (bytes + 512) / 1024)));
   }
   return buf;
 }
 
-void drawThemedPanel(const GfxRenderer& renderer, const Rect& r, const bool isShiba, const bool doubleFrame) {
-  if (isShiba) {
-    shibadesk::drawShibaCard(renderer, r, doubleFrame, 4);
-    return;
-  }
+void drawPanel(const GfxRenderer& renderer, const Rect& r, const bool doubleFrame) {
   renderer.fillRect(r.x, r.y, r.width, r.height, false);
   renderer.drawRect(r.x, r.y, r.width, r.height, doubleFrame ? 2 : 1, true);
+}
+
+void drawDefaultTxtPreviewCard(const GfxRenderer& renderer, const int x, const int y, const int w, const int h,
+                               const std::string& title, const std::string& author, const char* extTag) {
+  renderer.fillRect(x, y, w, h, false);
+  renderer.drawRect(x, y, w, h, 2, true);
+  renderer.drawRect(x + 6, y + 6, w - 12, h - 12, 1, true);
+
+  const int tagW = renderer.getTextWidth(UI_6_FONT_ID, extTag) + 12;
+  const int tagX = x + (w - tagW) / 2;
+  renderer.fillRect(tagX, y + 16, tagW, 18, true);
+  renderer.drawText(UI_6_FONT_ID, tagX + 6, y + 18, extTag, false);
+
+  const char* shownTitle = title.empty() ? extTag : title.c_str();
+  const EpdFontFamily::Style tStyle = styleForText(shownTitle, true);
+  const auto lines = renderer.wrappedText(SMALL_FONT_ID, shownTitle, w - 24, 4, tStyle);
+  const int lh = renderer.getLineHeight(SMALL_FONT_ID);
+  int ty = y + 52;
+  for (const auto& line : lines) {
+    const int lw = renderer.getTextWidth(SMALL_FONT_ID, line.c_str(), tStyle);
+    renderer.drawText(SMALL_FONT_ID, x + (w - lw) / 2, ty, line.c_str(), true, tStyle);
+    ty += lh + 2;
+  }
+
+  if (!author.empty()) {
+    const std::string fitAuthor = renderer.truncatedText(UI_6_FONT_ID, author.c_str(), w - 24);
+    const int aw = renderer.getTextWidth(UI_6_FONT_ID, fitAuthor.c_str());
+    renderer.drawLine(x + 20, y + h - 38, x + w - 20, y + h - 38, true);
+    renderer.drawText(UI_6_FONT_ID, x + (w - aw) / 2, y + h - 30, fitAuthor.c_str(), true);
+  }
 }
 
 }  // namespace
@@ -67,7 +108,7 @@ TxtCoverPickerActivity::PickerLayout TxtCoverPickerActivity::computeLayout() con
   L.rightX = L.safe.x + L.safe.width - 20;
   L.totalW = std::max(240, L.rightX - L.leftX);
 
-  const int topAfterHeader = UITheme::isShibaDesk() ? (L.safe.y + 82) : (L.header.y + L.header.height + 10);
+  const int topAfterHeader = L.header.y + L.header.height + 10;
   L.summaryY = topAfterHeader;
   L.summaryH = 64;
 
@@ -281,47 +322,35 @@ void TxtCoverPickerActivity::loop() {
 
 void TxtCoverPickerActivity::render(RenderLock&&) {
   const PickerLayout L = computeLayout();
-  const bool isShiba = UITheme::isShibaDesk();
 
   auto drawBody = [&]() {
     renderer.clearScreen();
-    if (isShiba) {
-      shibadesk::drawStaggeredDotBackground(renderer, Rect(0, L.safe.y + 36, renderer.getScreenWidth(), L.safe.height));
-      shibadesk::drawShibaStatusBar(renderer, tr(STR_TXT_COVER_TITLE), bookFilename_.c_str());
-    } else {
-      GUI.drawHeader(renderer, L.header, tr(STR_TXT_COVER_TITLE), bookFilename_.c_str());
-    }
+    GUI.drawHeader(renderer, L.header, tr(STR_TXT_COVER_TITLE), bookFilename_.c_str());
 
-    drawThemedPanel(renderer, Rect(L.leftX, L.summaryY, L.totalW, L.summaryH), isShiba, false);
-    if (isShiba) {
-      shibadesk::stampShibaOnLedge(renderer, L.rightX - shibadesk::SHIBA_SPRITE_W - 6, L.summaryY,
-                                   shibadesk::ShibaPose::LoafAwake);
-    }
+    drawPanel(renderer, Rect(L.leftX, L.summaryY, L.totalW, L.summaryH), false);
 
-    const int summaryTextW = std::max(80, L.totalW - (isShiba ? (shibadesk::SHIBA_SPRITE_W + 32) : 32));
-    const std::string promptLine =
-        shibadesk::clampSingleLine(renderer, UI_6_FONT_ID, tr(STR_TXT_COVER_SETTING_FOR), summaryTextW);
+    const int summaryTextW = std::max(80, L.totalW - 32);
+    const std::string promptLine = renderer.truncatedText(UI_6_FONT_ID, tr(STR_TXT_COVER_SETTING_FOR), summaryTextW);
     renderer.drawText(UI_6_FONT_ID, L.leftX + 14, L.summaryY + 11, promptLine.c_str(), true);
 
     std::string bookDesc = resolvedTitle_;
     if (!resolvedAuthor_.empty()) {
       bookDesc += " · " + resolvedAuthor_;
     }
-    const int bookFont = shibadesk::hasCjkCodepoints(bookDesc.c_str()) ? SMALL_FONT_ID : UI_10_FONT_ID;
-    const EpdFontFamily::Style bookStyle = shibadesk::styleForText(bookDesc.c_str(), true);
-    const std::string clampedBook =
-        shibadesk::clampSingleLine(renderer, bookFont, bookDesc.c_str(), summaryTextW, bookStyle);
+    const int bookFont = hasCjkCodepoints(bookDesc.c_str()) ? SMALL_FONT_ID : UI_10_FONT_ID;
+    const EpdFontFamily::Style bookStyle = styleForText(bookDesc.c_str(), true);
+    const std::string clampedBook = renderer.truncatedText(bookFont, bookDesc.c_str(), summaryTextW, bookStyle);
     renderer.drawText(bookFont, L.leftX + 14, L.summaryY + 33, clampedBook.c_str(), true, bookStyle);
 
     // Left Column: SD Card Image Candidates
-    drawThemedPanel(renderer, Rect(L.leftX, L.panesTopY, L.leftPaneW, L.panesH), isShiba, false);
+    drawPanel(renderer, Rect(L.leftX, L.panesTopY, L.leftPaneW, L.panesH), false);
     renderer.fillRect(L.leftX + 2, L.panesTopY + 2, L.leftPaneW - 4, 30, true);
     char leftHdr[64];
     const int imgCount = std::max(0, static_cast<int>(options_.size()) - 1);
     std::snprintf(leftHdr, sizeof(leftHdr), tr(STR_TXT_COVER_SD_IMAGES), imgCount);
-    const EpdFontFamily::Style leftHdrStyle = shibadesk::styleForText(leftHdr, true);
+    const EpdFontFamily::Style leftHdrStyle = styleForText(leftHdr, true);
     const std::string clampedLeftHdr =
-        shibadesk::clampSingleLine(renderer, SMALL_FONT_ID, leftHdr, L.leftPaneW - 20, leftHdrStyle);
+        renderer.truncatedText(SMALL_FONT_ID, leftHdr, L.leftPaneW - 20, leftHdrStyle);
     renderer.drawText(SMALL_FONT_ID, L.leftX + 12, L.panesTopY + 8, clampedLeftHdr.c_str(), false, leftHdrStyle);
 
     const int totalOpts = static_cast<int>(options_.size());
@@ -342,19 +371,12 @@ void TxtCoverPickerActivity::render(RenderLock&&) {
         renderer.drawRoundedRect(rx, rowY, rw, L.rowHeight, 1, 6, true);
       }
 
-      int textLeft = rx + 10;
-      if (isShiba) {
-        const shibadesk::ShibaIcon rowIcon = (i == 0) ? shibadesk::ShibaIcon::Book : shibadesk::ShibaIcon::Image;
-        shibadesk::drawIcon(renderer, rowIcon, rx + 10, rowY + 12, !sel);
-        textLeft = rx + 30;
-      }
-
+      const int textLeft = rx + 10;
       const int maxRowTextW = std::max(36, rx + rw - 8 - textLeft);
-      const EpdFontFamily::Style rStyle = shibadesk::styleForText(options_[i].displayName.c_str(), sel);
+      const EpdFontFamily::Style rStyle = styleForText(options_[i].displayName.c_str(), sel);
       const std::string rTitle =
-          shibadesk::clampSingleLine(renderer, SMALL_FONT_ID, options_[i].displayName.c_str(), maxRowTextW, rStyle);
-      const std::string rSub =
-          shibadesk::clampSingleLine(renderer, UI_6_FONT_ID, options_[i].subtitle.c_str(), maxRowTextW);
+          renderer.truncatedText(SMALL_FONT_ID, options_[i].displayName.c_str(), maxRowTextW, rStyle);
+      const std::string rSub = renderer.truncatedText(UI_6_FONT_ID, options_[i].subtitle.c_str(), maxRowTextW);
 
       renderer.drawText(SMALL_FONT_ID, textLeft, rowY + 9, rTitle.c_str(), !sel, rStyle);
       renderer.drawText(UI_6_FONT_ID, textLeft, rowY + 34, rSub.c_str(), !sel);
@@ -362,10 +384,8 @@ void TxtCoverPickerActivity::render(RenderLock&&) {
     }
 
     if (L.panesTopY + L.panesH - rowY >= 44) {
-      const std::string tip1 =
-          shibadesk::clampSingleLine(renderer, UI_6_FONT_ID, tr(STR_TXT_COVER_TIP_1), L.leftPaneW - 20);
-      const std::string tip2 =
-          shibadesk::clampSingleLine(renderer, UI_6_FONT_ID, tr(STR_TXT_COVER_TIP_2), L.leftPaneW - 20);
+      const std::string tip1 = renderer.truncatedText(UI_6_FONT_ID, tr(STR_TXT_COVER_TIP_1), L.leftPaneW - 20);
+      const std::string tip2 = renderer.truncatedText(UI_6_FONT_ID, tr(STR_TXT_COVER_TIP_2), L.leftPaneW - 20);
       const int midLeftX = L.leftX + L.leftPaneW / 2;
       renderer.drawText(UI_6_FONT_ID, midLeftX - renderer.getTextWidth(UI_6_FONT_ID, tip1.c_str()) / 2,
                         L.panesTopY + L.panesH - 40, tip1.c_str(), true);
@@ -374,12 +394,11 @@ void TxtCoverPickerActivity::render(RenderLock&&) {
     }
 
     // Right Column: Live 1:1 1-Bit Atkinson Cover Preview
-    drawThemedPanel(renderer, Rect(L.rightPaneX, L.panesTopY, L.rightPaneW, L.panesH), isShiba, true);
+    drawPanel(renderer, Rect(L.rightPaneX, L.panesTopY, L.rightPaneW, L.panesH), true);
     renderer.fillRect(L.rightPaneX + 4, L.panesTopY + 4, L.rightPaneW - 8, 28, true);
     const char* rawRightHdr = tr(STR_TXT_COVER_PREVIEW_HEADER);
-    const EpdFontFamily::Style rightHdrStyle = shibadesk::styleForText(rawRightHdr, true);
-    const std::string rightHdr =
-        shibadesk::clampSingleLine(renderer, SMALL_FONT_ID, rawRightHdr, L.rightPaneW - 16, rightHdrStyle);
+    const EpdFontFamily::Style rightHdrStyle = styleForText(rawRightHdr, true);
+    const std::string rightHdr = renderer.truncatedText(SMALL_FONT_ID, rawRightHdr, L.rightPaneW - 16, rightHdrStyle);
     renderer.drawText(
         SMALL_FONT_ID,
         L.rightPaneX + (L.rightPaneW - renderer.getTextWidth(SMALL_FONT_ID, rightHdr.c_str(), rightHdrStyle)) / 2,
@@ -389,9 +408,7 @@ void TxtCoverPickerActivity::render(RenderLock&&) {
     const int covY = L.panesTopY + 44;
     if (!drawSelectedPreviewBmp(covX, covY)) {
       const char* extTag = FsHelpers::hasMarkdownExtension(bookPath_) ? "MD" : "TXT";
-      ProceduralBookCover::drawProceduralTxtCover(renderer, covX, covY, PREVIEW_W, PREVIEW_H, resolvedTitle_,
-                                                  resolvedAuthor_, extTag);
-      renderer.drawRect(covX - 1, covY - 1, PREVIEW_W + 2, PREVIEW_H + 2, 2, true);
+      drawDefaultTxtPreviewCard(renderer, covX, covY, PREVIEW_W, PREVIEW_H, resolvedTitle_, resolvedAuthor_, extTag);
     }
 
     const int midRightX = L.rightPaneX + L.rightPaneW / 2;
@@ -403,7 +420,7 @@ void TxtCoverPickerActivity::render(RenderLock&&) {
           tr(STR_TXT_COVER_PREVIEW_NOTE_3),
       };
       for (int n = 0; n < 3; ++n) {
-        const std::string line = shibadesk::clampSingleLine(renderer, UI_6_FONT_ID, notes[n], L.rightPaneW - 20);
+        const std::string line = renderer.truncatedText(UI_6_FONT_ID, notes[n], L.rightPaneW - 20);
         renderer.drawText(UI_6_FONT_ID, midRightX - renderer.getTextWidth(UI_6_FONT_ID, line.c_str()) / 2,
                           notesY + n * 18, line.c_str(), true);
       }
@@ -412,19 +429,15 @@ void TxtCoverPickerActivity::render(RenderLock&&) {
     renderer.fillRoundedRect(L.ctaRect.x, L.ctaRect.y, L.ctaRect.width, L.ctaRect.height, 8, Color::Black);
     renderer.drawRoundedRect(L.ctaRect.x + 3, L.ctaRect.y + 3, L.ctaRect.width - 6, L.ctaRect.height - 6, 1, 6, false);
     const char* rawCta = tr(STR_TXT_COVER_BIND_CTA);
-    const EpdFontFamily::Style ctaStyle = shibadesk::styleForText(rawCta, true);
-    const std::string ctaLabel =
-        shibadesk::clampSingleLine(renderer, SMALL_FONT_ID, rawCta, L.ctaRect.width - 14, ctaStyle);
+    const EpdFontFamily::Style ctaStyle = styleForText(rawCta, true);
+    const std::string ctaLabel = renderer.truncatedText(SMALL_FONT_ID, rawCta, L.ctaRect.width - 14, ctaStyle);
     renderer.drawText(
         SMALL_FONT_ID,
         L.ctaRect.x + (L.ctaRect.width - renderer.getTextWidth(SMALL_FONT_ID, ctaLabel.c_str(), ctaStyle)) / 2,
         L.ctaRect.y + std::max(2, (L.ctaRect.height - renderer.getTextHeight(SMALL_FONT_ID)) / 2) - 1, ctaLabel.c_str(),
         false, ctaStyle);
 
-    if (isShiba) {
-      shibadesk::drawShibaHardwareKeyHints(renderer, mappedInput, tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT),
-                                           tr(STR_DIR_RIGHT));
-    } else if (!mappedInput.hasTouch()) {
+    if (!mappedInput.hasTouch()) {
       const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
       GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     }

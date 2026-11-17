@@ -95,7 +95,6 @@ add_subdirectory(text_encoding)
 add_subdirectory(adept_drm)
 add_subdirectory(libby_sync)
 add_subdirectory(telegram_sync)
-add_subdirectory(shiba_text_wrap)
 
 add_subdirectory(absolute_grayscale)
 
@@ -137,3 +136,4 @@ add_test(NAME clipping_highlight_planes COMMAND ${Python3_EXECUTABLE} ${CMAKE_CU
 add_test(NAME clipping_selection_text COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_clipping_selection_text.py)
 
 add_test(NAME recursive_dictionary COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_recursive_dictionary.py)
+add_subdirectory(phase3_bug_proofs)

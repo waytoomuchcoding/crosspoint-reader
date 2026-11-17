@@ -27,7 +27,6 @@
 #include "components/icons/headerIcons.h"
 #include "components/icons/listIcons.h"
 #include "components/icons/search32.h"
-#include "components/themes/shibadesk/ShibaLibraryPresenter.h"
 #include "fontIds.h"
 #include "util/BookCacheUtils.h"
 
@@ -84,8 +83,6 @@ LibraryListActivity::LibraryListActivity(GfxRenderer& renderer, MappedInputManag
   tabPillMaxPad = 16;
 }
 
-LibraryListActivity::~LibraryListActivity() = default;
-
 void LibraryListActivity::onEnter() {
   // One lock across the base lifecycle AND the data phase: the base onEnter
   // schedules a paint, and the render task must not read the index or the
@@ -118,14 +115,6 @@ void LibraryListActivity::onEnter() {
     LOG_ERR("LIB", "index was built without duplicate detection");
   }
   resolvePinned();
-  if (UITheme::isShibaDesk()) {
-    if (!shibaPresenter) {
-      shibaPresenter = makeUniqueNoThrow<shibadesk::ShibaLibraryPresenter>(renderer, mappedInput);
-    }
-    if (shibaPresenter) shibaPresenter->onEnter();
-  } else {
-    shibaPresenter.reset();
-  }
 
   // Entered while Confirm was still held (typical when launched from the home
   // menu): ignore its release, or we would open whatever sits at row 0.
@@ -135,7 +124,6 @@ void LibraryListActivity::onEnter() {
 
 void LibraryListActivity::onExit() {
   index.close();
-  shibaPresenter.reset();
   Activity::onExit();
 }
 
@@ -255,14 +243,7 @@ void LibraryListActivity::activateIndex(const int index) {
 // an active search is already a flat list the reader narrowed down on purpose
 // ("find it, hold it, delete it"). Unfiltered Title/Author lists keep
 // collapse-to-groups. The Recent shelf always opens the row options menu.
-bool LibraryListActivity::bookOptionsMenuEligible() const {
-  if (groupsCollapsed) return false;
-  if (isRecentSort(sortOrder)) return true;
-  if (UITheme::isShibaDesk()) {
-    return activeTabIndex == TITLE_TAB || !query.empty() || !groupable();
-  }
-  return false;
-}
+bool LibraryListActivity::bookOptionsMenuEligible() const { return !groupsCollapsed && isRecentSort(sortOrder); }
 
 bool LibraryListActivity::deleteEligible() const { return !groupsCollapsed && (!query.empty() || !groupable()); }
 
@@ -278,7 +259,7 @@ void LibraryListActivity::onRowLongPress(const int index) {
   }
 }
 
-// Recent-shelf (and Shiba Mini-Cover shelf) long-press menu. Includes plain-text
+// Recent-shelf long-press menu. Includes plain-text
 // cover binding and encoding shortcuts for .txt/.md files across all themes.
 void LibraryListActivity::showRecentBookOptions(const int entry) {
   if (entry < 0 || entry >= listCount()) return;
@@ -390,7 +371,6 @@ void LibraryListActivity::resetAfterRebuild() {
   // Sort positions, group starts, and pinned rows all point into the old order.
   applyFilter();
   resolvePinned();
-  invalidateShibaCaches();
   auto& nav = activeNav();
   const int count = listCount();
   if (count == 0) {
@@ -417,7 +397,6 @@ void LibraryListActivity::promptRemoveRecentBook(const std::string& path, const 
     if (reopenIndex && !index.open(library::libraryIndexPath())) LOG_ERR("LIB", "cannot reopen library index");
     if (!result.isCancelled && RECENT_BOOKS.removeByPath(path)) {
       resolvePinned();
-      invalidateShibaCaches();
       closeRouting();
       auto& nav = activeNav();
       const int count = listCount();
@@ -501,7 +480,6 @@ void LibraryListActivity::openSearch() {
     if (result.isCancelled) return;
     query = std::get<KeyboardResult>(result.data).text;
     applyFilter();
-    invalidateShibaCaches();
     auto& nav = activeNav();
     if (!query.empty() && filteredCount == 0 && !degraded) {
       // Up from the tab bar reopens Search even with no results.
@@ -538,7 +516,6 @@ void LibraryListActivity::selectTab(const int index, const bool toggleIfActive) 
   applyFilter();
   activeTabIndex = index;
   refreshOverlap();
-  invalidateShibaCaches();
   // Tab changes happen only while the bar owns focus. A tab's remembered row
   // must not pull focus back into the list after the switch.
   auto& nav = activeNav();
@@ -728,7 +705,6 @@ void LibraryListActivity::handleBackAction() {
   if (!query.empty()) {
     query.clear();
     applyFilter();
-    invalidateShibaCaches();
     nav.selected = 0;
     nav.top = 0;
     requestUpdate();
@@ -1039,17 +1015,6 @@ void LibraryListActivity::buildHeader(UiScreen& screen) {
 }
 
 void LibraryListActivity::buildScreen(UiScreen& screen) {
-  if (UITheme::isShibaDesk()) {
-    if (!shibaPresenter) {
-      shibaPresenter = makeUniqueNoThrow<shibadesk::ShibaLibraryPresenter>(renderer, mappedInput);
-      if (shibaPresenter) shibaPresenter->onEnter();
-    }
-    if (shibaPresenter) {
-      shibaPresenter->buildScreen(screen, makeShibaViewContext());
-      return;
-    }
-  }
-
   const auto& metrics = UITheme::getInstance().getMetrics();
   // The position readout owns the line above the hints; rows must not overlap
   // it.
@@ -1134,23 +1099,15 @@ void LibraryListActivity::render(RenderLock&& lock) {
 }
 
 void LibraryListActivity::drawFooter() {
+  drawPositionReadout();
+  drawHoldHelp();
+
   const bool backGoesHome = tabsFocused() && !groupsCollapsed && query.empty();
   const char* backLabel = backGoesHome ? tr(STR_HOME) : tr(STR_BACK);
   const char* confirmLabel = groupsCollapsed ? tr(STR_SELECT) : tr(STR_OPEN);
   const bool canSearch = tabsFocused() && !degraded;
-  const char* actionConfirm = tabsFocused() ? tr(STR_TOGGLE) : confirmLabel;
-  const char* actionPrev = canSearch ? tr(STR_SEARCH) : tr(STR_DIR_UP);
-  const char* actionNext = tr(STR_DIR_DOWN);
-
-  if (UITheme::isShibaDesk() && shibaPresenter) {
-    shibaPresenter->drawFooter(makeShibaViewContext(backLabel, actionConfirm, actionPrev, actionNext));
-    return;
-  }
-
-  drawPositionReadout();
-  drawHoldHelp();
-
-  const auto labels = mappedInput.mapLabels(backLabel, actionConfirm, actionPrev, actionNext);
+  const auto labels = mappedInput.mapLabels(backLabel, tabsFocused() ? tr(STR_TOGGLE) : confirmLabel,
+                                            canSearch ? tr(STR_SEARCH) : tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 
@@ -1181,84 +1138,6 @@ bool LibraryListActivity::resolveBookEntry(const int entry, std::string& path, s
   return !path.empty();
 }
 
-bool LibraryListActivity::shibaResolveBookTrampoline(void* user, const int entry, std::string& pathOut,
-                                                     std::string& titleOut, std::string& authorOut) {
-  return static_cast<LibraryListActivity*>(user)->resolveBookEntry(entry, pathOut, titleOut, authorOut);
-}
-
-bool LibraryListActivity::shibaResolveGroupTrampoline(void* user, const int groupEntry, std::string& headingOut,
-                                                      int& countOut) {
-  auto& self = *static_cast<LibraryListActivity*>(user);
-  headingOut.clear();
-  countOut = 0;
-  if (!self.groupsCollapsed || groupEntry < 0 || groupEntry >= self.groupCount || !self.groupStarts) return false;
-
-  const int startBook = self.groupStarts[groupEntry];
-  const int endBook =
-      (groupEntry + 1 < self.groupCount) ? static_cast<int>(self.groupStarts[groupEntry + 1]) : self.bookRowCount();
-  countOut = std::max(0, endBook - startBook);
-
-  std::string title;
-  std::string author;
-  if (isAuthorSort(self.sortOrder)) {
-    self.rowTextFor(startBook, title, author);
-    headingOut = author.empty() ? std::string(tr(STR_SHIBA_AUTHOR_UNKNOWN)) : author;
-  } else {
-    formatInitialHeading(self.titleInitialFor(startBook), headingOut);
-  }
-  return true;
-}
-
-void LibraryListActivity::shibaCloseIndexTrampoline(void* user) {
-  static_cast<LibraryListActivity*>(user)->index.close();
-}
-
-void LibraryListActivity::shibaReopenIndexTrampoline(void* user) {
-  auto& self = *static_cast<LibraryListActivity*>(user);
-  if (!self.index.isOpen() && !self.index.open(library::libraryIndexPath())) {
-    LOG_ERR("LIB", "cannot reopen library index after cover generation");
-  }
-}
-
-shibadesk::ShibaLibraryViewContext LibraryListActivity::makeShibaViewContext(const char* backLabel,
-                                                                             const char* confirmLabel,
-                                                                             const char* prevLabel,
-                                                                             const char* nextLabel) {
-  shibadesk::ShibaLibraryViewContext ctx;
-  ctx.user = this;
-  ctx.totalIndexedBooks = bookRowCount();
-  ctx.bookRowCount = bookRowCount();
-  ctx.listCount = listCount();
-  ctx.activeTab = activeTabIndex;
-  ctx.selectedEntry = selectedEntry();
-  ctx.sortOrderRaw = static_cast<uint8_t>(sortOrder);
-  ctx.isDescending = isDescending(sortOrder);
-  ctx.tabsFocused = tabsFocused();
-  ctx.degraded = degraded;
-  ctx.groupsCollapsed = groupsCollapsed;
-  ctx.filterFailed = filterFailed;
-  ctx.query = &query;
-  ctx.holdHelpText = currentHoldHelpText();
-  ctx.backHintLabel = backLabel;
-  ctx.confirmHintLabel = confirmLabel;
-  ctx.prevHintLabel = prevLabel;
-  ctx.nextHintLabel = nextLabel;
-  ctx.nav = &activeNav();
-  ctx.actionTab = ACTION_TAB;
-  ctx.actionSearch = ACTION_SEARCH;
-  ctx.actionRow = ACTION_ROW;
-  ctx.actionBack = ACTION_BACK;
-  ctx.resolveBookRow = &LibraryListActivity::shibaResolveBookTrampoline;
-  ctx.resolveCollapsedGroup = &LibraryListActivity::shibaResolveGroupTrampoline;
-  ctx.closeIndexTemporarily = &LibraryListActivity::shibaCloseIndexTrampoline;
-  ctx.reopenIndex = &LibraryListActivity::shibaReopenIndexTrampoline;
-  return ctx;
-}
-
-void LibraryListActivity::invalidateShibaCaches() {
-  if (shibaPresenter) shibaPresenter->invalidateCaches();
-}
-
 void LibraryListActivity::launchChildTxtTool(std::unique_ptr<Activity> child, const char* oomLabel) {
   const bool reopenIndex = index.isOpen();
   index.close();
@@ -1268,7 +1147,6 @@ void LibraryListActivity::launchChildTxtTool(std::unique_ptr<Activity> child, co
     return;
   }
 
-  invalidateShibaCaches();
   startActivityForResult(std::move(child), [this, reopenIndex](const ActivityResult& result) {
     swallowHeldReleases();
     {
@@ -1281,7 +1159,6 @@ void LibraryListActivity::launchChildTxtTool(std::unique_ptr<Activity> child, co
       if (!result.isCancelled) {
         resetAfterRebuild();
       }
-      invalidateShibaCaches();
     }
     closeRouting();
     requestUpdate(true);

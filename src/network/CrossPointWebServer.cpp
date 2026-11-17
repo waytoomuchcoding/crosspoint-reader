@@ -36,6 +36,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <string_view>
 
 #include "ClippingStore.h"
@@ -452,8 +453,9 @@ void CrossPointWebServer::begin() {
   // If-None-Match is collected so static pages and plugin files can answer conditional GETs with 304,
   // and Host for the captive-portal check
   const char* collectedHeaders[] = {"Depth",      "Destination", "Overwrite",     "If",
-                                    "Lock-Token", "Timeout",     "If-None-Match", "Host"};
-  server->collectHeaders(collectedHeaders, 8);
+                                    "Lock-Token", "Timeout",     "If-None-Match", "Host",
+                                    "Content-Type"};
+  server->collectHeaders(collectedHeaders, std::size(collectedHeaders));
   server->addHandler(new WebDAVHandler());  // Note: WebDAVHandler will be deleted by WebServer when server is stopped
   LOG_DBG("WEB", "WebDAV handler initialized");
 
@@ -2097,6 +2099,16 @@ const char* pluginContentType(const String& file) {
 
 }  // namespace
 
+bool CrossPointWebServer::requireJsonContentType() const {
+  const String ct = server->header("Content-Type");
+  if (strncasecmp(ct.c_str(), "application/json", 16) != 0 ||
+      (ct.length() > 16 && ct[16] != ';' && ct[16] != ' ' && ct[16] != '\t')) {
+    server->send(415, "application/json", "{\"error\":\"Content-Type must be application/json\"}");
+    return false;
+  }
+  return true;
+}
+
 bool CrossPointWebServer::readJsonBody(JsonDocument& out) const {
   if (!server->hasArg("plain")) {
     server->send(400, "application/json", "{\"error\":\"missing body\"}");
@@ -3519,6 +3531,7 @@ void CrossPointWebServer::handleGetTelegram() const {
 }
 
 void CrossPointWebServer::handlePostTelegram() {
+  if (!requireJsonContentType()) return;
   TELEGRAM_STORE.loadFromFile();
   JsonDocument req;
   if (!readJsonBody(req)) return;
@@ -3610,6 +3623,7 @@ void CrossPointWebServer::handleGetLibby() const {
 }
 
 void CrossPointWebServer::handlePostLibby() {
+  if (!requireJsonContentType()) return;
   JsonDocument req;
   if (!readJsonBody(req)) return;
   const std::string action = req["action"] | "";
@@ -3648,6 +3662,7 @@ void CrossPointWebServer::handlePostLibby() {
 }
 
 void CrossPointWebServer::handlePostTxtCoverMeta() {
+  if (!requireJsonContentType()) return;
   JsonDocument req;
   if (!readJsonBody(req)) return;
 
@@ -3657,7 +3672,8 @@ void CrossPointWebServer::handlePostTxtCoverMeta() {
     server->send(400, "application/json", "{\"error\":\"invalid txt/md path\"}");
     return;
   }
-  const std::string path = FsHelpers::normalisePath(rawPath);
+  const std::string stripped = FsHelpers::normalisePath(rawPath);
+  const std::string path = stripped.empty() ? "/" : ("/" + stripped);
   if (!protectedpaths::isPluginPath(path) || path.find("/.") != std::string::npos || !txtmeta::isTxtOrMdPath(path) ||
       !Storage.exists(path.c_str())) {
     server->send(400, "application/json", "{\"error\":\"invalid txt/md path\"}");

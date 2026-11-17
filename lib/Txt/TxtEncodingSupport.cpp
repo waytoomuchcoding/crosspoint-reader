@@ -210,7 +210,7 @@ bool readEncodingPreview(const std::string& filepath, const size_t byteOffset, c
 }
 
 size_t scanChapterHeadings(const std::string& filepath, const TextEncoding activeEncoding, BookMetadataCache& cache,
-                           bool& hasCjk) {
+                           bool& hasCjk, std::string* detectedLangOut) {
   HalFile src;
   if (!Storage.openFileForRead("TXT", filepath, src)) {
     return 0;
@@ -251,9 +251,9 @@ size_t scanChapterHeadings(const std::string& filepath, const TextEncoding activ
           continue;
         }
         if (!lineOverflowed) {
-          if (lineBuf.size() < MAX_LINE_LEN) {
-            lineBuf.push_back(c);
-          } else {
+          lineBuf.push_back(c);
+          if (lineBuf.size() >= MAX_LINE_LEN &&
+              (i + 1 == len || (static_cast<uint8_t>(utf8[i + 1]) & 0xC0) != 0x80)) {
             lineOverflowed = true;
             lineBuf.clear();
           }
@@ -271,6 +271,9 @@ size_t scanChapterHeadings(const std::string& filepath, const TextEncoding activ
     }
     if (decoder.sawCjk()) {
       hasCjk = true;
+    }
+    if (detectedLangOut) {
+      *detectedLangOut = decoder.detectedLanguage(hasCjk);
     }
   }
   src.close();

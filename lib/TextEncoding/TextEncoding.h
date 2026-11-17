@@ -42,6 +42,25 @@ class TextDecoder {
   void reset(TextEncoding encoding);
   TextEncoding encoding() const { return encoding_; }
   bool sawCjk() const { return sawCjk_; }
+  bool sawKana() const { return kanaCount_ > 0; }
+  bool sawHangul() const { return hangulCount_ > 0; }
+  const char* detectedLanguage(bool fallbackHasCjk = false) const {
+    const uint64_t cjkLetters = static_cast<uint64_t>(hanCount_) + kanaCount_ + hangulCount_;
+    if (cjkLetters == 0) {
+      return (latinCount_ == 0 && fallbackHasCjk) ? "zh" : "en";
+    }
+    // Predominantly Latin books with occasional CJK names/quotes ("Confucius (孔子)...") stay "en".
+    if (cjkLetters * 5 < static_cast<uint64_t>(latinCount_)) {
+      return "en";
+    }
+    if (hangulCount_ > kanaCount_ && static_cast<uint64_t>(hangulCount_) * 4 >= cjkLetters) {
+      return "ko";
+    }
+    if (static_cast<uint64_t>(kanaCount_) * 10 >= cjkLetters) {
+      return "ja";
+    }
+    return "zh";
+  }
 
   // Decodes an input chunk and emits valid XML 1.0 UTF-8 bytes via the callback `emit(const char* utf8, size_t len)`.
   // Set `isFinalChunk = true` at EOF to flush any trailing incomplete sequence as U+FFFD.
@@ -60,8 +79,18 @@ class TextDecoder {
       if (!isXml10ValidCodepoint(cp)) {
         cp = 0xFFFD;
       }
-      if ((cp >= 0x3000 && cp <= 0x303F) || (cp >= 0x3400 && cp <= 0x9FFF) || (cp >= 0xF900 && cp <= 0xFAFF) ||
-          (cp >= 0xFF00 && cp <= 0xFFEF) || (cp >= 0x20000 && cp <= 0x2FA1F)) {
+      const bool isLatin = (cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z') || (cp >= 0x00C0 && cp <= 0x024F);
+      // Exclude U+30FB (・) and U+30FC (ー) so translated Chinese names don't trigger "ja".
+      const bool isKana = (cp >= 0x3041 && cp <= 0x3096) || (cp >= 0x30A1 && cp <= 0x30FA) ||
+                          (cp >= 0x31F0 && cp <= 0x31FF) || (cp >= 0xFF66 && cp <= 0xFF9D);
+      const bool isHangul =
+          (cp >= 0xAC00 && cp <= 0xD7A3) || (cp >= 0x1100 && cp <= 0x11FF) || (cp >= 0x3131 && cp <= 0x318E);
+      const bool isHan = (cp >= 0x3400 && cp <= 0x9FFF) || (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0x20000 && cp <= 0x2FA1F);
+      if (isLatin) ++latinCount_;
+      if (isKana) ++kanaCount_;
+      if (isHangul) ++hangulCount_;
+      if (isHan) ++hanCount_;
+      if (isKana || isHangul || isHan || (cp >= 0x3000 && cp <= 0x303F) || (cp >= 0xFF00 && cp <= 0xFFEF)) {
         sawCjk_ = true;
       }
       if (outLen + 4 > sizeof(outBuf)) {
@@ -93,6 +122,10 @@ class TextDecoder {
   uint8_t carryLen_ = 0;
   bool bomChecked_ = false;
   bool sawCjk_ = false;
+  uint32_t latinCount_ = 0;
+  uint32_t hanCount_ = 0;
+  uint32_t kanaCount_ = 0;
+  uint32_t hangulCount_ = 0;
   uint16_t pendingHighSurrogate_ = 0;
 };
 

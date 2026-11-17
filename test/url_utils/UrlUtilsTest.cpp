@@ -66,4 +66,15 @@ TEST(IsForeignHost, LocalSuffixMustBeWhole) {
   EXPECT_FALSE(isForeignHost(".local"));
 }
 
+TEST(RedactUrlForLog, RedactsTelegramBotTokensOnly) {
+  EXPECT_EQ(UrlUtils::redactUrlForLog("https://api.telegram.org/bot123456:ABC-DEF_secret/getUpdates?offset=1"),
+            "https://api.telegram.org/bot<redacted>/getUpdates?offset=1");
+  EXPECT_EQ(UrlUtils::redactUrlForLog("https://api.telegram.org/file/bot123456:ABC-DEF_secret/documents/book.epub"),
+            "https://api.telegram.org/file/bot<redacted>/documents/book.epub");
+  EXPECT_EQ(UrlUtils::redactUrlForLog("https://example.com/books/botany.epub"),
+            "https://example.com/books/botany.epub");
+  EXPECT_EQ(UrlUtils::redactUrlForLog("https://example.com/bottom/1:2"), "https://example.com/bottom/1:2");
+  EXPECT_EQ(UrlUtils::redactUrlForLog("https://example.com/botabc:def/test"), "https://example.com/botabc:def/test");
+}
+
 }  // namespace

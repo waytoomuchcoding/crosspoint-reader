@@ -13,8 +13,6 @@ TEST(ProtectedPaths, CredentialStoresAreSensitive) {
   EXPECT_TRUE(isSensitivePath("/.crosspoint/libby.json"));
   EXPECT_TRUE(isSensitivePath("/.crosspoint/adept.json"));
   EXPECT_TRUE(isSensitivePath("/.crosspoint/adept/activation.xml"));
-  EXPECT_TRUE(isSensitivePath("/.crosspoint/plugins/libby/token.json"));
-  EXPECT_TRUE(isSensitivePath("/.crosspoint/plugins/protected-content/adept.json"));
   EXPECT_TRUE(isSensitivePath("/.crosspoint/wifi.json.tmp"));
   EXPECT_TRUE(isSensitivePath("/.crosspoint/telegram.json.tmp"));
   EXPECT_TRUE(isSensitivePath("/.CrossPoint/WIFI.json"));
@@ -34,7 +32,10 @@ TEST(ProtectedPaths, NamesSdFatWouldTrimOrAliasStillMatch) {
   EXPECT_TRUE(isSensitivePath("/ .crosspoint/ wifi.json"));
   EXPECT_TRUE(isSensitivePath("/.crosspoint ./opds.json"));
   EXPECT_TRUE(isSensitivePath("/CROSSP~1/wifi.json"));
+  EXPECT_TRUE(isSensitivePath("/CROSSP~1/telegram.json"));
   EXPECT_TRUE(isSensitivePath("/.crosspoint/WIFI~1.JSO"));
+  EXPECT_TRUE(isSensitivePath("/.crosspoint/TELEGR~1.JSO"));
+  EXPECT_TRUE(isSensitivePath("/.crosspoint/LIBBY~1.JSO"));
   EXPECT_FALSE(isSensitivePath("/Books/Photos/IMG~1.JPG"));  // too deep to reach a store
   EXPECT_FALSE(isSensitivePath("/Books/a~b.epub"));
 }
@@ -53,5 +54,10 @@ TEST(ProtectedPaths, PluginPathRules) {
   EXPECT_FALSE(isPluginPath("relative/path"));
   EXPECT_FALSE(isPluginPath("/"));
   EXPECT_TRUE(isPluginPath("/.crosspoint/month-wallpaper.json"));
+  EXPECT_TRUE(isPluginPath("/.crosspoint/plugins/protected-content/adept.json"));
+  EXPECT_TRUE(isPluginPath("/.crosspoint/plugins/libby/token.json"));
+  EXPECT_FALSE(isPluginPath("/.crosspoint/telegram.json"));
+  EXPECT_FALSE(isPluginPath("/.crosspoint/libby.json"));
+  EXPECT_FALSE(isPluginPath("/.crosspoint/adept.json"));
   EXPECT_TRUE(isPluginPath("/Books/new.epub"));
 }

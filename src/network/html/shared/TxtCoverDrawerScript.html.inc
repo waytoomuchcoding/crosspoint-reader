@@ -235,7 +235,7 @@ async function maybeBindUploadedTxtCoverMeta(uploadedFile, totalBatchCount) {
   if (!txtCoverBmpB64 && !metaChanged) return;
   const fullPath = (currentPath.endsWith('/') ? currentPath : currentPath + '/') + uploadedFile.name;
   try {
-    await fetch('/api/txt-cover-meta', {
+    const resp = await fetch('/api/txt-cover-meta', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -245,6 +245,10 @@ async function maybeBindUploadedTxtCoverMeta(uploadedFile, totalBatchCount) {
         coverBmpB64: txtCoverBmpB64
       })
     });
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => '');
+      console.warn('[TXT Cover] Server rejected cover/metadata:', resp.status, errText);
+    }
   } catch (err) {
     console.warn('[TXT Cover] Failed to bind cover/metadata:', err);
   }

@@ -46,5 +46,6 @@ class ZhDictDownloadActivity final : public Activity {
   size_t currentFile = 0;
   uint32_t doneBytes = 0;
   uint32_t fileBytes = 0;
+  bool cancelRequested = false;
   std::string error;
 };

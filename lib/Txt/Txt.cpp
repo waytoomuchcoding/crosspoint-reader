@@ -63,6 +63,35 @@ void writeCoverMetaStamp(const std::string& filepath, const std::string& cachePa
   }
 }
 
+void writeCachedEncodingMarker(const std::string& cachePath, TextEncoding enc) {
+  if (cachePath.empty()) return;
+  if (!Storage.exists(cachePath.c_str())) {
+    Storage.mkdir(cachePath.c_str());
+  }
+  const std::string markerPath = cachePath + "/encoding.cached";
+  HalFile f;
+  if (Storage.openFileForWrite("TXT", markerPath, f)) {
+    const uint8_t val = static_cast<uint8_t>(enc);
+    f.write(&val, 1);
+    f.close();
+  }
+}
+
+TextEncoding readCachedEncodingMarker(const std::string& cachePath) {
+  if (cachePath.empty()) return TextEncoding::Auto;
+  const std::string markerPath = cachePath + "/encoding.cached";
+  HalFile f;
+  uint8_t val = 0;
+  if (Storage.openFileForRead("TXT", markerPath, f)) {
+    const int n = f.read(&val, 1);
+    f.close();
+    if (n == 1 && val < static_cast<uint8_t>(TextEncoding::Count)) {
+      return static_cast<TextEncoding>(val);
+    }
+  }
+  return TextEncoding::Auto;
+}
+
 bool isCoverMetaStampFresh(const std::string& filepath, const std::string& cachePath) {
   const std::string stampPath = cachePath + "/cover.stamp";
   if (!Storage.exists(stampPath.c_str())) {
@@ -244,6 +273,9 @@ bool Txt::streamTxtToHtml(const std::string& filepath, Print& out, const std::st
   const bool ok = TxtToHtml::stream(
       filepath, &src, [](void* ctx, uint8_t* buf, size_t size) { return static_cast<HalFile*>(ctx)->read(buf, size); },
       out, activeEncoding);
+  if (ok && !cachePath.empty()) {
+    writeCachedEncodingMarker(cachePath, txtenc::readEncodingOverride(cachePath));
+  }
 
   LOG_DBG("TXT", "Converted TXT/MD to HTML in %lu ms (%zu bytes in)", millis() - t0, srcSize);
   return ok;
@@ -252,6 +284,7 @@ bool Txt::streamTxtToHtml(const std::string& filepath, Print& out, const std::st
 void Txt::invalidateCache(const std::string& cachePath) {
   Storage.removeDir((cachePath + "/html").c_str());
   Storage.removeDir((cachePath + "/sections").c_str());
+  Storage.remove((cachePath + "/encoding.cached").c_str());
 }
 
 void Txt::removeCachedCoverBmps(const std::string& cachePath) {
@@ -332,7 +365,21 @@ bool Txt::validateCache(const std::string& filepath, const std::string& cachePat
     }
   }
 
-  // 3. Check if a custom/companion cover or bound .meta.json was added, replaced, or removed
+  // 3. Check if active encoding override drifted since html/sections were built
+  if (valid &&
+      (Storage.exists(htmlPath.c_str()) || Storage.exists((cachePath + "/sections").c_str()) ||
+       Storage.exists((cachePath + "/encoding.cached").c_str()))) {
+    const TextEncoding currentOverride = txtenc::readEncodingOverride(cachePath);
+    const TextEncoding cachedOverride = readCachedEncodingMarker(cachePath);
+    if (currentOverride != cachedOverride) {
+      LOG_DBG("TXT", "Encoding override changed (%d vs cached %d), invalidating: %s", static_cast<int>(currentOverride),
+              static_cast<int>(cachedOverride), cachePath.c_str());
+      valid = false;
+      contentChanged = true;
+    }
+  }
+
+  // 4. Check if a custom/companion cover or bound .meta.json was added, replaced, or removed
   if (valid && !isCoverMetaStampFresh(filepath, cachePath)) {
     LOG_DBG("TXT", "Cover or metadata changed for %s, invalidating cached cover/metadata (keeping progress.bin)",
             filepath.c_str());
@@ -361,6 +408,9 @@ bool Txt::buildTxtCache(const std::string& filepath, const std::string& cachePat
 
   bool hasCjk = false;
   const TextEncoding activeEncoding = detectFileEncoding(filepath, cachePath, &hasCjk);
+  if (!preserveContentCache) {
+    writeCachedEncodingMarker(cachePath, txtenc::readEncodingOverride(cachePath));
+  }
 
   if (!bookMetadataCache->beginWrite()) {
     LOG_ERR("TXT", "Could not begin writing cache");
@@ -388,7 +438,9 @@ bool Txt::buildTxtCache(const std::string& filepath, const std::string& cachePat
   std::string resolvedAuthor;
   resolveTitleAndAuthor(filepath, resolvedTitle, resolvedAuthor);
 
-  const size_t tocEntriesCreated = txtenc::scanChapterHeadings(filepath, activeEncoding, *bookMetadataCache, hasCjk);
+  std::string detectedLang;
+  const size_t tocEntriesCreated =
+      txtenc::scanChapterHeadings(filepath, activeEncoding, *bookMetadataCache, hasCjk, &detectedLang);
   if (tocEntriesCreated == 0) {
     bookMetadataCache->createTocEntry(resolvedTitle, "content.html", "", 0);
   }
@@ -406,7 +458,7 @@ bool Txt::buildTxtCache(const std::string& filepath, const std::string& cachePat
   BookMetadataCache::BookMetadata bookMetadata;
   bookMetadata.title = std::move(resolvedTitle);
   bookMetadata.author = std::move(resolvedAuthor);
-  bookMetadata.language = hasCjk ? "zh" : "en";
+  bookMetadata.language = detectedLang.empty() ? (hasCjk ? "zh" : "en") : std::move(detectedLang);
 
   std::string companionCover = findCompanionCoverImage(filepath);
   if (!companionCover.empty()) {

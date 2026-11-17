@@ -124,4 +124,38 @@ bool isForeignHost(const char* hostHeader) {
   return hasDot && !allDigits;
 }
 
+std::string redactUrlForLog(const std::string& url) {
+  if (url.find("/bot") == std::string::npos) return url;
+  std::string out = url;
+  constexpr char kPrefix[] = "/bot";
+  constexpr size_t kPrefixLen = sizeof(kPrefix) - 1;
+  constexpr char kRedacted[] = "<redacted>";
+  constexpr size_t kRedactedLen = sizeof(kRedacted) - 1;
+
+  size_t pos = 0;
+  while ((pos = out.find(kPrefix, pos)) != std::string::npos) {
+    const size_t tokenStart = pos + kPrefixLen;
+    size_t segEnd = out.find_first_of("/?#", tokenStart);
+    if (segEnd == std::string::npos) segEnd = out.size();
+
+    const size_t colon = out.find(':', tokenStart);
+    bool digitsBeforeColon = (colon != std::string::npos && colon > tokenStart && colon + 1 < segEnd);
+    if (digitsBeforeColon) {
+      for (size_t i = tokenStart; i < colon; ++i) {
+        if (!isdigit(static_cast<unsigned char>(out[i]))) {
+          digitsBeforeColon = false;
+          break;
+        }
+      }
+    }
+    if (digitsBeforeColon) {
+      out.replace(tokenStart, segEnd - tokenStart, kRedacted);
+      pos = tokenStart + kRedactedLen;
+    } else {
+      pos = segEnd;
+    }
+  }
+  return out;
+}
+
 }  // namespace UrlUtils

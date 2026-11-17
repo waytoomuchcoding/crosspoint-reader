@@ -134,7 +134,8 @@ void TelegramCredentialStore::setDestFolder(const std::string& folder) {
     return;
   }
   const std::string raw = (folder[0] == '/') ? folder : ("/" + folder);
-  std::string norm = FsHelpers::normalisePath(raw);
+  const std::string stripped = FsHelpers::normalisePath(raw);
+  std::string norm = stripped.empty() ? "/" : ("/" + stripped);
   while (norm.size() > 1 && norm.back() == '/') {
     norm.pop_back();
   }

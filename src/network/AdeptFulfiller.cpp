@@ -79,14 +79,23 @@ void splitNsName(const char* expatName, std::string& nsOut, std::string& localOu
   }
 }
 
+constexpr size_t kMaxXmlDepth = 16;
+
 struct TreeBuilder {
   std::vector<AdeptNode*> stack;
   AdeptNode root;
+  XML_Parser parser = nullptr;
   bool hasRoot = false;
+  bool depthExceeded = false;
 };
 
 void XMLCALL onTreeStart(void* userData, const XML_Char* name, const XML_Char** atts) {
   auto* tb = static_cast<TreeBuilder*>(userData);
+  if (tb->depthExceeded || tb->stack.size() >= kMaxXmlDepth) {
+    tb->depthExceeded = true;
+    if (tb->parser) XML_StopParser(tb->parser, XML_FALSE);
+    return;
+  }
   AdeptNode node;
   splitNsName(name, node.ns, node.name);
 
@@ -123,7 +132,7 @@ void XMLCALL onTreeEnd(void* userData, const XML_Char* /*name*/) {
 
 void XMLCALL onTreeChar(void* userData, const XML_Char* s, int len) {
   auto* tb = static_cast<TreeBuilder*>(userData);
-  if (!tb->stack.empty() && len > 0) {
+  if (!tb->depthExceeded && !tb->stack.empty() && len > 0) {
     tb->stack.back()->text.append(s, static_cast<size_t>(len));
   }
 }
@@ -131,11 +140,15 @@ void XMLCALL onTreeChar(void* userData, const XML_Char* s, int len) {
 bool parseXmlTree(std::string_view xml, TreeBuilder& tb) {
   XML_Parser parser = XML_ParserCreateNS(nullptr, '|');
   if (!parser) return false;
+  tb.parser = parser;
   XML_SetUserData(parser, &tb);
   XML_SetElementHandler(parser, onTreeStart, onTreeEnd);
   XML_SetCharacterDataHandler(parser, onTreeChar);
-  const bool ok = (XML_Parse(parser, xml.data(), static_cast<int>(xml.size()), 1) == XML_STATUS_OK) && tb.hasRoot;
+  const bool ok =
+      (XML_Parse(parser, xml.data(), static_cast<int>(xml.size()), 1) == XML_STATUS_OK) && !tb.depthExceeded &&
+      tb.hasRoot;
   XML_ParserFree(parser);
+  tb.parser = nullptr;
   return ok;
 }
 
@@ -537,8 +550,10 @@ bool loadDeviceCredentials(DeviceCredentials& credsOut, std::string& errOut) {
   return false;
 }
 
-bool fulfillAcsmContentToEpub(std::string_view acsmXml, const std::string& destEpubPath, std::string& errOut,
-                              std::function<void(size_t, size_t)> progressCb) {
+namespace {
+
+bool fulfillAcsmImpl(std::string* ownedAcsmXml, std::string_view acsmXmlView, const std::string& destEpubPath,
+                     std::string& errOut, std::function<void(size_t, size_t)> progressCb, const bool* cancelFlag) {
   DeviceCredentials creds;
   if (!loadDeviceCredentials(creds, errOut)) {
     return false;
@@ -546,7 +561,9 @@ bool fulfillAcsmContentToEpub(std::string_view acsmXml, const std::string& destE
 
   std::string operatorUrl;
   std::string signedFulfillXml;
-  if (!buildSignedFulfillRequest(acsmXml, creds, operatorUrl, signedFulfillXml, errOut)) {
+  const bool built = buildSignedFulfillRequest(acsmXmlView, creds, operatorUrl, signedFulfillXml, errOut);
+  if (ownedAcsmXml) *ownedAcsmXml = std::string();
+  if (!built) {
     return false;
   }
 
@@ -558,27 +575,35 @@ bool fulfillAcsmContentToEpub(std::string_view acsmXml, const std::string& destE
   String responseBody;
   const int status =
       pluginhttp::request(nullptr, operatorUrl, "POST", signedFulfillXml, headers, responseBody, 32 * 1024);
+  signedFulfillXml = std::string();  // Reclaim ~25 KB signed request buffer before response/download
   if (status < 200 || status >= 300 || responseBody.length() == 0) {
     errOut = "Adobe ACS Fulfill POST failed (HTTP " + std::to_string(status) + ")";
     return false;
   }
 
   FulfillmentReply reply;
-  if (!parseFulfillmentResultXml(std::string_view(responseBody.c_str(), responseBody.length()), reply, errOut)) {
+  const bool parsedReply =
+      parseFulfillmentResultXml(std::string_view(responseBody.c_str(), responseBody.length()), reply, errOut);
+  responseBody = String();  // Reclaim DRAM before key unwrap / downloading the EPUB
+  if (!parsedReply) {
     return false;
   }
-  responseBody = String();  // Reclaim DRAM before downloading the EPUB
 
   uint8_t aesKey[16];
-  if (!unwrapEncryptedBookKey(reply.encryptedKeyB64, creds.privateKeyDer, aesKey, errOut)) {
+  const bool unwrapped = unwrapEncryptedBookKey(reply.encryptedKeyB64, creds.privateKeyDer, aesKey, errOut);
+  creds = DeviceCredentials{};
+  reply.encryptedKeyB64 = std::string();
+  if (!unwrapped) {
+    std::memset(aesKey, 0, sizeof(aesKey));
     return false;
   }
 
-  const auto dlErr = HttpDownloader::downloadToFile(reply.downloadUrl, destEpubPath, progressCb, nullptr, "", "",
-                                                    {{"User-Agent", "book2png"}}, /*downgradeRedirectsToHttp=*/true);
+  const auto dlErr =
+      HttpDownloader::downloadToFile(reply.downloadUrl, destEpubPath, progressCb, cancelFlag, "", "",
+                                     {{"User-Agent", "book2png"}}, /*downgradeRedirectsToHttp=*/true);
   if (dlErr != HttpDownloader::OK) {
     std::memset(aesKey, 0, sizeof(aesKey));
-    errOut = "Failed to download fulfilled EPUB from " + reply.downloadUrl;
+    errOut = (dlErr == HttpDownloader::ABORTED) ? "Cancelled" : ("Failed to download fulfilled EPUB from " + reply.downloadUrl);
     return false;
   }
 
@@ -595,8 +620,20 @@ bool fulfillAcsmContentToEpub(std::string_view acsmXml, const std::string& destE
   return true;
 }
 
+}  // namespace
+
+bool fulfillAcsmContentToEpub(std::string_view acsmXml, const std::string& destEpubPath, std::string& errOut,
+                              std::function<void(size_t, size_t)> progressCb, const bool* cancelFlag) {
+  return fulfillAcsmImpl(nullptr, acsmXml, destEpubPath, errOut, std::move(progressCb), cancelFlag);
+}
+
+bool fulfillAcsmContentToEpubConsume(std::string& acsmXml, const std::string& destEpubPath, std::string& errOut,
+                                     std::function<void(size_t, size_t)> progressCb, const bool* cancelFlag) {
+  return fulfillAcsmImpl(&acsmXml, acsmXml, destEpubPath, errOut, std::move(progressCb), cancelFlag);
+}
+
 bool fulfillAcsmFile(const std::string& acsmPath, std::string& finalEpubPathOut, std::string& errOut,
-                     std::function<void(size_t, size_t)> progressCb) {
+                     std::function<void(size_t, size_t)> progressCb, const bool* cancelFlag) {
   std::string acsmXml;
   if (!Storage.readFileToString("ACSM", acsmPath, 24 * 1024, acsmXml)) {
     errOut = "Could not read .acsm file: " + acsmPath;
@@ -612,7 +649,7 @@ bool fulfillAcsmFile(const std::string& acsmPath, std::string& finalEpubPathOut,
   }
 
   const std::string stagedEpub = (finalEpubPathOut == acsmPath) ? (acsmPath + ".epub.tmp") : finalEpubPathOut;
-  if (!fulfillAcsmContentToEpub(acsmXml, stagedEpub, errOut, progressCb)) {
+  if (!fulfillAcsmContentToEpubConsume(acsmXml, stagedEpub, errOut, std::move(progressCb), cancelFlag)) {
     return false;
   }
 

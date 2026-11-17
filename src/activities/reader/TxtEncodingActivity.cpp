@@ -2,6 +2,7 @@
 
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
+#include <HalStorage.h>
 #include <I18n.h>
 #include <Txt.h>
 #include <TxtEncodingSupport.h>
@@ -94,6 +95,8 @@ void TxtEncodingActivity::loop() {
     const bool changed = (chosen != initialEncoding_);
     if (changed) {
       Txt::writeEncodingOverride(cachePath_, chosen);
+      Txt::invalidateCache(cachePath_);
+      Storage.remove((cachePath_ + "/book.bin").c_str());
     }
     ActivityResult result;
     result.isCancelled = !changed;

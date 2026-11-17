@@ -1,9 +1,11 @@
 #include "ZhRubyAdjustActivity.h"
 
+#include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
 #include <ZhDict.h>
 
+#include <algorithm>
 #include <iterator>
 
 #include "CrossPointSettings.h"
@@ -38,13 +40,19 @@ void ZhRubyAdjustActivity::onEnter() {
 void ZhRubyAdjustActivity::loop() {
   using B = MappedInputManager::Button;
   const int last = static_cast<int>(std::size(ORDER)) - 1;
-  if (mappedInput.wasPressed(B::Left) && position > 0) {
-    --position;
-    requestUpdate();
-  } else if (mappedInput.wasPressed(B::Right) && position < last) {
-    ++position;
-    requestUpdate();
-  } else if (mappedInput.wasReleased(B::Confirm)) {
+  navigator_.onPrevious([this] {
+    if (position > 0) {
+      --position;
+      requestUpdate();
+    }
+  });
+  navigator_.onNext([this, last] {
+    if (position < last) {
+      ++position;
+      requestUpdate();
+    }
+  });
+  if (mappedInput.wasReleased(B::Confirm)) {
     ActivityResult result;
     result.isCancelled = SETTINGS.zhRuby == ORDER[position];
     if (!result.isCancelled) {
@@ -63,44 +71,61 @@ void ZhRubyAdjustActivity::loop() {
 
 void ZhRubyAdjustActivity::render(RenderLock&&) {
   renderer.clearScreen();
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int pageWidth = renderer.getScreenWidth();
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_ZH_RUBY));
-
-  int y = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing * 4;
-  const int contentWidth = pageWidth - 2 * metrics.contentSidePadding;
-  for (const auto& line : renderer.wrappedText(UI_10_FONT_ID, tr(STR_ZH_RUBY_HELP), contentWidth, 6)) {
-    renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, y, line.c_str());
-    y += renderer.getLineHeight(UI_10_FONT_ID);
-  }
-  y += metrics.verticalSpacing * 4;
-
-  // Current value, with arrows showing which way more steps remain.
+  auto& theme = UITheme::getInstance();
+  const auto& metrics = theme.getMetrics();
+  const Rect safe = theme.getScreenSafeArea(renderer, /*hasFrontButtonHints=*/true, /*hasSideButtonHints=*/false);
+  const Rect headerRect = theme.getHeaderRect(renderer, /*hasFrontButtonHints=*/true, /*hasSideButtonHints=*/false);
+  const int contentX = safe.x + metrics.contentSidePadding;
+  const int contentWidth = std::max(60, safe.width - 2 * metrics.contentSidePadding);
   const int last = static_cast<int>(std::size(ORDER)) - 1;
+
   char value[64];
   snprintf(value, sizeof(value), "%s  %s  %s", position > 0 ? "<" : " ", I18N.get(LABELS[ORDER[position]]),
            position < last ? ">" : " ");
-  renderer.drawCenteredText(UI_12_FONT_ID, y, value, true, EpdFontFamily::BOLD);
-  y += renderer.getLineHeight(UI_12_FONT_ID) + metrics.verticalSpacing * 2;
+  const auto helpLines = renderer.wrappedText(UI_10_FONT_ID, tr(STR_ZH_RUBY_HELP), contentWidth, 6);
 
-  // Position bar: one tick per step.
-  const int barX = metrics.contentSidePadding;
-  const int step = contentWidth / last;
-  renderer.drawLine(barX, y + 6, barX + step * last, y + 6, 2, true);
-  for (int k = 0; k <= last; ++k) {
-    const int tx = barX + step * k;
-    if (k == position) {
-      renderer.fillRect(tx - 5, y, 11, 13, true);
-    } else {
-      renderer.fillRect(tx - 1, y + 2, 3, 9, true);
+  auto drawBody = [&]() {
+    GUI.drawHeader(renderer, headerRect, tr(STR_ZH_RUBY));
+
+    int y = headerRect.y + headerRect.height + metrics.verticalSpacing * 4;
+    for (const auto& line : helpLines) {
+      renderer.drawText(UI_10_FONT_ID, contentX, y, line.c_str());
+      y += renderer.getLineHeight(UI_10_FONT_ID);
     }
-  }
-  y += 24;
-  renderer.drawText(SMALL_FONT_ID, barX, y, tr(STR_ZH_RUBY_MORE));
-  const char* less = tr(STR_ZH_RUBY_LESS);
-  renderer.drawText(SMALL_FONT_ID, barX + step * last - renderer.getTextWidth(SMALL_FONT_ID, less), y, less);
+    y += metrics.verticalSpacing * 4;
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_ZH_RUBY_MORE), tr(STR_ZH_RUBY_LESS));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    UITheme::drawCenteredText(renderer, safe, UI_12_FONT_ID, y, value, true, EpdFontFamily::BOLD);
+    y += renderer.getLineHeight(UI_12_FONT_ID) + metrics.verticalSpacing * 2;
+
+    // Position bar: one tick per step.
+    const int step = contentWidth / std::max(1, last);
+    renderer.drawLine(contentX, y + 6, contentX + step * last, y + 6, 2, true);
+    for (int k = 0; k <= last; ++k) {
+      const int tx = contentX + step * k;
+      if (k == position) {
+        renderer.fillRect(tx - 5, y, 11, 13, true);
+      } else {
+        renderer.fillRect(tx - 1, y + 2, 3, 9, true);
+      }
+    }
+    y += 24;
+    renderer.drawText(SMALL_FONT_ID, contentX, y, tr(STR_ZH_RUBY_MORE));
+    const char* less = tr(STR_ZH_RUBY_LESS);
+    renderer.drawText(SMALL_FONT_ID, contentX + step * last - renderer.getTextWidth(SMALL_FONT_ID, less), y, less);
+
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_ZH_RUBY_MORE), tr(STR_ZH_RUBY_LESS));
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  };
+
+  if (auto* fcm = renderer.getFontCacheManager()) {
+    auto scope = fcm->createPrewarmScope();
+    drawBody();
+    scope.endScanAndPrewarm();
+    renderer.clearScreen();
+    drawBody();
+  } else {
+    drawBody();
+  }
+
   renderer.displayBuffer();
 }

@@ -8,7 +8,6 @@
 #include "HostSyncFakes.h"
 #include "network/LibbyClient.h"
 #include "util/Iso8601.h"
-#include "util/LoanBadgeUtils.h"
 
 namespace {
 
@@ -115,29 +114,10 @@ TEST_F(LibbySyncTest, UrlEncodesFulfillEndpointAndEscapesSidecarJson) {
   EXPECT_STREQ(parsed["libby_card_id"] | "", "card/with space");
 }
 
-TEST_F(LibbySyncTest, ComputesAndResolvesLoanCountdownBadges) {
+TEST_F(LibbySyncTest, ParsesIso8601UtcAndBuildsLoanDestPath) {
   const int64_t now = iso8601::parseUtc("2026-11-16T12:00:00Z");
-  trustedtime::mockNowRef() = now;
-
-  const auto b14 = loanbadge::computeFromTimestamps(iso8601::parseUtc("2026-11-30T12:00:00Z"), now);
-  EXPECT_TRUE(b14.isLoan);
-  EXPECT_FALSE(b14.urgent);
-  EXPECT_EQ(b14.daysRemaining, 14);
-  EXPECT_EQ(b14.label, "Due 14d");
-
-  const auto b3 = loanbadge::computeFromTimestamps(iso8601::parseUtc("2026-11-19T06:00:00Z"), now);
-  EXPECT_TRUE(b3.urgent);
-  EXPECT_EQ(b3.daysRemaining, 3);
-  EXPECT_EQ(b3.label, "! Due 3d");
-
-  const auto bToday = loanbadge::computeFromTimestamps(iso8601::parseUtc("2026-11-17T02:00:00Z"), now);
-  EXPECT_TRUE(bToday.urgent);
-  EXPECT_EQ(bToday.daysRemaining, 0);
-  EXPECT_EQ(bToday.label, "! Due Today");
-
-  const auto bExp = loanbadge::computeFromTimestamps(iso8601::parseUtc("2026-11-15T23:59:59Z"), now);
-  EXPECT_TRUE(bExp.expired);
-  EXPECT_EQ(bExp.label, "Expired");
+  const int64_t due = iso8601::parseUtc("2026-11-30T12:00:00Z");
+  EXPECT_EQ(due - now, 14 * 86400);
 
   libby::Loan sampleLoan;
   sampleLoan.id = "loan-open-1";
@@ -146,7 +126,5 @@ TEST_F(LibbySyncTest, ComputesAndResolvesLoanCountdownBadges) {
   sampleLoan.expireDate = "2026-11-30T12:00:00Z";
   sampleLoan.hasOpenEpub = true;
 
-  const std::string destPath = libby::loanDestEpubPath(sampleLoan);
-  EXPECT_TRUE(loanbadge::resolveForBook(destPath, {sampleLoan}).isLoan);
-  EXPECT_FALSE(loanbadge::resolveForBook("/Books/unrelated.epub", {sampleLoan}).isLoan);
+  EXPECT_EQ(libby::loanDestEpubPath(sampleLoan), "/Libby/Pride and Prejudice.epub");
 }

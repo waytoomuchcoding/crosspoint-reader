@@ -165,6 +165,7 @@ class CrossPointWebServer {
   void handlePostTxtCoverMeta();
 
   // Missing or malformed JSON sends a 400 response and returns false.
+  bool requireJsonContentType() const;
   bool readJsonBody(JsonDocument& out) const;
   void sendJson(const JsonDocument& doc) const;
   bool rejectIfPluginsDisabled() const;

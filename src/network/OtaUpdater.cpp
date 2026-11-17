@@ -131,8 +131,10 @@ bool OtaUpdater::isUpdateNewer() const {
   if (latestPatch != currentPatch) return latestPatch > currentPatch;
 
   // If we reach here, it means all segments are equal.
-  // If we're on an RC or branch/dev build (contains "-"), consider the tagged release newer.
-  if (strchr(currentVersion, '-') != nullptr) {
+  // Pre-release (-rc, +) and branch development (-dev-) builds consider the matching tagged release newer,
+  // while release variants like -slim, -x4pro, -x4c remain equal at the same version.
+  if (strstr(currentVersion, "-rc") != nullptr || strstr(currentVersion, "-dev-") != nullptr ||
+      strchr(currentVersion, '+') != nullptr) {
     return true;
   }
 

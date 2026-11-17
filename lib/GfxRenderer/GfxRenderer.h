@@ -202,6 +202,10 @@ class GfxRenderer {
   // Register/clear size-matched CJK UI fallbacks (see fallbackFontMap_).
   // setFallbackFont maps a primary UI font id to an SD font id of the same size.
   void setFallbackFont(int primaryFontId, int fallbackFontId) { fallbackFontMap_[primaryFontId] = fallbackFontId; }
+  int getFallbackFont(int primaryFontId) const {
+    const auto it = fallbackFontMap_.find(primaryFontId);
+    return (it != fallbackFontMap_.end()) ? it->second : 0;
+  }
   void clearFallbackFonts() { fallbackFontMap_.clear(); }
   // True when either fontId or its registered UI fallback font covers `cp`.
   bool canRenderCodepoint(int fontId, uint32_t cp, EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;

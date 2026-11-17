@@ -47,7 +47,7 @@ std::string loanDestEpubPath(const Loan& loan);
 
 // Downloads and fulfills a loan into `/Libby/<Title>.epub` (plus `/Libby/<Title>.epub.key` for Adobe DRM loans).
 bool downloadLoan(const Loan& loan, std::string& destEpubPathOut, std::string& errOut,
-                  std::function<void(size_t, size_t)> progressCb = nullptr);
+                  std::function<void(size_t, size_t)> progressCb = nullptr, const bool* cancelFlag = nullptr);
 
 // Syncs active loans via `/chip/sync` and automatically downloads/fulfills any downloadable EPUB loan
 // not yet present on the SD card.

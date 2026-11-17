@@ -93,28 +93,26 @@ void TelegramSyncActivity::startBrowse() {
 
   state = State::LOADING;
   statusMessage = tr(STR_TELEGRAM_SYNCING);
-  lastProgressPct_ = -1;
-  lastProgressMs_ = 0;
+  resetTransferProgressState();
   requestUpdateAndWait();
 
   std::string err;
-  const bool ok = telegram::syncPendingFiles(lastSummary_, err, [this](const std::string& file, size_t dl, size_t tot) {
-    state = State::DOWNLOADING;
-    statusMessage = file;
-    downloadProgress = dl;
-    downloadTotal = tot;
-    const int pct = tot > 0 ? static_cast<int>(static_cast<uint64_t>(dl) * 100 / tot) : 0;
-    const unsigned long now = millis();
-    if (pct >= 100 || lastProgressPct_ < 0 || pct >= lastProgressPct_ + 10 || now - lastProgressMs_ >= 3000) {
-      lastProgressPct_ = pct;
-      lastProgressMs_ = now;
-      requestUpdate(true);
-    }
-  });
+  const bool ok = telegram::syncPendingFiles(
+      lastSummary_, err,
+      [this](const std::string& file, size_t dl, size_t tot) {
+        state = State::DOWNLOADING;
+        statusMessage = file;
+        onDownloadProgress(dl, tot);
+      },
+      [this] { return cancelDownload; }, &cancelDownload);
   if (!ok) {
-    state = State::ERROR;
-    errorMessage = err;
-    requestUpdate();
+    if (cancelDownload || err == "Cancelled") {
+      finishDownload(HttpDownloader::ABORTED);
+    } else {
+      state = State::ERROR;
+      errorMessage = err;
+      requestUpdate();
+    }
     return;
   }
 

@@ -3,6 +3,7 @@
 #include <HalStorage.h>
 #include <Logging.h>
 #include <SecureHttpClient.h>
+#include <strings.h>
 
 #include <algorithm>
 #include <cctype>
@@ -11,6 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "UrlUtils.h"
 #include "network/ProtectedPaths.h"
 #include "network/WifiPowerSaveGuard.h"
 
@@ -23,7 +25,13 @@ freeink::SecureHttpClient* openClient(freeink::SecureHttpClient* session, freein
                                       const std::string& url, const pluginhttp::Headers& headers,
                                       const std::function<bool()>& shouldAbort = nullptr) {
   freeink::SecureHttpClient& http = session ? *session : tmp;
-  http.setUserAgent("CrossPoint");
+  const char* customUa = nullptr;
+  for (const auto& h : headers) {
+    if (strcasecmp(h.first.c_str(), "User-Agent") == 0) {
+      customUa = h.second.c_str();
+    }
+  }
+  http.setUserAgent(customUa && customUa[0] != '\0' ? customUa : "CrossPoint");
   // Same trust posture as every other SecureNet consumer: no CA bundle ships
   // with the transport, so verification is skipped; traffic stays encrypted.
   http.setInsecure();
@@ -32,7 +40,10 @@ freeink::SecureHttpClient* openClient(freeink::SecureHttpClient* session, freein
   // Handshake first: the client's copy of a large header (a session cookie can
   // be several KB) would otherwise take heap the handshake needs.
   if (!http.connect(shouldAbort)) return nullptr;
-  for (const auto& h : headers) http.addHeader(h.first, h.second);
+  for (const auto& h : headers) {
+    if (strcasecmp(h.first.c_str(), "User-Agent") == 0) continue;
+    http.addHeader(h.first, h.second);
+  }
   return &http;
 }
 
@@ -258,7 +269,7 @@ int request(freeink::SecureHttpClient* session, const std::string& url, const st
   // its state ("authorization_pending") in 4xx response bodies.
   if (overflow || status < 0 || !http.responseComplete()) {
     LOG_ERR("PHTP", "API request failed: status=%d overflow=%d complete=%d %s", status, overflow,
-            http.responseComplete(), url.c_str());
+            http.responseComplete(), UrlUtils::redactUrlForLog(url).c_str());
     return -1;
   }
   return status;
@@ -297,7 +308,7 @@ int requestStream(freeink::SecureHttpClient* session, const std::string& url, co
   if (complete && !started && !start()) complete = false;
   if (!complete) {
     LOG_ERR("PHTP", "Streamed request failed: status=%d started=%d stopped=%d %s", status, started, stopped,
-            url.c_str());
+            UrlUtils::redactUrlForLog(url).c_str());
   }
   return started ? status : -1;
 }
@@ -334,7 +345,7 @@ int requestToFile(freeink::SecureHttpClient* session, const std::string& url, co
   }
   if (!writeOk || status < 0 || !http.responseComplete()) {
     LOG_ERR("PHTP", "API request (to file) failed: status=%d writeOk=%d complete=%d %s", status, writeOk,
-            http.responseComplete(), url.c_str());
+            http.responseComplete(), UrlUtils::redactUrlForLog(url).c_str());
     Storage.remove(destPath);
     return -1;
   }

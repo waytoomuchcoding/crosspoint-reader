@@ -15,11 +15,11 @@ add_executable(TelegramSyncTest
 
 target_include_directories(TelegramSyncTest PRIVATE
   ${REPO_ROOT}/test/adept_drm/stubs
+  ${REPO_ROOT}/lib/FsHelpers
   ${REPO_ROOT}/test/chapter_html_slim_parser/stubs
   ${REPO_ROOT}/src
   ${REPO_ROOT}/lib/EpdFont
   ${REPO_ROOT}/lib/Epub
-  ${REPO_ROOT}/lib/FsHelpers
   ${REPO_ROOT}/lib/LibraryIndex
   ${REPO_ROOT}/lib/Memory
   ${REPO_ROOT}/lib/SdCardFont

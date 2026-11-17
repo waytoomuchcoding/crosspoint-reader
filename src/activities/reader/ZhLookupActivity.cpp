@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
+#include <HalMemory.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
@@ -68,6 +69,26 @@ void ZhLookupActivity::onEnter() {
   }
   // Tabs fit two pinyin syllables per line ("chuāng zhuàng" wraps once).
   tabWidth = renderer.getTextAdvanceX(smallFont, "zhuàng ", EpdFontFamily::REGULAR, 0) * 3 / 2 + 2 * POPUP_PAD;
+  cursor = static_cast<int>(firstOn < chars.size() ? firstOn : 0);
+  if (!charMode) {
+    cursor = 0;
+    bool picked = false;
+    for (size_t w = 0; w < words.size(); ++w) {
+      if (words[w].first >= firstOn && words[w].first < endOn) {
+        cursor = static_cast<int>(w);
+        picked = true;
+        break;
+      }
+    }
+    if (!picked) {
+      for (size_t w = 0; w < words.size(); ++w) {
+        if (wordVisible(words[w])) {
+          cursor = static_cast<int>(w);
+          break;
+        }
+      }
+    }
+  }
   if (startInJump) startJump();
   // A button still held from opening this screen (the long-press) must not act here.
   {
@@ -78,12 +99,17 @@ void ZhLookupActivity::onEnter() {
       key.longFired = level;
       key.since = key.lastRepeat = now;
     };
+    const bool inJump = focus == Focus::Jump;
+    const B jumpB3 = mappedInput.isNavDirectionSwapped() ? B::Right : B::Left;
+    const B jumpB4 = mappedInput.isNavDirectionSwapped() ? B::Left : B::Right;
+    const B jumpUp = mappedInput.areSidePageButtonsSwapped() ? B::Down : B::Up;
+    const B jumpDn = mappedInput.areSidePageButtonsSwapped() ? B::Up : B::Down;
     held(keyConfirm, mappedInput.isPressed(B::Confirm));
     held(keyBack, mappedInput.isPressed(B::Back));
-    held(keyLeft, mappedInput.isPressed(B::ScreenLeft));
-    held(keyRight, mappedInput.isPressed(B::ScreenRight));
-    held(keyUp, mappedInput.isPressed(B::ScreenUp));
-    held(keyDown, mappedInput.isPressed(B::ScreenDown));
+    held(keyLeft, mappedInput.isPressed(inJump ? jumpB3 : B::ScreenLeft));
+    held(keyRight, mappedInput.isPressed(inJump ? jumpB4 : B::ScreenRight));
+    held(keyUp, mappedInput.isPressed(inJump ? jumpUp : B::ScreenUp));
+    held(keyDown, mappedInput.isPressed(inJump ? jumpDn : B::ScreenDown));
   }
   lastMove = millis();
   if (focus == Focus::Cursor) showPreviewNow();
@@ -100,7 +126,7 @@ void ZhLookupActivity::onExit() {
 }
 
 void ZhLookupActivity::loadHeadwordFont() {
-  if (!Storage.exists(HEADWORD_FONT_PATH)) return;
+  if (HalMemory::getDefaultHeap().freeBytes < 40 * 1024 || !Storage.exists(HEADWORD_FONT_PATH)) return;
   auto font = makeUniqueNoThrow<SdCardFont>();
   if (!font || !font->load(HEADWORD_FONT_PATH)) {
     LOG_ERR("ZH", "headword font unavailable");
@@ -653,14 +679,13 @@ void ZhLookupActivity::buildPreview() {
   previewLines.clear();
   const size_t start = cursorStart();
   if (start >= chars.size()) return;
-  zh::WordMatch found[zh::MAX_MATCHES];
-  const int count = zh::sharedDict().matchesAt(cps.data(), runEnd(start), start, found, zh::MAX_MATCHES);
+  const int count = zh::sharedDict().matchesAt(cps.data(), runEnd(start), start, previewMatches, zh::MAX_MATCHES);
   const int width = renderer.getScreenWidth() - 2 * (POPUP_MARGIN + POPUP_BORDER + POPUP_PAD);
   std::vector<std::string> wrapped;
   for (int k = 0; k < count && static_cast<int>(previewLines.size()) < smallLinesPerPage; ++k) {
     std::string line;
-    for (int c = 0; c < found[k].len; ++c) utf8AppendCodepoint(cps[start + c], line);
-    const size_t got = zh::sharedDict().readEntry(found[k].entryOff, entryBuf.get(), ENTRY_BUF_BYTES);
+    for (int c = 0; c < previewMatches[k].len; ++c) utf8AppendCodepoint(cps[start + c], line);
+    const size_t got = zh::sharedDict().readEntry(previewMatches[k].entryOff, entryBuf.get(), ENTRY_BUF_BYTES);
     zh::EntryReader entry(entryBuf.get(), got);
     zh::EntryReading er;
     if (entry.next(er)) {
@@ -920,25 +945,26 @@ void ZhLookupActivity::drawFrame() {
   const char* b3 = charMode ? tr(STR_ZH_CHAR) : tr(STR_ZH_WORD);
   const char* b4 = ">";
   if (focus == Focus::Jump) {
-    b1 = "1";
-    b2 = "2";
-    b3 = "3";
-    b4 = "4";
-  } else if (focus == Focus::Popup) {
+    const auto labels = mappedInput.mapLabels("1", "2", "3", "4");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    return;
+  }
+  if (focus == Focus::Popup) {
     b2 = tr(STR_ZH_SHORTER);
     b3 = "<";
   }
-  const auto labels = mappedInput.mapLabels(b1, b2, b3, b4);
+  const auto labels = mappedInput.mapDirectionalLabels(b1, b2, b3, b4, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 
 void ZhLookupActivity::render(RenderLock&& lock) {
   if (!ready) return;
-  {
-    auto* fcm = renderer.getFontCacheManager();
+  if (auto* fcm = renderer.getFontCacheManager()) {
     auto scope = fcm->createPrewarmScope();
     drawFrame();
     scope.endScanAndPrewarm();
+    drawFrame();
+  } else {
     drawFrame();
   }
   // The frame is in the buffer: let input keep moving the cursor during the
@@ -1009,11 +1035,16 @@ void ZhLookupActivity::handleInput() {
                   mappedInput.wasReleased(a) || mappedInput.wasReleased(b),
                   mappedInput.isPressed(a) || mappedInput.isPressed(b), repeats);
   };
-  const Event left = edges(keyLeft, B::ScreenLeft, B::ScreenLeft, true);
-  const Event right = edges(keyRight, B::ScreenRight, B::ScreenRight, true);
+  const bool inJump = focus == Focus::Jump;
+  const B jumpB3 = mappedInput.isNavDirectionSwapped() ? B::Right : B::Left;
+  const B jumpB4 = mappedInput.isNavDirectionSwapped() ? B::Left : B::Right;
+  const B jumpUp = mappedInput.areSidePageButtonsSwapped() ? B::Down : B::Up;
+  const B jumpDn = mappedInput.areSidePageButtonsSwapped() ? B::Up : B::Down;
+  const Event left = edges(keyLeft, inJump ? jumpB3 : B::ScreenLeft, inJump ? jumpB3 : B::ScreenLeft, !inJump);
+  const Event right = edges(keyRight, inJump ? jumpB4 : B::ScreenRight, inJump ? jumpB4 : B::ScreenRight, !inJump);
   // Side buttons only: NavNext/NavPrevious also include the front ◀ ▶.
-  const Event up = edges(keyUp, B::ScreenUp, B::ScreenUp, true);
-  const Event down = edges(keyDown, B::ScreenDown, B::ScreenDown, true);
+  const Event up = edges(keyUp, inJump ? jumpUp : B::ScreenUp, inJump ? jumpUp : B::ScreenUp, !inJump);
+  const Event down = edges(keyDown, inJump ? jumpDn : B::ScreenDown, inJump ? jumpDn : B::ScreenDown, !inJump);
   const Event confirm = edges(keyConfirm, B::Confirm, B::Confirm, false);
   const Event back = edges(keyBack, B::Back, B::Back, false);
   const auto step = [](const Event e) { return e == PRESS || e == REPEAT; };
@@ -1025,6 +1056,7 @@ void ZhLookupActivity::handleInput() {
   bool save = false;
   {
     RenderLock lock;
+    const Focus wasFocus = focus;
     switch (focus) {
       case Focus::Cursor:
         if (step(left)) moveCursor(-1), changed = true;
@@ -1065,11 +1097,17 @@ void ZhLookupActivity::handleInput() {
         // DESIGN 6.1: Back, Confirm, ◀, ▶ pick bands 1-4 top to bottom.
         if (back == PRESS) consume(keyBack), pickBand(0), changed = true;
         if (confirm == PRESS) consume(keyConfirm), pickBand(1), changed = true;
-        if (left == PRESS) pickBand(2), changed = true;
-        if (right == PRESS) pickBand(3), changed = true;
-        if (up == PRESS) undoJump(), changed = true;
-        if (down == PRESS) jumpStack.clear(), focus = jumpReturn, changed = true;
+        if (left == PRESS) consume(keyLeft), pickBand(2), changed = true;
+        if (right == PRESS) consume(keyRight), pickBand(3), changed = true;
+        if (up == PRESS) consume(keyUp), undoJump(), changed = true;
+        if (down == PRESS) consume(keyDown), jumpStack.clear(), focus = jumpReturn, changed = true;
         break;
+    }
+    if (focus != wasFocus) {
+      consume(keyLeft);
+      consume(keyRight);
+      consume(keyUp);
+      consume(keyDown);
     }
     if (changed) {
       lastMove = now;

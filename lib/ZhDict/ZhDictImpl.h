@@ -136,9 +136,9 @@ inline int rubyWidth(int em) {
 
 namespace detail {
 inline void glyphColSpan(const GlyphSet& g, int symIdx, int& firstCol, int& spanW) {
-  // Horizontal ㄧ (index 33) fills all columns in the vertical column set; trim
+  // Horizontal ㄧ (index 34, U+3127) fills all columns in the vertical column set; trim
   // 1 column on each side in horizontal layout so it does not fuse with neighbors.
-  if (symIdx == 33 && g.w >= 9) {
+  if (symIdx == 34 && g.w >= 9) {
     firstCol = 1;
     spanW = g.w - 2;
     return;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "activities/Activity.h"
+#include "util/ButtonNavigator.h"
 
 // Steps the Zhuyin Ruby frequency threshold from the reader (◀ more ruby,
 // ▶ less ruby). Confirm saves it and returns a non-cancelled result so the
@@ -15,5 +16,6 @@ class ZhRubyAdjustActivity final : public Activity {
   void render(RenderLock&&) override;
 
  private:
+  ButtonNavigator navigator_;
   int position = 0;  // index into the display order, see the .cpp
 };

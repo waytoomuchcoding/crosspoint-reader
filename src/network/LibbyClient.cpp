@@ -344,7 +344,7 @@ std::string loanDestEpubPath(const Loan& loan) {
 }
 
 bool downloadLoan(const Loan& loan, std::string& destEpubPathOut, std::string& errOut,
-                  std::function<void(size_t, size_t)> progressCb) {
+                  std::function<void(size_t, size_t)> progressCb, const bool* cancelFlag) {
   if (!loan.isDownloadable()) {
     errOut = "This loan does not offer an EPUB format (Kindle-only or audiobook)";
     return false;
@@ -371,7 +371,7 @@ bool downloadLoan(const Loan& loan, std::string& destEpubPathOut, std::string& e
 
   if (loan.hasOpenEpub) {
     String resp;
-    const int status = pluginhttp::request(nullptr, fulfillEndpoint, "GET", "", authHeaders, resp, 16 * 1024);
+    const int status = pluginhttp::request(nullptr, fulfillEndpoint, "GET", "", authHeaders, resp, 4 * 1024);
     std::string downloadUrl = fulfillEndpoint;
     bool sendBearer = true;
     if (status >= 200 && status < 300 && resp.length() > 0 && resp.c_str()[0] == '{') {
@@ -391,9 +391,9 @@ bool downloadLoan(const Loan& loan, std::string& destEpubPathOut, std::string& e
       dlHeaders.emplace_back("Authorization", "Bearer " + token);
     }
     const auto dlErr =
-        HttpDownloader::downloadToFile(downloadUrl, destEpubPathOut, progressCb, nullptr, "", "", dlHeaders);
+        HttpDownloader::downloadToFile(downloadUrl, destEpubPathOut, progressCb, cancelFlag, "", "", dlHeaders);
     if (dlErr != HttpDownloader::OK) {
-      errOut = "Failed to download open EPUB from Libby";
+      errOut = (dlErr == HttpDownloader::ABORTED) ? "Cancelled" : "Failed to download open EPUB from Libby";
       return false;
     }
   } else {
@@ -426,7 +426,7 @@ bool downloadLoan(const Loan& loan, std::string& destEpubPathOut, std::string& e
       return false;
     }
 
-    if (!adept::fulfillAcsmContentToEpub(acsmXml, destEpubPathOut, errOut, progressCb)) {
+    if (!adept::fulfillAcsmContentToEpubConsume(acsmXml, destEpubPathOut, errOut, progressCb, cancelFlag)) {
       return false;
     }
   }
@@ -452,7 +452,24 @@ bool syncAndFulfillNewLoans(int& fulfilledCountOut, std::string& errOut, const s
   for (const auto& loan : loans) {
     if (!loan.isDownloadable()) continue;
     const std::string expectedPath = loanDestEpubPath(loan);
-    if (Storage.exists(expectedPath.c_str())) continue;
+    if (Storage.exists(expectedPath.c_str())) {
+      bool needsRefresh = false;
+      if (loan.hasAdobeEpub && !loan.hasOpenEpub && !Storage.exists((expectedPath + ".key").c_str())) {
+        needsRefresh = true;
+      }
+      const std::string sidecarPath = expectedPath + ".meta.json";
+      std::string sidecarRaw;
+      if (!needsRefresh && !loan.id.empty() && Storage.readFileToString("LBY", sidecarPath.c_str(), 4096, sidecarRaw)) {
+        JsonDocument metaDoc;
+        if (deserializeJson(metaDoc, sidecarRaw) == DeserializationError::Ok) {
+          const char* storedLoanId = metaDoc["libby_loan_id"] | "";
+          if (storedLoanId[0] != '\0' && loan.id != storedLoanId) {
+            needsRefresh = true;
+          }
+        }
+      }
+      if (!needsRefresh) continue;
+    }
     if (shouldStop && shouldStop()) break;
 
     std::string actualPath;

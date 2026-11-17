@@ -99,13 +99,15 @@ bool BookCoverStore::validate1BitBmpPayload(const uint8_t* data, const size_t le
   const uint32_t compression = readLe32(data + 30);
   if (planes != 1 || bpp != 1 || compression != 0) return false;
 
-  const int absH = rawH < 0 ? -rawH : rawH;
-  if (rawW <= 0 || rawW > 800 || absH <= 0 || absH > 1200) return false;
-  const size_t rowBytes = (static_cast<size_t>(rawW) + 31u) / 32u * 4u;
-  if (pixelOffset + rowBytes * static_cast<size_t>(absH) > len) return false;
+  if (rawW <= 0 || rawW > 800 || rawH == INT32_MIN || rawH == 0) return false;
+  const int32_t absH = rawH < 0 ? -rawH : rawH;
+  if (absH <= 0 || absH > 1200) return false;
+  const uint64_t rowBytes = (static_cast<uint64_t>(rawW) + 31u) / 32u * 4u;
+  const uint64_t requiredBytes = static_cast<uint64_t>(pixelOffset) + rowBytes * static_cast<uint64_t>(absH);
+  if (requiredBytes > len) return false;
 
-  if (widthOut) *widthOut = rawW;
-  if (heightOut) *heightOut = absH;
+  if (widthOut) *widthOut = static_cast<int>(rawW);
+  if (heightOut) *heightOut = static_cast<int>(absH);
   return true;
 }
 

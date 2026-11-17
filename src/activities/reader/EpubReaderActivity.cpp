@@ -13,7 +13,6 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <Memory.h>
-#include <PageOrnament.h>
 #include <TrustedTime.h>
 #include <Txt.h>
 #include <Utf8.h>
@@ -83,13 +82,19 @@ constexpr int PAGE_TURN_RATES[] = {1, 1, 3, 6, 12};
 constexpr float bookmarkProgressEpsilon = 0.0001f;
 constexpr int CLIP_SELECTION_PAGE_WINDOW = 3;
 
-// True when the reader font is a bitonal (pixel) SD font, so the page has no
-// grey text to draw. Heading sizes are files of the same family, converted the
-// same way; UI fallbacks never take part in the grayscale pass.
+// True when the reader font (and any registered CJK fallback) is a bitonal (pixel) SD font,
+// so the page has no grey text to draw. Heading sizes are files of the same family, converted
+// the same way; UI fallbacks never take part in the grayscale pass unless bound to `fontId`.
 bool readerTextIsBitonal(const GfxRenderer& renderer, const int fontId) {
   const auto& sdFonts = renderer.getSdCardFonts();
   const auto it = sdFonts.find(fontId);
-  return it != sdFonts.end() && it->second && it->second->isBitonal();
+  if (it == sdFonts.end() || !it->second || !it->second->isBitonal()) return false;
+  const int fbId = renderer.getFallbackFont(fontId);
+  if (fbId != 0 && fbId != fontId) {
+    const auto fbIt = sdFonts.find(fbId);
+    if (fbIt == sdFonts.end() || !fbIt->second || !fbIt->second->isBitonal()) return false;
+  }
+  return true;
 }
 
 // Word i's font: headings and CSS font-size runs can differ from the section font.
@@ -256,7 +261,6 @@ EpubReaderActivity::~EpubReaderActivity() {
 
   section.reset();
   CLIPPINGS.unload();
-  page_ornament::releaseOrnamentCache();
   if (pendingReadFolderMove && epub) {
     const std::string srcPath = epub->getPath();
     const std::string oldCachePath = epub->getCachePath();
@@ -478,8 +482,8 @@ void EpubReaderActivity::backgroundBuildTick() {
   }
 }
 
-void EpubReaderActivity::openDictionaryWordSelect() {
-  if (openZhLookup()) return;
+void EpubReaderActivity::openDictionaryWordSelect(const bool startInJump) {
+  if (openZhLookup(startInJump)) return;
   if (SETTINGS.dictionaryName[0] == '\0') {
     pendingLookupSelection = {};
     showDictionaryMessage = true;
@@ -497,6 +501,9 @@ bool EpubReaderActivity::openZhLookup(const bool startInJump) {
   const std::string& lang = epub->getLanguage();
   if (lang.rfind("ja", 0) == 0 || lang.rfind("ko", 0) == 0) return false;
   if (lang.rfind("zh", 0) != 0) {
+    // Non-zh books with an explicit StarDict configured stay on StarDict rather than
+    // being hijacked by a single inline Han footnote/name on non-touch X3 hardware.
+    if (SETTINGS.dictionaryName[0] != '\0') return false;
     const auto curPage = section->loadPage(section->currentPage);
     bool hasHan = false;
     if (curPage) {
@@ -990,9 +997,9 @@ void EpubReaderActivity::loop() {
         }
         break;
       case CrossPointSettings::LP_MENU_DICTIONARY:
-        // Holding Confirm opens Chinese lookup in jump mode (DESIGN 4.1).
-        if (openZhLookup(true)) return;
-        openDictionaryWordSelect();
+        // Holding Confirm opens Chinese lookup in jump mode (DESIGN 4.1) when applicable,
+        // without re-loading/re-scanning the page twice if StarDict runs instead.
+        openDictionaryWordSelect(true);
         return;
       case CrossPointSettings::LP_MENU_CREATE_CLIPPING:
         startClipSelection();
@@ -2309,28 +2316,6 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   drawClippingHighlights(*page, fontId, orientedMarginTop, orientedMarginLeft);
   page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
   renderStatusBar();
-  if (SETTINGS.deadSpaceOrnamentTheme != 0) {
-    uint32_t bookHash = 2166136261u;
-    if (epub) {
-      for (const char c : epub->getPath()) {
-        bookHash = (bookHash ^ static_cast<uint8_t>(c)) * 16777619u;
-      }
-    }
-    page_ornament::RenderContext ornCtx;
-    ornCtx.bookSeed = bookHash;
-    ornCtx.spineIndex = static_cast<uint16_t>(std::max(0, currentSpineIndex));
-    ornCtx.pageIndex = static_cast<uint16_t>(section ? std::max(0, section->currentPage) : 0);
-    ornCtx.fontId = fontId;
-    ornCtx.marginTop = orientedMarginTop;
-    ornCtx.marginRight = orientedMarginRight;
-    ornCtx.marginBottom = orientedMarginBottom;
-    ornCtx.marginLeft = orientedMarginLeft;
-    ornCtx.theme = static_cast<page_ornament::Theme>(SETTINGS.deadSpaceOrnamentTheme);
-    ornCtx.darkMode = (SETTINGS.screenInverted != 0);
-    const auto tOrnaments = millis();
-    page_ornament::renderDeadSpaceOrnaments(renderer, *page, ornCtx);
-    LOG_DBG("ERS", "Page ornaments: %lu ms", millis() - tOrnaments);
-  }
   const auto tBwRender = millis();
 
   if (absoluteImageGrayscale) {

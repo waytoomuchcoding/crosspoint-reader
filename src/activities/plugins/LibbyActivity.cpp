@@ -95,18 +95,6 @@ void LibbyActivity::retryBrowse() {
   runPendingWifiOp();
 }
 
-void LibbyActivity::pumpTransferProgress(const size_t dl, const size_t tot) {
-  downloadProgress = dl;
-  downloadTotal = tot;
-  const int pct = tot > 0 ? static_cast<int>(static_cast<uint64_t>(dl) * 100 / tot) : 0;
-  const unsigned long now = millis();
-  if (pct >= 100 || lastProgressPct_ < 0 || pct >= lastProgressPct_ + 10 || now - lastProgressMs_ >= 3000) {
-    lastProgressPct_ = pct;
-    lastProgressMs_ = now;
-    requestUpdate(true);
-  }
-}
-
 void LibbyActivity::runPendingWifiOp() {
   const PendingWifiOp op = (pendingOp_ == PendingWifiOp::None) ? PendingWifiOp::SyncLoans : pendingOp_;
   pendingOp_ = PendingWifiOp::None;
@@ -140,18 +128,21 @@ void LibbyActivity::runPendingWifiOp() {
   if (op == PendingWifiOp::DownloadLoan && pendingLoanIndex_ >= 0 &&
       pendingLoanIndex_ < static_cast<int>(loans_.size())) {
     const libby::Loan loan = loans_[pendingLoanIndex_];
-    lastProgressPct_ = -1;
-    lastProgressMs_ = 0;
+    resetTransferProgressState();
     beginDownload(loan.title);
 
     std::string destPath;
     std::string err;
-    const bool ok =
-        libby::downloadLoan(loan, destPath, err, [this](size_t dl, size_t tot) { pumpTransferProgress(dl, tot); });
+    const bool ok = libby::downloadLoan(
+        loan, destPath, err, [this](size_t dl, size_t tot) { onDownloadProgress(dl, tot); }, &cancelDownload);
     if (!ok) {
-      state = State::ERROR;
-      errorMessage = err;
-      requestUpdate();
+      if (cancelDownload || err == "Cancelled") {
+        finishDownload(HttpDownloader::ABORTED);
+      } else {
+        state = State::ERROR;
+        errorMessage = err;
+        requestUpdate();
+      }
       return;
     }
     statusMessage = destPath;

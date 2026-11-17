@@ -200,7 +200,7 @@ class EpubReaderActivity final : public ReaderActivity {
   std::string moreRowValue(int row) const;
   void activateMoreRow(int row);
   void openFootnoteSelect(bool reopenMenuOnCancel);
-  void openDictionaryWordSelect();
+  void openDictionaryWordSelect(bool startInJump = false);
   bool openZhLookup(bool startInJump = false);
   void fillVocabularySeries(VocabularyContext& vocabulary);
   // Selection to restore when returning from a dictionary lookup.

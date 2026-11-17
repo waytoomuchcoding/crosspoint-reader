@@ -36,7 +36,6 @@ class LibbyActivity final : public CatalogActivity {
   void rebuildRows();
   void promptSetupCode();
   void runPendingWifiOp();
-  void pumpTransferProgress(size_t dl, size_t tot);
 
   std::vector<libby::Loan> loans_;
   std::vector<std::string> rowSubtitles_;
@@ -47,6 +46,4 @@ class LibbyActivity final : public CatalogActivity {
   PendingWifiOp lastAttemptedOp_ = PendingWifiOp::SyncLoans;
   std::string pendingSetupCode_;
   int pendingLoanIndex_ = -1;
-  unsigned long lastProgressMs_ = 0;
-  int lastProgressPct_ = -1;
 };

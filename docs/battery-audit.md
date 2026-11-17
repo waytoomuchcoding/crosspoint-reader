@@ -17,10 +17,13 @@ still missing for every item; add them under "Measurements" when you have them.
   download while it runs.
 - Deep sleep: WiFi, BLE, display and SD are shut down in `enterDeepSleep()`.
   The Chinese dictionary is closed after section builds and lookups.
-- No fork timers or clock redraws (Shiba theme, status bar).
+- No fork timers or clock redraws.
 - Bitonal pixel fonts skip the grayscale pass (`039993d9`): one panel refresh
   per page instead of two. Keep this.
 - Telegram polling uses `timeout=0` (no long polling).
+- Procedural page ornaments (`PageOrnament`) and the Shiba Desk theme (`ShibaDesk`)
+  have been removed from the fork, eliminating per-page framebuffer distance
+  transforms, soft-float rasterizers, and synchronous multi-cover decodes.
 
 ## Checklist
 
@@ -57,41 +60,19 @@ refresh. Opening the lookup also gets the second refresh.
       (it is reloaded from SD on every open). Deferred: holding it costs heap
       while reading; measure the load time on the X3 first.
 
-### 3. Vocabulary sleep cards do heavy work on every sleep
+### 3. Vocabulary sleep cards
 
-`src/activities/boot_sleep/SleepVocabScreen.cpp`. Every sleep reads up to
-48 KB of `/Vocabulary.txt` one byte per call, parses every JSON line, looks up
-the dictionary and draws full-screen ornaments (soft float). Ornament "Off" was
-forced to AutoCycle (line ~885).
+`src/activities/boot_sleep/SleepVocabScreen.cpp`. Reads `/Vocabulary.txt` in
+512-byte blocks, enriches only the 1-3 selected cards from the dictionary, and
+draws centered flashcards with no ornament pass.
 
-- [x] Setting "Sleep Card Ornaments" (Display, default on); off skips the
-      ornament pass. Sim (host CPU): 600 ms with, 22 ms without.
 - [x] Read the vocabulary file in 512-byte blocks.
-- [x] Dictionary entries are read only for the 2-3 picked cards
+- [x] Dictionary entries are read only for the 1-3 picked cards
       (`enrichFromDict()`), not for every word in the history (up to 160).
-      This replaced the planned SD cache of the card pool.
+- [x] Removed `PageOrnament` sleep card ornaments and corner-staggering layout.
 - [ ] If sleep entry is still slow on the X3: cache ranks per word on SD.
 
-### 4. Page ornaments cost CPU on every page render
-
-`lib/PageOrnament/PageOrnament.cpp`, called from
-`EpubReaderActivity.cpp` (`renderDeadSpaceOrnaments`). The ESP32-C3 has no FPU;
-the rasterizer runs float maths (`std::hypot`, `sqrt`, noise) per pixel and
-scans the whole framebuffer. It reruns on every render of the same page
-(menu close, lookup close).
-
-- [x] Settings menu (Reader): "Page Ornaments" (Off + 5 themes + Auto).
-      Before this it was JSON only; it now uses the generic settings loop.
-- [x] Cache the last page's ornament pixels as row runs (about 8 KB, only
-      while ornaments are on; freed when the reader closes). Keyed by a hash of
-      the frame + context, so redraws of the same page replay (sim: 9 ms -> 0).
-- [x] Stroke rasterizer: squared-distance reject before `sqrt`. Output is
-      bit-identical to the old code (sim screenshot compare).
-- [ ] Same early reject for disc, petal, leaf and creature rasterizers.
-- [ ] Measure on the X3: serial log `Page ornaments: N ms`. If slow, move to
-      fixed point or limit ornaments to chapter-end pages.
-
-### 5. Chinese page turns read many glyphs from SD (verify only)
+### 4. Chinese page turns read many glyphs from SD (verify only)
 
 Each CJK page has a few hundred unique glyphs read from the SD font. The lookup
 screen renders each frame twice (prewarm scan + draw).

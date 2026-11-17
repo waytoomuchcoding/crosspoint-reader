@@ -34,6 +34,4 @@ class TelegramSyncActivity final : public CatalogActivity {
   std::vector<std::string> rowValues_;
   std::vector<freeink::ui::ListItem> rowItems_;
   bool rowsDirty_ = true;
-  unsigned long lastProgressMs_ = 0;
-  int lastProgressPct_ = -1;
 };

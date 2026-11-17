@@ -5,7 +5,6 @@
 #include <HalStorage.h>
 #include <Logging.h>
 #include <Memory.h>
-#include <PageOrnament.h>
 #include <SdCardFont.h>
 #include <Utf8.h>
 #include <ZhDict.h>
@@ -112,10 +111,6 @@ struct Rng32 {
     return z ^ (z >> 16);
   }
   float unit() { return std::max(1e-6f, (next() & 0xFFFFFFu) / 16777216.0f); }
-  int rangeInt(int lo, int hi) {
-    if (hi <= lo) return lo;
-    return lo + static_cast<int>(next() % static_cast<uint32_t>(hi - lo + 1));
-  }
 };
 
 bool startsWithIgnoreCase(const std::string& s, const char* prefix) {
@@ -324,10 +319,14 @@ std::string formatRankBadge(uint8_t hsk, uint32_t rank) {
   char buf[32];
   if (rank != zh::NO_RANK && rank > 0) {
     if (rank >= 1000) {
+      const unsigned wholeK = static_cast<unsigned>(rank / 1000u);
+      const unsigned tenthK = static_cast<unsigned>((rank % 1000u + 50u) / 100u);
+      const unsigned adjK = wholeK + (tenthK >= 10u ? 1u : 0u);
+      const unsigned adjTenth = tenthK >= 10u ? 0u : tenthK;
       if (hsk > 0) {
-        std::snprintf(buf, sizeof(buf), "HSK%u · #%.1fk", static_cast<unsigned>(hsk), rank / 1000.0);
+        std::snprintf(buf, sizeof(buf), "HSK%u · #%u.%uk", static_cast<unsigned>(hsk), adjK, adjTenth);
       } else {
-        std::snprintf(buf, sizeof(buf), "#%.1fk", rank / 1000.0);
+        std::snprintf(buf, sizeof(buf), "#%u.%uk", adjK, adjTenth);
       }
     } else {
       if (hsk > 0) {
@@ -834,9 +833,7 @@ bool renderVocabSleepScreen(GfxRenderer& renderer, bool darkMode) {
   const int W = renderer.getScreenWidth();
   const int H = renderer.getScreenHeight();
 
-  // Decide between 3-Card Staggered S-Cascade (when >=3 words & height permits) vs 2-Card Sweeping Diagonal Courtyard!
-  const bool preferTwoCardCourtyard = (pool.size() == 2) || ((sleepSeed & 3u) == 3u);
-  const size_t wantCards = std::min<size_t>(pool.size(), preferTwoCardCourtyard ? 2 : 3);
+  const size_t wantCards = std::min<size_t>(pool.size(), 3);
 
   // Read dictionary entries for the picked cards only; skip cards left with nothing to show.
   std::vector<PreparedCard> selected;
@@ -854,73 +851,39 @@ bool renderVocabSleepScreen(GfxRenderer& renderer, bool darkMode) {
   }
   if (selected.empty()) return false;
 
-  const int baseCardW = std::clamp(static_cast<int>(W * 0.62f), 280, 344);
+  const int cardW = std::clamp(W - 48, 260, 440);
   for (size_t i = 0; i < selected.size(); ++i) {
-    const int cw = baseCardW + rng.rangeInt(-8, 10);
-    measureAndPrepareCard(renderer, selected[i], headFont.id, readerFont, bodyFont, captionFont, cw);
+    measureAndPrepareCard(renderer, selected[i], headFont.id, readerFont, bodyFont, captionFont, cardW);
   }
 
-  // If 3 cards are too tall to preserve >= 32px ornamental channels between them, gracefully drop to 2 cards!
-  if (selected.size() == 3) {
-    const int sumH = selected[0].h + selected[1].h + selected[2].h;
-    if (sumH + 2 * 32 + 32 > H) {
-      selected.pop_back();
-    }
+  // Drop trailing cards if total height cannot fit cleanly with >= 16 px gaps and 20 px outer margins.
+  constexpr int kMinGap = 16;
+  constexpr int kMinOuterMargin = 20;
+  while (selected.size() > 1) {
+    int sumH = 0;
+    for (const auto& c : selected) sumH += c.h;
+    const int minNeeded = sumH + static_cast<int>(selected.size() - 1) * kMinGap + 2 * kMinOuterMargin;
+    if (minNeeded <= H) break;
+    selected.pop_back();
   }
 
-  // Artsy staggered placement leaving wide side bays & diagonal S-channels for PageOrnament!
-  const bool startLeft = ((sleepSeed >> 2) & 1u) == 0u;
-  if (selected.size() == 1) {
-    selected[0].x = startLeft ? 24 : (W - selected[0].w - 26);
-    selected[0].y = std::max(28, (H - selected[0].h) / 3);
-  } else if (selected.size() == 2) {
-    // Sweeping Diagonal Courtyard: one card anchored upper-corner, the other lower-opposite corner,
-    // opening a lush central diagonal garden/ink expanse between them!
-    const bool leftFirst = startLeft;
-    selected[0].x = leftFirst ? rng.rangeInt(18, 30) : (W - selected[0].w - rng.rangeInt(20, 32));
-    selected[0].y = rng.rangeInt(26, 44);
-
-    selected[1].x = leftFirst ? (W - selected[1].w - rng.rangeInt(20, 32)) : rng.rangeInt(18, 30);
-    selected[1].y = H - selected[1].h - rng.rangeInt(32, 52);
-    if (selected[1].y < selected[0].y + selected[0].h + 56) {
-      selected[1].y = std::min(H - selected[1].h - 16, selected[0].y + selected[0].h + 56);
-    }
-  } else {
-    // 3-Card Asymmetric S-Cascade (Left -> Right -> Left, or Right -> Left -> Right)!
-    const int sumH = selected[0].h + selected[1].h + selected[2].h;
-    const int freeV = std::max(60, H - sumH - 44);
-    const int gap01 = freeV / 2;
-    const int gap12 = freeV - gap01;
-
-    selected[0].y = 20;
-    selected[1].y = selected[0].y + selected[0].h + gap01;
-    selected[2].y = selected[1].y + selected[1].h + gap12;
-
-    for (size_t i = 0; i < 3; ++i) {
-      const bool pinLeft = ((i % 2 == 0) == startLeft);
-      selected[i].x = pinLeft ? rng.rangeInt(16, 28) : (W - selected[i].w - rng.rangeInt(18, 30));
-    }
+  int sumH = 0;
+  for (const auto& c : selected) sumH += c.h;
+  const int nCards = static_cast<int>(selected.size());
+  const int gap = (nCards > 1) ? std::clamp((H - sumH - 2 * kMinOuterMargin) / (nCards - 1), kMinGap, 36) : 0;
+  const int blockH = sumH + (nCards - 1) * gap;
+  int curY = std::max(12, (H - blockH) / 2);
+  for (auto& card : selected) {
+    card.x = std::max(8, (W - card.w) / 2);
+    card.y = curY;
+    curY += card.h + gap;
   }
 
   renderer.clearScreen(darkMode ? 0x00 : 0xFF);
 
-  // Draw all vocabulary plaques first.
-  std::vector<page_ornament::KeepoutRect> keepouts;
-  keepouts.reserve(selected.size());
   for (const auto& card : selected) {
     drawPreparedCard(renderer, card, readerFont, bodyFont, captionFont, darkMode);
-    keepouts.push_back({static_cast<int16_t>(card.x - 2), static_cast<int16_t>(card.y - 2),
-                        static_cast<int16_t>(card.x + card.w + 5), static_cast<int16_t>(card.y + card.h + 5)});
   }
-
-  // Fill all gaps, channels & alcoves between the cards with 1-bit procedural ornaments!
-  if (!SETTINGS.sleepCardOrnaments) return true;
-  // Page ornaments Off still decorates the cards; Sleep card ornaments is the switch here.
-  auto theme = static_cast<page_ornament::Theme>(SETTINGS.deadSpaceOrnamentTheme);
-  if (theme == page_ornament::Theme::Off) {
-    theme = page_ornament::Theme::AutoCycle;
-  }
-  page_ornament::renderCanvasOrnaments(renderer, theme, sleepSeed, keepouts.data(), keepouts.size(), 6, 9.0f, darkMode);
 
   return true;
 }

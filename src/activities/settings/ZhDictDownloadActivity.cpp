@@ -1,11 +1,13 @@
 #include "ZhDictDownloadActivity.h"
 
 #include <ArduinoJson.h>
+#include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <HalMemory.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <WiFi.h>
 #include <ZhDict.h>
 #include <esp_rom_crc.h>
@@ -60,8 +62,15 @@ void ZhDictDownloadActivity::onEnter() {
     }
   }
   WiFi.mode(WIFI_STA);
-  startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
-                         [this](const ActivityResult& result) { onWifi(!result.isCancelled); });
+  auto wifi = makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput);
+  if (!wifi) {
+    LOG_ERR("ZHDL", "OOM: WifiSelectionActivity");
+    error = "out of memory";
+    state = State::Failed;
+    requestUpdate();
+    return;
+  }
+  startActivityForResult(std::move(wifi), [this](const ActivityResult& result) { onWifi(!result.isCancelled); });
 }
 
 void ZhDictDownloadActivity::onExit() {
@@ -84,6 +93,9 @@ void ZhDictDownloadActivity::onWifi(const bool connected) {
     state = State::Checking;
   }
   requestUpdateAndWait();
+  if (auto* fcm = renderer.getFontCacheManager()) {
+    fcm->releaseSdFontCaches();
+  }
   const bool ok = fetchManifest();
   {
     RenderLock lock(*this);
@@ -143,20 +155,30 @@ bool ZhDictDownloadActivity::installFile(const File& file, const size_t index) {
     currentFile = index;
     fileBytes = 0;
   }
-  requestUpdate();
+  requestUpdate(true);
   unsigned long lastDraw = 0;
   const auto err = HttpDownloader::downloadToFile(
       std::string(ZH_DICT_RELEASE_URL) + file.asset, dest,
       [&](size_t downloaded, size_t) {
         fileBytes = static_cast<uint32_t>(downloaded);
-        if (millis() - lastDraw > 2000) {
+        mappedInput.update(true);
+        if (mappedInput.isPressed(MappedInputManager::Button::Back) ||
+            mappedInput.wasPressed(MappedInputManager::Button::Back) ||
+            mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasHomeGesture()) {
+          cancelRequested = true;
+        }
+        if (millis() - lastDraw > 1500) {
           lastDraw = millis();
-          requestUpdate();
+          requestUpdate(true);
         }
       },
-      nullptr, "", "", {}, true);
+      &cancelRequested, "", "", {}, true);
   if (err != HttpDownloader::OK) {
-    error = file.asset + ": download failed (" + std::to_string(HttpDownloader::lastStatus()) + ")";
+    if (err == HttpDownloader::ABORTED || cancelRequested) {
+      cancelRequested = true;
+    } else {
+      error = file.asset + ": download failed (" + std::to_string(HttpDownloader::lastStatus()) + ")";
+    }
     return false;
   }
   uint32_t crc = 0;
@@ -190,6 +212,10 @@ bool ZhDictDownloadActivity::swapInDictionary() {
 }
 
 void ZhDictDownloadActivity::download() {
+  if (auto* fcm = renderer.getFontCacheManager()) {
+    fcm->releaseSdFontCaches();
+  }
+  cancelRequested = false;
   const auto heap = HalMemory::getDefaultHeap();
   if (heap.freeBytes < HttpDownloader::MIN_TLS_FREE_HEAP) {
     error = "not enough memory for TLS; restart and try again";
@@ -202,6 +228,14 @@ void ZhDictDownloadActivity::download() {
   doneBytes = 0;
   bool ok = true;
   for (size_t i = 0; i < files.size() && ok; ++i) ok = installFile(files[i], i);
+  if (cancelRequested) {
+    Storage.removeDir(NEW_DIR);
+    RenderLock lock(*this);
+    doneBytes = 0;
+    fileBytes = 0;
+    state = State::Confirm;
+    return;
+  }
   if (ok && !swapInDictionary()) {
     error = "could not replace /zh";
     ok = false;
@@ -238,13 +272,15 @@ void ZhDictDownloadActivity::loop() {
 
 void ZhDictDownloadActivity::render(RenderLock&&) {
   renderer.clearScreen();
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int width = renderer.getScreenWidth();
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, width, metrics.headerHeight}, tr(STR_ZH_DICT_DOWNLOAD));
-  const int x = metrics.contentSidePadding;
-  const int contentWidth = width - 2 * x;
+  auto& theme = UITheme::getInstance();
+  const auto& metrics = theme.getMetrics();
+  const Rect safe = theme.getScreenSafeArea(renderer, /*hasFrontButtonHints=*/true, /*hasSideButtonHints=*/false);
+  const Rect headerRect = theme.getHeaderRect(renderer, /*hasFrontButtonHints=*/true, /*hasSideButtonHints=*/false);
+  GUI.drawHeader(renderer, headerRect, tr(STR_ZH_DICT_DOWNLOAD));
+  const int x = safe.x + metrics.contentSidePadding;
+  const int contentWidth = (safe.width > 2 * metrics.contentSidePadding + 60) ? (safe.width - 2 * metrics.contentSidePadding) : 60;
   const int lh = renderer.getLineHeight(UI_10_FONT_ID);
-  int y = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing * 3;
+  int y = headerRect.y + headerRect.height + metrics.verticalSpacing * 3;
   const auto para = [&](const std::string& text) {
     for (const auto& line : renderer.wrappedText(UI_10_FONT_ID, text.c_str(), contentWidth, 8)) {
       renderer.drawText(UI_10_FONT_ID, x, y, line.c_str());

@@ -499,7 +499,7 @@ bool pairLatestChat(std::string_view botToken, std::string& chatIdOut, std::stri
 }
 
 bool syncPendingFiles(SyncSummary& summaryOut, std::string& errOut, ProgressCallback progressCb,
-                      const std::function<bool()>& shouldStop) {
+                      const std::function<bool()>& shouldStop, const bool* cancelFlag) {
   summaryOut = {};
   if (!TELEGRAM_STORE.hasCredentials()) {
     errOut = "Telegram bot token or chat ID not configured";
@@ -548,7 +548,22 @@ bool syncPendingFiles(SyncSummary& summaryOut, std::string& errOut, ProgressCall
       break;  // No more pending updates in queue
     }
 
+    std::sort(updates.begin(), updates.end(),
+              [](const PendingFileUpdate& a, const PendingFileUpdate& b) { return a.updateId < b.updateId; });
+
+    bool batchCompletedAll = true;
+    bool cancelled = false;
+    int64_t stopBeforeUpdateId = 0;
+
     for (const auto& upd : updates) {
+      if ((shouldStop && shouldStop()) || (cancelFlag && *cancelFlag)) {
+        batchCompletedAll = false;
+        stopBeforeUpdateId = upd.updateId;
+        cancelled = true;
+        errOut = "Cancelled";
+        break;
+      }
+
       summaryOut.updatesProcessed++;
       const std::string getFileUrl = std::string(kTelegramApiBase) + "/bot" + botToken +
                                      "/getFile?file_id=" + pluginhttp::urlEncodeQuery(upd.fileId);
@@ -556,7 +571,9 @@ bool syncPendingFiles(SyncSummary& summaryOut, std::string& errOut, ProgressCall
       const int gfStatus = pluginhttp::request(ensureApiSession(), getFileUrl, "GET", "",
                                                {{"Accept", "application/json"}}, getFileResp, 8 * 1024);
       if (gfStatus < 200 || gfStatus >= 300 || getFileResp.length() == 0) {
-        continue;
+        batchCompletedAll = false;
+        stopBeforeUpdateId = upd.updateId;
+        break;
       }
 
       std::string remoteFilePath;
@@ -564,7 +581,9 @@ bool syncPendingFiles(SyncSummary& summaryOut, std::string& errOut, ProgressCall
           parseGetFilePathJson(std::string_view(getFileResp.c_str(), getFileResp.length()), remoteFilePath, errOut);
       getFileResp = String();
       if (!gotPath) {
-        continue;
+        batchCompletedAll = false;
+        stopBeforeUpdateId = upd.updateId;
+        break;
       }
 
       const std::string fileDownloadUrl =
@@ -586,13 +605,22 @@ bool syncPendingFiles(SyncSummary& summaryOut, std::string& errOut, ProgressCall
             tmpExt = ".bmp";
           }
           const std::string tempImgPath = std::string(txtmeta::kHiddenCoversDir) + "/.tg_cover_dl" + tmpExt;
-          const auto dlErr = HttpDownloader::downloadToFile(fileDownloadUrl, tempImgPath, [&](size_t dl, size_t tot) {
-            if (progressCb) progressCb(upd.fileName, dl, tot);
-          });
+          const auto dlErr = HttpDownloader::downloadToFile(
+              fileDownloadUrl, tempImgPath,
+              [&](size_t dl, size_t tot) {
+                if (progressCb) progressCb(upd.fileName, dl, tot);
+              },
+              cancelFlag);
           if (dlErr != HttpDownloader::OK) {
             LOG_ERR("TGS", "Failed to download Telegram cover image %s", upd.fileName.c_str());
             Storage.remove(tempImgPath.c_str());
-            continue;
+            batchCompletedAll = false;
+            stopBeforeUpdateId = upd.updateId;
+            if (dlErr == HttpDownloader::ABORTED || (cancelFlag && *cancelFlag)) {
+              cancelled = true;
+              errOut = "Cancelled";
+            }
+            break;
           }
 
           std::string capTitle;
@@ -620,13 +648,21 @@ bool syncPendingFiles(SyncSummary& summaryOut, std::string& errOut, ProgressCall
             Storage.mkdir(coversDir.c_str());
           }
           const std::string savedCoverPath = coversDir + "/" + upd.fileName;
-          const auto dlErr =
-              HttpDownloader::downloadToFile(fileDownloadUrl, savedCoverPath, [&](size_t dl, size_t tot) {
+          const auto dlErr = HttpDownloader::downloadToFile(
+              fileDownloadUrl, savedCoverPath,
+              [&](size_t dl, size_t tot) {
                 if (progressCb) progressCb(upd.fileName, dl, tot);
-              });
+              },
+              cancelFlag);
           if (dlErr != HttpDownloader::OK) {
             LOG_ERR("TGS", "Failed to download Telegram cover image %s", upd.fileName.c_str());
-            continue;
+            batchCompletedAll = false;
+            stopBeforeUpdateId = upd.updateId;
+            if (dlErr == HttpDownloader::ABORTED || (cancelFlag && *cancelFlag)) {
+              cancelled = true;
+              errOut = "Cancelled";
+            }
+            break;
           }
           summaryOut.filesDownloaded++;
           summaryOut.savedPaths.push_back(savedCoverPath);
@@ -660,12 +696,21 @@ bool syncPendingFiles(SyncSummary& summaryOut, std::string& errOut, ProgressCall
         destPath = destFolder + "/" + upd.fileName;
       }
 
-      const auto dlErr = HttpDownloader::downloadToFile(fileDownloadUrl, destPath, [&](size_t dl, size_t tot) {
-        if (progressCb) progressCb(upd.fileName, dl, tot);
-      });
+      const auto dlErr = HttpDownloader::downloadToFile(
+          fileDownloadUrl, destPath,
+          [&](size_t dl, size_t tot) {
+            if (progressCb) progressCb(upd.fileName, dl, tot);
+          },
+          cancelFlag);
       if (dlErr != HttpDownloader::OK) {
         LOG_ERR("TGS", "Failed to download Telegram file %s", upd.fileName.c_str());
-        continue;
+        batchCompletedAll = false;
+        stopBeforeUpdateId = upd.updateId;
+        if (dlErr == HttpDownloader::ABORTED || (cancelFlag && *cancelFlag)) {
+          cancelled = true;
+          errOut = "Cancelled";
+        }
+        break;
       }
 
       if (isFont) {
@@ -673,9 +718,21 @@ bool syncPendingFiles(SyncSummary& summaryOut, std::string& errOut, ProgressCall
       } else if (adept::isAcsmFile(destPath)) {
         std::string fulfilledPath;
         std::string acsmErr;
-        if (adept::fulfillAcsmFile(destPath, fulfilledPath, acsmErr)) {
+        if (adept::fulfillAcsmFile(
+                destPath, fulfilledPath, acsmErr,
+                [&](size_t dl, size_t tot) {
+                  if (progressCb) progressCb(upd.fileName, dl, tot);
+                },
+                cancelFlag)) {
           destPath = fulfilledPath;
         } else {
+          if (cancelFlag && *cancelFlag) {
+            batchCompletedAll = false;
+            stopBeforeUpdateId = upd.updateId;
+            cancelled = true;
+            errOut = "Cancelled";
+            break;
+          }
           const std::string safeErr = redactBotToken(acsmErr, botToken);
           LOG_ERR("TGS", "ACSM fulfillment failed for %s: %s", destPath.c_str(), safeErr.c_str());
         }
@@ -711,9 +768,19 @@ bool syncPendingFiles(SyncSummary& summaryOut, std::string& errOut, ProgressCall
       sendConfirmationReply(ensureApiSession(), botToken, allowedChatId, "Saved to CrossPoint: " + destPath);
     }
 
-    nextOffset = highestUpdateId + 1;
-    TELEGRAM_STORE.setLastUpdateId(highestUpdateId);
-    TELEGRAM_STORE.saveToFile();
+    if (batchCompletedAll) {
+      nextOffset = highestUpdateId + 1;
+      TELEGRAM_STORE.setLastUpdateId(highestUpdateId);
+      TELEGRAM_STORE.saveToFile();
+    } else {
+      const int64_t safeAck = stopBeforeUpdateId - 1;
+      if (safeAck > TELEGRAM_STORE.getLastUpdateId()) {
+        TELEGRAM_STORE.setLastUpdateId(safeAck);
+        TELEGRAM_STORE.saveToFile();
+      }
+      if (cancelled) return false;
+      break;
+    }
   }
 
   return true;

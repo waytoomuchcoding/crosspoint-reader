@@ -119,8 +119,8 @@ std::string deobfuscateFromBase64(const char* encoded, bool* ok) {
 }  // namespace obfuscation
 
 namespace bookkey {
-bool write(const std::string& keyPath, const uint8_t* key, size_t len, int64_t) {
-  hostfs::writeString(keyPath, std::string(reinterpret_cast<const char*>(key), len));
+bool write(const std::string& bookPath, const uint8_t* key, size_t len, int64_t) {
+  hostfs::writeString(bookPath + ".key", std::string(reinterpret_cast<const char*>(key), len));
   return true;
 }
 }  // namespace bookkey

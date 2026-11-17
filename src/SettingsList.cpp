@@ -51,7 +51,8 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
                          {StrId::STR_PAGES_1, StrId::STR_PAGES_5, StrId::STR_PAGES_10, StrId::STR_PAGES_15,
                           StrId::STR_PAGES_30, StrId::STR_NEVER},
                          "refreshFrequency", StrId::STR_CAT_DISPLAY));
-  emit(buildUiThemeSetting());
+  emit(SettingInfo::Enum(StrId::STR_UI_THEME, &CrossPointSettings::uiTheme, homeThemeValues(), "uiTheme",
+                         StrId::STR_CAT_DISPLAY));
   if (!BoardConfig::hasTouch())
     emit(SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix, "fadingFix",
                              StrId::STR_CAT_DISPLAY));
@@ -63,8 +64,6 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
   // applies it to every activity), so it lives in the Display category.
   emit(SettingInfo::Toggle(StrId::STR_NIGHT_MODE, &CrossPointSettings::screenInverted, "screenInverted",
                            StrId::STR_CAT_DISPLAY));
-  emit(SettingInfo::Toggle(StrId::STR_SLEEP_CARD_ORNAMENTS, &CrossPointSettings::sleepCardOrnaments,
-                           "sleepCardOrnaments", StrId::STR_CAT_DISPLAY));
 
   // --- Reader ---
   // Built-in font-family entry. Replaced per-call with a registry-aware
@@ -115,11 +114,6 @@ void forEachBaseSetting(SettingVisitor visit, void* context) {
                          {StrId::STR_ZH_RUBY_BESIDE, StrId::STR_ZH_RUBY_UNDER}, "zhRubyStyle", StrId::STR_CAT_READER));
   emit(SettingInfo::Toggle(StrId::STR_ZH_LOOKUP_PREVIEW, &CrossPointSettings::zhLookupPreview, "zhLookupPreview",
                            StrId::STR_CAT_READER));
-  // Values follow page_ornament::Theme.
-  emit(SettingInfo::Enum(StrId::STR_PAGE_ORNAMENTS, &CrossPointSettings::deadSpaceOrnamentTheme,
-                         {StrId::STR_STATE_OFF, StrId::STR_ORN_BOTANICAL, StrId::STR_ORN_PLUM_BAMBOO,
-                          StrId::STR_ORN_CELESTIAL, StrId::STR_ORN_FILIGREE, StrId::STR_ORN_WAVES, StrId::STR_ORN_AUTO},
-                         "deadSpaceOrnamentTheme", StrId::STR_CAT_READER));
   emit(SettingInfo::Toggle(StrId::STR_FOCUS_READING, &CrossPointSettings::focusReadingEnabled, "focusReadingEnabled",
                            StrId::STR_CAT_READER)
            .withTextSettings());

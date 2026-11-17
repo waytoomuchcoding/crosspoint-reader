@@ -29,6 +29,6 @@ bool readEncodingPreview(const std::string& filepath, size_t byteOffset, TextEnc
                          std::string& utf8PreviewOut, TextEncoding* detectedOut = nullptr);
 
 size_t scanChapterHeadings(const std::string& filepath, TextEncoding activeEncoding, BookMetadataCache& cache,
-                           bool& hasCjk);
+                           bool& hasCjk, std::string* detectedLangOut = nullptr);
 
 }  // namespace txtenc

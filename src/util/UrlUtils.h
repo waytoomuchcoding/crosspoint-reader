@@ -41,4 +41,11 @@ bool resolveServerPath(std::string& path, const std::string& requestUrl);
  */
 bool isForeignHost(const char* hostHeader);
 
+/**
+ * Return a copy of `url` with embedded path credentials such as Telegram Bot
+ * tokens ("/bot<id>:<secret>/...") replaced by "/bot<redacted>/...".
+ * Returns `url` unchanged when no secret pattern is present.
+ */
+std::string redactUrlForLog(const std::string& url);
+
 }  // namespace UrlUtils

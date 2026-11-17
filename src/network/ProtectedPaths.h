@@ -21,8 +21,6 @@ inline constexpr const char* SENSITIVE_FILES[] = {
     "/.crosspoint/libby.json",
     "/.crosspoint/adept.json",
     "/.crosspoint/adept",
-    "/.crosspoint/plugins/libby/token.json",
-    "/.crosspoint/plugins/protected-content",
 };
 
 // SdFat also opens a name by its generated 8.3 alias (".crosspoint" is

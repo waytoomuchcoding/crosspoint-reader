@@ -59,11 +59,17 @@ bool loadDeviceCredentials(DeviceCredentials& credsOut, std::string& errOut);
 // 4. Downloads the encrypted `.epub` to `destEpubPath`
 // 5. Unwraps `<encryptedKey>` and writes `<destEpubPath>.key` via `bookkey::write()`
 bool fulfillAcsmContentToEpub(std::string_view acsmXml, const std::string& destEpubPath, std::string& errOut,
-                              std::function<void(size_t, size_t)> progressCb = nullptr);
+                              std::function<void(size_t, size_t)> progressCb = nullptr,
+                              const bool* cancelFlag = nullptr);
+
+// Same as fulfillAcsmContentToEpub(), but clears `acsmXml` once signed so it does not occupy DRAM during TLS/download.
+bool fulfillAcsmContentToEpubConsume(std::string& acsmXml, const std::string& destEpubPath, std::string& errOut,
+                                     std::function<void(size_t, size_t)> progressCb = nullptr,
+                                     const bool* cancelFlag = nullptr);
 
 // Fulfills an `.acsm` file on SD card into `destEpubPath` (if `destEpubPath` is empty, replaces `.acsm` suffix with
 // `.epub` and removes the source `.acsm` ticket on success).
 bool fulfillAcsmFile(const std::string& acsmPath, std::string& finalEpubPathOut, std::string& errOut,
-                     std::function<void(size_t, size_t)> progressCb = nullptr);
+                     std::function<void(size_t, size_t)> progressCb = nullptr, const bool* cancelFlag = nullptr);
 
 }  // namespace adept

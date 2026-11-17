@@ -204,15 +204,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   };
 
   // UI Theme
-  enum UI_THEME {
-    CLASSIC = 0,
-    LYRA = 1,
-    LYRA_3_COVERS = 2,
-    ROUNDEDRAFF = 3,
-    COVER_GRID = 4,
-    SHIBA_DESK = 5,
-    UI_THEME_COUNT
-  };
+  enum UI_THEME { CLASSIC = 0, LYRA = 1, LYRA_3_COVERS = 2, ROUNDEDRAFF = 3, COVER_GRID = 4 };
 
   // Image rendering in EPUB reader. IMAGES_DISPLAY_BW lays images out like
   // IMAGES_DISPLAY but draws them as a B/W dither, so image pages skip the
@@ -377,8 +369,6 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Zhuyin ruby placement: 0 = Beside character, 1 = Under character.
   enum ZH_RUBY_STYLE { ZH_RUBY_BESIDE = 0, ZH_RUBY_UNDER = 1 };
   uint8_t zhRubyStyle = ZH_RUBY_BESIDE;
-  // Dead-space procedural page ornament theme (see page_ornament::Theme, 0 = Off .. 6 = AutoCycle).
-  uint8_t deadSpaceOrnamentTheme = 0;
   // Sleep auto-sync: minimum time between runs (see SLEEP_SYNC_INTERVAL) and
   // whether it may run on battery (needs >= 50%) or only on USB power.
   enum SLEEP_SYNC_INTERVAL {
@@ -394,8 +384,6 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t sleepSyncOnBattery = 1;
   // Chinese lookup: one-line preview of words at the cursor.
   uint8_t zhLookupPreview = 1;
-  // Procedural ornaments in the gaps between vocabulary sleep cards.
-  uint8_t sleepCardOrnaments = 1;
   uint8_t readerMenuStyle = READER_MENU_LIST;
   // SD card font family name (empty = use built-in fontFamily)
   char sdFontFamilyName[32] = "";
