@@ -1948,13 +1948,28 @@ std::vector<std::string> GfxRenderer::wrappedText(const int fontId, const char* 
       // which has no space boundaries at all. Hard-split at the widest UTF-8
       // prefix that fits (never below one codepoint, so the loop advances) and
       // requeue the rest to keep wrapping.
-      size_t fit = 0;
-      while (fit < word.size()) {
-        size_t next = fit + 1;
+      std::vector<size_t> ends;
+      for (size_t i = 0; i < word.size();) {
+        size_t next = i + 1;
         while (next < word.size() && (static_cast<unsigned char>(word[next]) & 0xC0) == 0x80) next++;
-        if (fit > 0 && getTextWidth(fontId, word.substr(0, next).c_str(), style) > maxWidth) break;
-        fit = next;
+        ends.push_back(next);
+        i = next;
       }
+
+      size_t best = 1;
+      size_t lo = 2;
+      size_t hi = ends.size();
+      while (lo <= hi) {
+        const size_t mid = lo + (hi - lo) / 2;
+        if (getTextWidth(fontId, word.substr(0, ends[mid - 1]).c_str(), style) <= maxWidth) {
+          best = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+
+      const size_t fit = ends.empty() ? 0 : ends[best - 1];
       lines.push_back(word.substr(0, fit));
       const std::string rest = word.substr(fit);
       if (!rest.empty()) remaining = remaining.empty() ? rest : rest + " " + remaining;

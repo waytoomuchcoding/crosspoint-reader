@@ -136,3 +136,38 @@ target_link_libraries(Phase3UiBugProofsTest PRIVATE
   GTest::gtest_main
 )
 gtest_discover_tests(Phase3UiBugProofsTest)
+
+add_executable(Phase3WrappedTextTest
+  Phase3WrappedTextTest.cpp
+  ${REPO_ROOT}/lib/GfxRenderer/GfxRenderer.cpp
+  ${REPO_ROOT}/lib/GfxRenderer/Bitmap.cpp
+  ${REPO_ROOT}/lib/GfxRenderer/BitmapHelpers.cpp
+  ${REPO_ROOT}/lib/GfxRenderer/FontCacheManager.cpp
+  ${REPO_ROOT}/lib/EpdFont/EpdFont.cpp
+  ${REPO_ROOT}/lib/EpdFont/EpdFontFamily.cpp
+  ${REPO_ROOT}/lib/EpdFont/SdCardFont.cpp
+  ${REPO_ROOT}/lib/EpdFont/TtfEpdFont.cpp
+  ${REPO_ROOT}/lib/EpdFont/FontDecompressor.cpp
+  ${REPO_ROOT}/lib/MiniBidi/BidiUtils.cpp
+  ${REPO_ROOT}/lib/MiniBidi/minibidi.c
+  ${REPO_ROOT}/lib/InflateReader/InflateReader.cpp
+  ${REPO_ROOT}/lib/uzlib/src/tinflate.c
+  ${REPO_ROOT}/lib/Memory/BuildScratch.cpp
+  ${REPO_ROOT}/lib/Utf8/Utf8.cpp
+)
+target_include_directories(Phase3WrappedTextTest PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/stubs_gfx
+  ${REPO_ROOT}/test/sd_card_font/stubs
+  ${REPO_ROOT}/lib/GfxRenderer
+  ${REPO_ROOT}/lib/EpdFont
+  ${REPO_ROOT}/lib/MiniBidi
+  ${REPO_ROOT}/lib/InflateReader
+  ${REPO_ROOT}/lib/uzlib/src
+  ${REPO_ROOT}/lib/Memory
+  ${REPO_ROOT}/lib/Utf8
+)
+target_link_libraries(Phase3WrappedTextTest PRIVATE
+  crosspoint_test_common
+  GTest::gtest_main
+)
+gtest_discover_tests(Phase3WrappedTextTest)
