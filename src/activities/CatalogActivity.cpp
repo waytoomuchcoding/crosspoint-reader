@@ -34,20 +34,14 @@ bool CatalogActivity::wifiConnected() {
 }
 
 void CatalogActivity::fail(const StrId message) {
-  {
-    RenderLock lock(*this);
-    errorMessage = I18N.get(message);
-    state = State::ERROR;
-  }
+  state = State::ERROR;
+  errorMessage = I18N.get(message);
   requestUpdate();
 }
 
 void CatalogActivity::beginLoading() {
-  {
-    RenderLock lock(*this);
-    statusMessage = tr(STR_LOADING);
-    state = State::LOADING;
-  }
+  state = State::LOADING;
+  statusMessage = tr(STR_LOADING);
   requestUpdate(true);
 }
 
@@ -150,13 +144,10 @@ void CatalogActivity::navigateButtons() {
 }
 
 void CatalogActivity::beginDownload(const std::string& title) {
-  {
-    RenderLock lock(*this);
-    statusMessage = title;
-    downloadProgress = downloadTotal = 0;
-    cancelDownload = goHomeAfterCancel = false;
-    state = State::DOWNLOADING;
-  }
+  state = State::DOWNLOADING;
+  statusMessage = title;
+  downloadProgress = downloadTotal = 0;
+  cancelDownload = goHomeAfterCancel = false;
   requestUpdate(true);
 }
 
