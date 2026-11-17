@@ -4,11 +4,13 @@
 #include <I18n.h>
 #include <WiFi.h>
 
+#include "FontCacheManager.h"
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/HttpDownloader.h"
 #include "network/OtaUpdater.h"
 
 void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
@@ -23,6 +25,10 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
   {
     RenderLock lock(*this);
     state = CHECKING_FOR_UPDATE;
+  }
+  if (auto* fcm = renderer.getFontCacheManager()) {
+    RenderLock lock(*this);
+    fcm->releaseSdFontCaches();
   }
   requestUpdateAndWait();
 
@@ -177,6 +183,9 @@ void OtaUpdateActivity::runUpdateInstall() {
   {
     RenderLock lock(*this);
     state = UPDATE_IN_PROGRESS;
+    if (auto* fcm = renderer.getFontCacheManager()) {
+      fcm->releaseSdFontCaches();
+    }
   }
   requestUpdateAndWait();
   const auto res = updater.installUpdate(
@@ -189,7 +198,7 @@ void OtaUpdateActivity::runUpdateInstall() {
       this);
 
   if (res != OtaUpdater::OK) {
-    LOG_DBG("OTA", "Update failed: %d", res);
+    LOG_ERR("OTA", "Update failed: res=%d httpStatus=%d", res, HttpDownloader::lastStatus());
     {
       RenderLock lock(*this);
       failedDetail = res == OtaUpdater::WRONG_DEVICE_ERROR ? tr(STR_FIRMWARE_WRONG_DEVICE) : nullptr;
