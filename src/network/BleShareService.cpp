@@ -14,13 +14,13 @@
 #include <Logging.h>
 #include <Xtc.h>
 #include <esp_random.h>
+#include <strings.h>
 
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <strings.h>
 
 #include "BleShareStore.h"
 #include "ClippingStore.h"
@@ -55,7 +55,7 @@ char g_pairingPin[xpbt::kPinDigits + 1] = "000000";
 bool g_launchIncomingPending = false;
 std::string g_launchReturnBookPath;
 unsigned long g_windowArmedAtMs = 0;
-bool g_radioRunning = false;
+std::atomic<bool> g_radioRunning{false};
 
 // Active streaming file state (main loop only).
 HalFile g_outFile;
@@ -132,7 +132,7 @@ void closeClientSocket() {
 }
 
 bool startTransport(bool /*fastAdv*/) {
-  if (g_radioRunning) return true;
+  if (g_radioRunning.load(std::memory_order_acquire)) return true;
   const int port = simPort();
   if (port <= 0) return false;
 
@@ -154,18 +154,18 @@ bool startTransport(bool /*fastAdv*/) {
     return false;
   }
   g_listenFd = fd;
-  g_radioRunning = true;
+  g_radioRunning.store(true, std::memory_order_release);
   LOG_INF("BLESHARE", "Simulator BLE bridge listening on 127.0.0.1:%d", port);
   return true;
 }
 
 void stopTransport() {
+  g_radioRunning.store(false, std::memory_order_release);
   closeClientSocket();
   if (g_listenFd >= 0) {
     ::close(g_listenFd);
     g_listenFd = -1;
   }
-  g_radioRunning = false;
 }
 
 bool transportConnected() { return g_clientFd >= 0; }
@@ -200,6 +200,7 @@ std::atomic<bool> g_peerDisconnectEdge{false};
 std::atomic<uint16_t> g_peerMtu{23};
 
 NimBLEServer* g_server = nullptr;
+NimBLECharacteristic* g_rxChar = nullptr;
 NimBLECharacteristic* g_txChar = nullptr;
 
 void pushRxBytesFromIsrOrTask(const uint8_t* data, const size_t len) {
@@ -235,14 +236,12 @@ class ShareServerCallbacks final : public NimBLEServerCallbacks {
   void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override {
     g_peerConnected.store(false, std::memory_order_release);
     g_peerDisconnectEdge.store(true, std::memory_order_release);
-    if (g_radioRunning && NimBLEDevice::isInitialized()) {
+    if (g_radioRunning.load(std::memory_order_acquire) && NimBLEDevice::isInitialized()) {
       NimBLEDevice::startAdvertising();
     }
   }
 
-  void onMTUChange(const uint16_t mtu, NimBLEConnInfo&) override {
-    g_peerMtu.store(mtu, std::memory_order_release);
-  }
+  void onMTUChange(const uint16_t mtu, NimBLEConnInfo&) override { g_peerMtu.store(mtu, std::memory_order_release); }
 };
 
 class ShareRxCallbacks final : public NimBLECharacteristicCallbacks {
@@ -273,7 +272,7 @@ bool heapAllowsStart() {
 }
 
 bool startTransport(const bool fastAdv) {
-  if (g_radioRunning) return true;
+  if (g_radioRunning.load(std::memory_order_acquire)) return true;
   if (bleturner::holdsHeap() || bleturner::status().running || bleturner::status().starting ||
       bleturner::status().stopping) {
     return false;
@@ -305,7 +304,9 @@ bool startTransport(const bool fastAdv) {
     NimBLEDevice::deinit(true);
     return false;
   }
-  g_server->setCallbacks(&g_serverCb);
+  // g_serverCb is static (.bss); pass deleteCallbacks=false so NimBLEDevice::deinit(true)
+  // does not call delete on a non-heap pointer.
+  g_server->setCallbacks(&g_serverCb, false);
   g_server->advertiseOnDisconnect(true);
 
   NimBLEService* svc = g_server->createService(xpbt::kServiceUuid);
@@ -315,16 +316,16 @@ bool startTransport(const bool fastAdv) {
     return false;
   }
 
-  NimBLECharacteristic* rxChar =
-      svc->createCharacteristic(xpbt::kRxCharUuid, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
+  g_rxChar = svc->createCharacteristic(xpbt::kRxCharUuid, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
   g_txChar = svc->createCharacteristic(xpbt::kTxCharUuid, NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ);
-  if (!rxChar || !g_txChar) {
+  if (!g_rxChar || !g_txChar) {
+    g_rxChar = nullptr;
     g_txChar = nullptr;
     g_server = nullptr;
     NimBLEDevice::deinit(true);
     return false;
   }
-  rxChar->setCallbacks(&g_rxCb);
+  g_rxChar->setCallbacks(&g_rxCb);
   svc->start();
 
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
@@ -336,37 +337,59 @@ bool startTransport(const bool fastAdv) {
   adv->setMaxInterval(fastAdv ? 0x00C0 : 0x0320);  // 120ms in foreground/pairing, 500ms background
   if (!adv->start()) {
     LOG_ERR("BLESHARE", "Advertising start failed");
+    g_rxChar = nullptr;
     g_txChar = nullptr;
     g_server = nullptr;
     NimBLEDevice::deinit(true);
     return false;
   }
 
-  g_radioRunning = true;
+  g_radioRunning.store(true, std::memory_order_release);
   LOG_INF("BLESHARE", "BLE companion share advertising (%s)", fastAdv ? "fast" : "background");
   return true;
 }
 
 void stopTransport() {
-  if (!g_radioRunning) return;
+  if (!g_radioRunning.exchange(false, std::memory_order_acq_rel)) return;
+  NimBLEServer* server = g_server;
+  NimBLECharacteristic* rxChar = g_rxChar;
+  g_rxChar = nullptr;
   g_txChar = nullptr;
   g_server = nullptr;
-  g_peerConnected.store(false, std::memory_order_release);
-  g_peerDisconnectEdge.store(false, std::memory_order_release);
   if (NimBLEDevice::isInitialized()) {
+    if (rxChar) {
+      rxChar->setCallbacks(nullptr);
+    }
+    if (server) {
+      server->advertiseOnDisconnect(false);
+      server->setCallbacks(nullptr, false);
+      if (server->getConnectedCount() > 0) {
+        for (const uint16_t connHandle : server->getPeerDevices()) {
+          server->disconnect(connHandle);
+        }
+        const unsigned long deadline = millis() + 200;
+        while (server->getConnectedCount() > 0 && static_cast<long>(deadline - millis()) > 0) {
+          delay(10);
+        }
+      }
+    }
+    if (NimBLEAdvertising* adv = NimBLEDevice::getAdvertising()) {
+      adv->stop();
+    }
     NimBLEDevice::deinit(true);
   }
+  g_peerConnected.store(false, std::memory_order_release);
+  g_peerDisconnectEdge.store(false, std::memory_order_release);
   portENTER_CRITICAL(&g_rxMux);
   g_rxHead = g_rxTail = g_rxCount = 0;
   portEXIT_CRITICAL(&g_rxMux);
-  g_radioRunning = false;
   LOG_INF("BLESHARE", "BLE companion share stopped");
 }
 
 bool transportConnected() { return g_peerConnected.load(std::memory_order_acquire); }
 
 bool transportSend(const uint8_t* data, const size_t len) {
-  if (!g_radioRunning || !g_txChar || !transportConnected() || !data) return false;
+  if (!g_radioRunning.load(std::memory_order_acquire) || !g_txChar || !transportConnected() || !data) return false;
   const uint16_t mtu = g_peerMtu.load(std::memory_order_acquire);
   const size_t maxSlice = mtu > 6 ? static_cast<size_t>(mtu - 3) : 20;
   size_t off = 0;
@@ -424,9 +447,9 @@ class FirmwareSessionHost final : public xpbt::SessionHost {
   }
 
   void onOfferPending(const xpbt::BatchOfferInfo& offer) override {
-    LOG_INF("BLESHARE", "Incoming batch offer from '%s': %u file(s), %llu bytes, first='%s'",
-            offer.phoneName.c_str(), static_cast<unsigned>(offer.fileCount),
-            static_cast<unsigned long long>(offer.totalBytes), offer.firstFileName.c_str());
+    LOG_INF("BLESHARE", "Incoming batch offer from '%s': %u file(s), %llu bytes, first='%s'", offer.phoneName.c_str(),
+            static_cast<unsigned>(offer.fileCount), static_cast<unsigned long long>(offer.totalBytes),
+            offer.firstFileName.c_str());
   }
 
   bool beginFileWrite(const std::string& destFolder, const std::string& cleanFileName, uint32_t) override {
@@ -503,8 +526,7 @@ class FirmwareSessionHost final : public xpbt::SessionHost {
     return xpbt::FsStatus::Ok;
   }
 
-  xpbt::FsStatus fsList(const std::string& path,
-                        const std::function<bool(const xpbt::FsDirItem&)>& emit) override {
+  xpbt::FsStatus fsList(const std::string& path, const std::function<bool(const xpbt::FsDirItem&)>& emit) override {
     if (protectedpaths::isSensitivePath(path.c_str())) return xpbt::FsStatus::Forbidden;
     if (path != "/" && !Storage.exists(path.c_str())) return xpbt::FsStatus::NotFound;
     HalFile dir = Storage.open(path.c_str());
@@ -687,8 +709,7 @@ class FirmwareSessionHost final : public xpbt::SessionHost {
 
   void fsPutAbort() override { abortFileWrite(); }
 
-  xpbt::FsStatus fsGetBegin(const std::string& path, const uint32_t startOffset,
-                            uint64_t& outRemainingBytes) override {
+  xpbt::FsStatus fsGetBegin(const std::string& path, const uint32_t startOffset, uint64_t& outRemainingBytes) override {
     fsGetClose();
     outRemainingBytes = 0;
     if (path == "/" || protectedpaths::isSensitivePath(path.c_str())) return xpbt::FsStatus::Forbidden;
@@ -750,9 +771,9 @@ const char* deviceDisplayName() {
 #endif
 }
 
-bool ownsRadio() { return g_radioRunning; }
+bool ownsRadio() { return g_radioRunning.load(std::memory_order_acquire); }
 
-bool hasLiveLink() { return g_radioRunning && transportConnected(); }
+bool hasLiveLink() { return g_radioRunning.load(std::memory_order_acquire) && transportConnected(); }
 
 void stopRadio() {
   g_host.abortFileWrite();
@@ -776,11 +797,11 @@ bool startPairingMode() {
   g_pairingActive = true;
   g_windowArmedAtMs = millis();
   g_session.reset();
-  if (!g_radioRunning) {
+  if (!g_radioRunning.load(std::memory_order_acquire)) {
     startTransport(/*fastAdv=*/true);
   }
   LOG_INF("BLESHARE", "Pairing mode active (PIN=%s)", g_pairingPin);
-  return g_radioRunning;
+  return g_radioRunning.load(std::memory_order_acquire);
 }
 
 void stopPairingMode() { g_pairingActive = false; }
@@ -831,20 +852,20 @@ bool tick(const Scene& scene) {
 
   // Tear down immediately if Wi-Fi or raw USB storage is active, or if the BLE HID page turner claims the radio.
   if (scene.storageBusy || scene.wifiOn || (!scene.shareScreenForeground && scene.pageTurnerWantsRadio)) {
-    if (g_radioRunning) stopRadio();
+    if (g_radioRunning.load(std::memory_order_acquire)) stopRadio();
     return false;
   }
 
-  const bool backgroundEligible =
-      BLESHARE_STORE.isEnabled() && BLESHARE_STORE.isPaired() && scene.canShowIncomingPopup &&
-      (now - g_windowArmedAtMs < kBackgroundAdvertiseWindowMs);
+  const bool backgroundEligible = BLESHARE_STORE.isEnabled() && BLESHARE_STORE.isPaired() &&
+                                  scene.canShowIncomingPopup &&
+                                  (now - g_windowArmedAtMs < kBackgroundAdvertiseWindowMs);
   const bool wantsRadio = scene.shareScreenForeground || g_pairingActive || backgroundEligible;
 
-  if (!g_radioRunning) {
+  if (!g_radioRunning.load(std::memory_order_acquire)) {
     if (wantsRadio) {
       startTransport(/*fastAdv=*/scene.shareScreenForeground || g_pairingActive);
     }
-    if (!g_radioRunning) return false;
+    if (!g_radioRunning.load(std::memory_order_acquire)) return false;
   } else if (!wantsRadio && !transportConnected()) {
     // Idle background window expired with no phone connected: power down NimBLE so C3 drops to 10 MHz.
     stopRadio();
