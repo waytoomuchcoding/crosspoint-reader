@@ -52,6 +52,7 @@ class TxtCoverPickerActivity final : public Activity {
   void scanDirectoryForImages(const std::string& dirPath);
   void ensureSelectedPreviewBmp();
   bool drawSelectedPreviewBmp(int covX, int covY) const;
+  void selectIndex(int newIndex);
   void confirmSelection();
 
   std::string bookPath_;
@@ -63,4 +64,6 @@ class TxtCoverPickerActivity final : public Activity {
   int selectedIndex_ = 0;
   int previewReadyForIndex_ = -1;
   bool previewValid_ = false;
+  bool previewPending_ = false;
+  unsigned long lastMoveMs_ = 0;
 };

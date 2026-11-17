@@ -1,5 +1,6 @@
 #include "TxtCoverPickerActivity.h"
 
+#include <Arduino.h>
 #include <Bitmap.h>
 #include <FontCacheManager.h>
 #include <FsHelpers.h>
@@ -27,6 +28,7 @@ constexpr const char* PREVIEW_TMP_BMP_PATH = "/.crosspoint/covers/.preview.bmp";
 constexpr size_t MAX_CANDIDATE_IMAGES = 48;
 constexpr int PREVIEW_W = 148;
 constexpr int PREVIEW_H = 222;
+constexpr unsigned long PREVIEW_DEBOUNCE_MS = 350;
 
 bool isSupportedImageFilename(const std::string& name) {
   return FsHelpers::hasJpgExtension(name) || FsHelpers::hasPngExtension(name) || FsHelpers::hasBmpExtension(name);
@@ -142,6 +144,8 @@ void TxtCoverPickerActivity::onEnter() {
   selectedIndex_ = 0;
   previewReadyForIndex_ = -1;
   previewValid_ = false;
+  previewPending_ = false;
+  lastMoveMs_ = 0;
   ensureSelectedPreviewBmp();
   requestUpdate();
 }
@@ -254,6 +258,14 @@ bool TxtCoverPickerActivity::drawSelectedPreviewBmp(const int covX, const int co
   return drew;
 }
 
+void TxtCoverPickerActivity::selectIndex(const int newIndex) {
+  selectedIndex_ = newIndex;
+  previewValid_ = false;
+  previewPending_ = true;
+  lastMoveMs_ = millis();
+  requestUpdate();
+}
+
 void TxtCoverPickerActivity::confirmSelection() {
   bool ok = false;
   if (selectedIndex_ <= 0 || selectedIndex_ >= static_cast<int>(options_.size())) {
@@ -282,9 +294,7 @@ void TxtCoverPickerActivity::loop() {
     if (rt == MappedInputManager::RowTouch::Tap && touchedRow >= 0) {
       const int idx = pageStart + touchedRow;
       if (idx != selectedIndex_) {
-        selectedIndex_ = idx;
-        ensureSelectedPreviewBmp();
-        requestUpdate();
+        selectIndex(idx);
       }
       return;
     }
@@ -299,24 +309,26 @@ void TxtCoverPickerActivity::loop() {
     }
   }
 
-  navigator_.onPrevious([this, count] {
-    selectedIndex_ = (selectedIndex_ - 1 + count) % count;
-    ensureSelectedPreviewBmp();
-    requestUpdate();
-  });
-  navigator_.onNext([this, count] {
-    selectedIndex_ = (selectedIndex_ + 1) % count;
-    ensureSelectedPreviewBmp();
-    requestUpdate();
-  });
+  navigator_.onPrevious([this, count] { selectIndex((selectedIndex_ - 1 + count) % count); });
+  navigator_.onNext([this, count] { selectIndex((selectedIndex_ + 1) % count); });
 
   if (mappedInput.wasReleased(B::Confirm)) {
     confirmSelection();
+    return;
   } else if (mappedInput.wasReleased(B::Back)) {
     ActivityResult result;
     result.isCancelled = true;
     setResult(std::move(result));
     finish();
+    return;
+  }
+
+  if (previewPending_ && (millis() - lastMoveMs_ >= PREVIEW_DEBOUNCE_MS)) {
+    previewPending_ = false;
+    ensureSelectedPreviewBmp();
+    if (previewValid_) {
+      requestUpdate();
+    }
   }
 }
 
