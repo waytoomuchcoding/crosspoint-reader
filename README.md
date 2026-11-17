@@ -20,14 +20,29 @@ This fork follows its own feature direction and is not bound by upstream's
 
 Known upstream defaults still in place:
 
-- **Firmware updates.** The on-device update check (Settings) pulls releases
-  from the upstream repository, so installing an update replaces this fork's
-  build with upstream's. Avoid on-device updates and flash builds from this
-  repository instead.
 - **Plugins** install from upstream's plugin hub.
 - **Fonts** download from upstream's fonts repository.
 - **KOReader sync** defaults to upstream's sync server; it can be changed in
   settings.
+
+## Releases and OTA updates
+
+GitHub Releases on this fork automatically compile and attach the ESP32-C3
+(`X3 / X4`) firmware binary (`crosspoint-<version>-x3-x4.bin`), `SHA256SUMS`,
+and `LICENSE`. On-device OTA updates (**Settings → System → Check for updates**)
+query this fork's latest GitHub Release directly.
+
+To cut a new SemVer release from `develop`:
+
+```bash
+./bin/release patch          # e.g. 2.1.0 -> v2.1.1
+./bin/release minor          # e.g. 2.1.0 -> v2.2.0
+./bin/release 2.1.0          # explicit version -> v2.1.0
+./bin/release patch --dry-run
+```
+
+Or trigger **Actions → Compile Release → Run workflow** on GitHub and choose
+`patch`, `minor`, `major`, or `custom`.
 
 ## Build and flash
 

@@ -1,7 +1,9 @@
 name: Compile Release
 
-# Automatically build and publish a GitHub Release whenever a version tag is pushed
-# (e.g. v2.1.0 or 2.1.0), when a release is published manually, or via workflow_dispatch.
+# Build and publish the ESP32-C3 (X3 / X4) firmware release asset whenever:
+#   1. A SemVer tag is pushed (e.g. via `./bin/release minor` or `git push origin v2.1.0`)
+#   2. A GitHub Release is published manually in the web UI
+#   3. Triggered manually via Actions -> "Compile Release" -> "Run workflow"
 
 on:
   push:
@@ -12,64 +14,168 @@ on:
     types: [published]
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Tag to build and release (e.g. v2.1.0)'
+      bump:
+        description: 'Version bump (or select "custom" to enter an exact version)'
         required: true
+        type: choice
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+          - custom
+      version:
+        description: 'Exact tag/version (e.g. v2.1.0) — used when bump is "custom" or to rebuild an existing tag'
+        required: false
         type: string
+      prerelease:
+        description: 'Mark GitHub Release as pre-release'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
-  contents: read
+  contents: write
 
-env:
-  RESOLVED_TAG: ${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
-  IS_PRERELEASE: ${{ github.event.release.prerelease == true || contains(github.event.release.tag_name || inputs.tag || github.ref_name, 'rc') }}
+concurrency:
+  group: release-${{ github.event.release.tag_name || github.event.inputs.version || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
-  build-release:
+  release:
+    name: Build & Publish Release (x3-x4)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - release_env: gh_release
-            rc_env: gh_release_rc
-            device: x3-x4
-          - release_env: sticky-gh_release
-            rc_env: sticky-gh_release_rc
-            device: sticky
-          - release_env: x4pro-gh_release
-            rc_env: x4pro-gh_release_rc
-            device: x4pro
-          - release_env: x4c-gh_release
-            rc_env: x4c-gh_release_rc
-            device: x4c
-          - release_env: papermono-gh_release
-            rc_env: papermono-gh_release_rc
-            device: papermono
-          - release_env: metalio_eink4-gh_release
-            rc_env: metalio_eink4-gh_release_rc
-            device: metalio_eink4
-          - release_env: eego_a4-gh_release
-            rc_env: eego_a4-gh_release_rc
-            device: eego_a4
-          - release_env: picco-gh_release
-            rc_env: picco-gh_release_rc
-            device: picco
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ env.RESOLVED_TAG }}
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || '' }}
+          fetch-depth: 0
           submodules: recursive
 
-      - name: Sync release version from tag
+      - name: Resolve or create release tag
+        id: meta
         env:
-          RELEASE_TAG: ${{ env.RESOLVED_TAG }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_RELEASE_TAG: ${{ github.event.release.tag_name }}
+          EVENT_RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+          INPUT_BUMP: ${{ inputs.bump }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
         run: |
-          version="${RELEASE_TAG#v}"
+          set -euo pipefail
+
+          next_semver() {
+            local bump="$1"
+            python3 - "$bump" <<'PY'
+          import configparser, re, subprocess, sys
+
+          bump = sys.argv[1]
+          versions = []
+
+          cfg = configparser.ConfigParser()
+          cfg.read("platformio.ini", encoding="utf-8")
+          if cfg.has_option("crosspoint", "version"):
+              m = re.match(r"^v?(\d+)\.(\d+)\.(\d+)", cfg.get("crosspoint", "version").strip())
+              if m:
+                  versions.append(tuple(int(x) for x in m.groups()))
+
+          tags = subprocess.check_output(["git", "tag", "-l"], text=True).splitlines()
+          for t in tags:
+              m = re.match(r"^v?(\d+)\.(\d+)\.(\d+)$", t.strip())
+              if m:
+                  versions.append(tuple(int(x) for x in m.groups()))
+
+          major, minor, patch = max(versions) if versions else (2, 0, 0)
+          if bump == "major":
+              major, minor, patch = major + 1, 0, 0
+          elif bump == "minor":
+              minor, patch = minor + 1, 0
+          elif bump == "patch":
+              patch += 1
+          else:
+              sys.exit(f"Unsupported bump: {bump}")
+          print(f"{major}.{minor}.{patch}")
+          PY
+          }
+
+          is_prerelease="false"
+          if [ "$EVENT_NAME" = "push" ]; then
+            tag="${GITHUB_REF_NAME}"
+            if [[ "$tag" == *rc* || "$tag" == *-* ]]; then
+              is_prerelease="true"
+            fi
+          elif [ "$EVENT_NAME" = "release" ]; then
+            tag="${EVENT_RELEASE_TAG}"
+            if [ "$EVENT_RELEASE_PRERELEASE" = "true" ] || [[ "$tag" == *rc* || "$tag" == *-* ]]; then
+              is_prerelease="true"
+            fi
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ -n "$INPUT_VERSION" ] || [ "$INPUT_BUMP" = "custom" ]; then
+              if [ -z "$INPUT_VERSION" ]; then
+                echo "Error: 'version' input is required when bump='custom'." >&2
+                exit 1
+              fi
+              if git rev-parse -q --verify "refs/tags/${INPUT_VERSION}" >/dev/null; then
+                tag="${INPUT_VERSION}"
+              else
+                tag="v${INPUT_VERSION#v}"
+              fi
+            else
+              tag="v$(next_semver "$INPUT_BUMP")"
+            fi
+
+            if [ "$INPUT_PRERELEASE" = "true" ] || [[ "$tag" == *rc* || "$tag" == *-* ]]; then
+              is_prerelease="true"
+            fi
+
+            if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+              echo "Tag ${tag} already exists; checking it out to build."
+              git checkout "${tag}"
+              git submodule update --init --recursive
+            else
+              ver="${tag#v}"
+              base_ver="${ver%%-*}"
+              base_ver="${base_ver%rc*}"
+              if [[ ! "$base_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "Error: invalid SemVer '${tag}' (expected vMAJOR.MINOR.PATCH)." >&2
+                exit 1
+              fi
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              sed -i "s/^version = .*/version = ${base_ver}/" platformio.ini
+              if ! git diff --quiet platformio.ini; then
+                git add platformio.ini
+                git commit -m "chore: release ${tag}"
+                git push origin "HEAD:${GITHUB_REF_NAME}"
+              fi
+              git tag -a "${tag}" -m "Release ${tag}"
+              git push origin "refs/tags/${tag}"
+            fi
+          else
+            echo "Unsupported event: ${EVENT_NAME}" >&2
+            exit 1
+          fi
+
+          version="${tag#v}"
           base_version="${version%%-*}"
           base_version="${base_version%rc*}"
+          if [[ ! "$base_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: tag '${tag}' does not start with MAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+
           sed -i "s/^version = .*/version = ${base_version}/" platformio.ini
-          echo "Building release version: ${version} (base: ${base_version})"
+          pio_env="gh_release"
+          if [ "$is_prerelease" = "true" ]; then
+            pio_env="gh_release_rc"
+          fi
+
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "base_version=${base_version}" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=${is_prerelease}" >> "$GITHUB_OUTPUT"
+          echo "pio_env=${pio_env}" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag=${tag} version=${version} base=${base_version} env=${pio_env} prerelease=${is_prerelease}"
 
       - uses: actions/setup-python@v6
         with:
@@ -84,117 +190,113 @@ jobs:
       - name: Install PlatformIO Core
         run: |
           uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
-          # platform-espressif32's builder/main.py imports these unconditionally; its own
-          # penv bootstrap (builder/penv_setup.py) is supposed to install them automatically
-          # but isn't picking them up reliably in this runner image, so pin them explicitly.
+          # platform-espressif32's builder/main.py imports these unconditionally; pin them explicitly.
           uv pip install --system -U "littlefs-python>=0.16.0" "fatfs-ng>=0.1.14" "pyyaml>=6.0.2" \
             "rich-click>=1.8.6" "zopfli>=0.2.2" "intelhex>=2.3.0" "rich>=14.0.0" "urllib3<2" \
             "cryptography>=45.0.3" "certifi>=2025.8.3" "ecdsa>=0.19.1" "bitstring>=4.3.1" \
             "reedsolo>=1.5.3,<1.8" "esp-idf-size>=2.0.0" "esp-coredump>=1.14.0"
 
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-v3-${{ runner.os }}-${{ steps.meta.outputs.pio_env }}-${{ hashFiles('platformio.ini', 'scripts/patch_pioarduino_cache.py') }}
+          restore-keys: |
+            pio-v3-${{ runner.os }}-${{ steps.meta.outputs.pio_env }}-
+            pio-v3-${{ runner.os }}-default-
+
       - name: Pin pioarduino core inside the platform penv
         env:
-          PIO_ENV: ${{ env.IS_PRERELEASE == 'true' && matrix.rc_env || matrix.release_env }}
+          PIO_ENV: ${{ steps.meta.outputs.pio_env }}
         run: |
           set -euo pipefail
-          # Envs with custom_sdkconfig run a nested `pio run` from
-          # ~/.platformio/penv. Keep that core on the same version as the outer core.
+          # Envs with custom_sdkconfig run a nested `pio run` from ~/.platformio/penv.
+          # Keep that core on the same version as the outer core.
           # See https://github.com/pioarduino/platform-espressif32/issues/529
           pio pkg install -e "$PIO_ENV"
           uv pip install --python ~/.platformio/penv/bin/python "pioarduino==6.1.19"
           ~/.platformio/penv/bin/pio --version
 
-      - name: Build CrossPoint
+      - name: Build CrossPoint (x3-x4)
+        id: build
         env:
-          PIO_ENV: ${{ env.IS_PRERELEASE == 'true' && matrix.rc_env || matrix.release_env }}
-          # Enrollment gate for the LCP service: official releases carry this
-          # key, self-builds do not (and lose only LCP). Rotate per release by
-          # updating the repo secret; retire old values in the service's
-          # RELEASE_KEYS list.
+          PIO_ENV: ${{ steps.meta.outputs.pio_env }}
           FREEINK_LCP_RELEASE_KEY: ${{ secrets.FREEINK_LCP_RELEASE_KEY }}
         run: |
+          set -euo pipefail
           if [ -n "$FREEINK_LCP_RELEASE_KEY" ]; then
             export PLATFORMIO_BUILD_FLAGS="-DFREEINK_LCP_RELEASE_KEY=\\\"$FREEINK_LCP_RELEASE_KEY\\\""
           fi
-          CROSSPOINT_RC_HASH="$(git rev-parse --short=7 HEAD)" pio run -e "$PIO_ENV" -j1
+          CROSSPOINT_RC_HASH="$(git rev-parse --short=7 HEAD)" pio run -e "$PIO_ENV" -j1 | tee pio.log
+          ram_line="$(grep -E "RAM:\\s" -m1 pio.log || true)"
+          flash_line="$(grep -E "Flash:\\s" -m1 pio.log || true)"
+          echo "ram_line=${ram_line}" >> "$GITHUB_OUTPUT"
+          echo "flash_line=${flash_line}" >> "$GITHUB_OUTPUT"
 
-      - name: Prepare firmware asset
-        id: asset
+      - name: Package release assets
+        id: package
         env:
-          PIO_ENV: ${{ env.IS_PRERELEASE == 'true' && matrix.rc_env || matrix.release_env }}
-          RELEASE_TAG: ${{ env.RESOLVED_TAG }}
+          PIO_ENV: ${{ steps.meta.outputs.pio_env }}
+          VERSION: ${{ steps.meta.outputs.version }}
         run: |
-          version="${RELEASE_TAG#v}"
-          asset="crosspoint-${version}-${{ matrix.device }}.bin"
-          cp ".pio/build/${PIO_ENV}/firmware.bin" "$asset"
-          echo "name=$asset" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          mkdir -p dist
+          asset="crosspoint-${VERSION}-x3-x4.bin"
+          cp ".pio/build/${PIO_ENV}/firmware.bin" "dist/${asset}"
+          python3 scripts/build_release_license.py --env "$PIO_ENV" --output dist/LICENSE
+          (cd dist && sha256sum "${asset}" LICENSE > SHA256SUMS)
+          echo "asset=${asset}" >> "$GITHUB_OUTPUT"
 
-      - name: Prepare license asset
-        if: matrix.device == 'x3-x4'
-        env:
-          PIO_ENV: ${{ env.IS_PRERELEASE == 'true' && matrix.rc_env || matrix.release_env }}
-        run: python3 scripts/build_release_license.py --env "$PIO_ENV" --output dist/LICENSE
-
-      - name: Stage license asset
-        if: matrix.device == 'x3-x4'
+      - name: Upload workflow artifact
         uses: actions/upload-artifact@v6
         with:
-          name: release-license
-          path: dist/LICENSE
+          name: ${{ steps.package.outputs.asset }}
+          path: dist/${{ steps.package.outputs.asset }}
           if-no-files-found: error
-          retention-days: 1
-
-      - name: Stage firmware asset
-        uses: actions/upload-artifact@v6
-        with:
-          name: ${{ steps.asset.outputs.name }}
-          path: ${{ steps.asset.outputs.name }}
-          if-no-files-found: error
-          retention-days: 1
+          retention-days: 14
           compression-level: 0
 
-  publish-release:
-    needs: build-release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Download firmware assets
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          pattern: crosspoint-*.bin
-          merge-multiple: true
-
-      - name: Download license asset
-        uses: actions/download-artifact@v4
-        with:
-          name: release-license
-          path: dist
-
-      - name: Publish or attach firmware assets
+      - name: Publish or attach GitHub Release assets
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ env.RESOLVED_TAG }}
-          PRERELEASE: ${{ env.IS_PRERELEASE }}
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          ASSET: ${{ steps.package.outputs.asset }}
+          PRERELEASE: ${{ steps.meta.outputs.is_prerelease }}
+          RAM_LINE: ${{ steps.build.outputs.ram_line }}
+          FLASH_LINE: ${{ steps.build.outputs.flash_line }}
         run: |
-          version="${RELEASE_TAG#v}"
-          for device in x3-x4 sticky x4pro x4c papermono metalio_eink4 eego_a4 picco; do
-            test -f "dist/crosspoint-${version}-${device}.bin"
-          done
-          test "$(find dist -maxdepth 1 -type f -name 'crosspoint-*.bin' | wc -l)" -eq 8
+          set -euo pipefail
+          test -s "dist/${ASSET}"
           test -s dist/LICENSE
+          test -s dist/SHA256SUMS
+
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" dist/crosspoint-*.bin dist/LICENSE \
+            gh release upload "$RELEASE_TAG" "dist/${ASSET}" dist/SHA256SUMS dist/LICENSE \
               --repo "$GITHUB_REPOSITORY" --clobber
           else
             extra_flags=()
             if [ "$PRERELEASE" = "true" ]; then
               extra_flags+=(--prerelease)
             fi
-            gh release create "$RELEASE_TAG" dist/crosspoint-*.bin dist/LICENSE \
+            gh release create "$RELEASE_TAG" "dist/${ASSET}" dist/SHA256SUMS dist/LICENSE \
               --repo "$GITHUB_REPOSITORY" \
               --title "CrossPoint ${RELEASE_TAG}" \
               --generate-notes \
               "${extra_flags[@]}"
           fi
+
+          release_url="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
+          download_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${ASSET}"
+          {
+            echo "## CrossPoint ${RELEASE_TAG}"
+            echo "- **Release page:** ${release_url}"
+            echo "- **Direct firmware asset:** [${ASSET}](${download_url})"
+            if [ -n "$RAM_LINE" ]; then echo "- ${RAM_LINE}"; fi
+            if [ -n "$FLASH_LINE" ]; then echo "- ${FLASH_LINE}"; fi
+            echo ""
+            echo "### SHA-256"
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

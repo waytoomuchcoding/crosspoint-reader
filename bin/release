@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+# Cut a CrossPoint fork release: bumps [crosspoint] version in platformio.ini,
+# commits (if changed), creates an annotated vX.Y.Z tag, and pushes to origin
+# so GitHub Actions compiles and attaches crosspoint-<version>-x3-x4.bin.
+#
+# Usage:
+#   ./bin/release [patch|minor|major|<version>] [--dry-run] [--yes] [--remote <name>] [--allow-branch]
+#
+# Examples:
+#   ./bin/release patch          # e.g. 2.1.0 -> v2.1.1
+#   ./bin/release minor          # e.g. 2.0.0 -> v2.1.0
+#   ./bin/release 2.1.0          # explicit version -> v2.1.0
+#   ./bin/release v2.1.0-rc1     # pre-release candidate tag
+#   ./bin/release patch --dry-run
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+TARGET=""
+DRY_RUN=0
+ASSUME_YES=0
+REMOTE="origin"
+ALLOW_BRANCH=0
+
+usage() {
+  cat <<'EOF'
+Usage: ./bin/release <patch|minor|major|vX.Y.Z> [options]
+
+Options:
+  -n, --dry-run        Preview version bump, commit, and tag without modifying anything
+  -y, --yes            Skip confirmation prompt
+      --remote <name>  Git remote to push to (default: origin; blocks upstream)
+      --allow-branch   Allow cutting a release from a branch other than develop
+  -h, --help           Show this help message
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -n|--dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    -y|--yes)
+      ASSUME_YES=1
+      shift
+      ;;
+    --remote)
+      REMOTE="${2:?Error: --remote requires a remote name}"
+      shift 2
+      ;;
+    --allow-branch)
+      ALLOW_BRANCH=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -*)
+      echo "Error: unknown option '$1'" >&2
+      usage >&2
+      exit 1
+      ;;
+    *)
+      if [[ -n "$TARGET" ]]; then
+        echo "Error: unexpected extra argument '$1'" >&2
+        usage >&2
+        exit 1
+      fi
+      TARGET="$1"
+      shift
+      ;;
+  esac
+done
+
+if [[ -z "$TARGET" ]]; then
+  TARGET="patch"
+fi
+
+# 1. Verify remote exists and is NOT the upstream CrossPoint repository.
+REMOTE_URL="$(git remote get-url --push "$REMOTE" 2>/dev/null || true)"
+if [[ -z "$REMOTE_URL" ]]; then
+  echo "Error: git remote '$REMOTE' not found." >&2
+  exit 1
+fi
+if [[ "$REMOTE_URL" == *"crosspoint-reader/crosspoint-reader"* ]]; then
+  echo "Error: refusing to push release to upstream repository ($REMOTE_URL)." >&2
+  exit 1
+fi
+
+# 2. Verify branch & clean working tree (including submodule).
+BRANCH="$(git branch --show-current)"
+if [[ -z "$BRANCH" ]]; then
+  echo "Error: HEAD is detached; switch to 'develop' (or pass --allow-branch on a named branch)." >&2
+  exit 1
+fi
+if [[ "$BRANCH" != "develop" && "$ALLOW_BRANCH" -ne 1 ]]; then
+  echo "Error: current branch is '$BRANCH' (expected 'develop'). Pass --allow-branch to override." >&2
+  exit 1
+fi
+
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "Error: working tree is not clean. Commit or stash changes before cutting a release." >&2
+  git status --short >&2
+  exit 1
+fi
+
+RECORDED_SDK="$(git rev-parse HEAD:freeink-sdk)"
+CHECKED_OUT_SDK="$(git -C freeink-sdk rev-parse HEAD)"
+if [[ "$RECORDED_SDK" != "$CHECKED_OUT_SDK" ]]; then
+  echo "Error: freeink-sdk checkout ($CHECKED_OUT_SDK) differs from HEAD ($RECORDED_SDK)." >&2
+  exit 1
+fi
+
+# 3. Compute version, base_version, and tag.
+read -r CURRENT_INI_VER NEXT_TAG BASE_VERSION < <(python3 - "$TARGET" <<'PY'
+import configparser, re, subprocess, sys
+
+target = sys.argv[1].strip()
+cfg = configparser.ConfigParser()
+cfg.read("platformio.ini", encoding="utf-8")
+ini_ver = cfg.get("crosspoint", "version", fallback="0.0.0").strip()
+
+versions = []
+m = re.match(r"^v?(\d+)\.(\d+)\.(\d+)", ini_ver)
+if m:
+    versions.append(tuple(int(x) for x in m.groups()))
+
+tags = subprocess.check_output(["git", "tag", "-l"], text=True).splitlines()
+for t in tags:
+    m = re.match(r"^v?(\d+)\.(\d+)\.(\d+)$", t.strip())
+    if m:
+        versions.append(tuple(int(x) for x in m.groups()))
+
+cur_major, cur_minor, cur_patch = max(versions) if versions else (2, 0, 0)
+
+if target in ("major", "minor", "patch"):
+    if target == "major":
+        ver = f"{cur_major + 1}.0.0"
+    elif target == "minor":
+        ver = f"{cur_major}.{cur_minor + 1}.0"
+    else:
+        ver = f"{cur_major}.{cur_minor}.{cur_patch + 1}"
+    tag = f"v{ver}"
+    base = ver
+else:
+    raw = target[1:] if target.startswith(("v", "V")) else target
+    m = re.match(r"^(\d+\.\d+\.\d+)(?:(?:-|[a-zA-Z0-9.+_-]).*)?$", raw)
+    if not m:
+        sys.exit(f"Error: invalid version '{target}' (expected patch|minor|major or X.Y.Z).")
+    base = m.group(1)
+    # Strip trailing 'rc...' if attached without a hyphen (e.g. 2.1.0rc1)
+    tag = f"v{raw}"
+
+print(f"{ini_ver} {tag} {base}")
+PY
+)
+
+VERSION_NO_V="${NEXT_TAG#v}"
+ASSET_NAME="crosspoint-${VERSION_NO_V}-x3-x4.bin"
+
+if git rev-parse -q --verify "refs/tags/${NEXT_TAG}" >/dev/null || \
+   git rev-parse -q --verify "refs/tags/${VERSION_NO_V}" >/dev/null; then
+  echo "Error: tag '${NEXT_TAG}' (or '${VERSION_NO_V}') already exists locally." >&2
+  exit 1
+fi
+
+# Extract GitHub owner/repo slug for helpful links if hosted on github.com.
+GH_SLUG=""
+if [[ "$REMOTE_URL" =~ github\.com[:/]([^/]+/[^/.]+)(\.git)?$ ]]; then
+  GH_SLUG="${BASH_REMATCH[1]}"
+fi
+
+echo "Release summary:"
+echo "  Branch:         ${BRANCH}"
+echo "  Remote:         ${REMOTE} (${REMOTE_URL})"
+echo "  platformio.ini: ${CURRENT_INI_VER} -> ${BASE_VERSION}"
+echo "  Git tag:        ${NEXT_TAG}"
+echo "  Firmware asset: ${ASSET_NAME}"
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo ""
+  echo "[dry-run] Would update platformio.ini, commit (if changed), tag ${NEXT_TAG}, and push to ${REMOTE}."
+  exit 0
+fi
+
+if [[ "$ASSUME_YES" -ne 1 ]]; then
+  read -r -p "Proceed with cutting and pushing ${NEXT_TAG}? [y/N] " reply
+  if [[ ! "$reply" =~ ^[Yy]$ ]]; then
+    echo "Aborted."
+    exit 1
+  fi
+fi
+
+# Check remote doesn't already have the tag either.
+if git ls-remote --exit-code --tags "$REMOTE" "refs/tags/${NEXT_TAG}" >/dev/null 2>&1; then
+  echo "Error: tag '${NEXT_TAG}' already exists on remote '${REMOTE}'." >&2
+  exit 1
+fi
+
+sed -i "s/^version = .*/version = ${BASE_VERSION}/" platformio.ini
+if ! git diff --quiet platformio.ini; then
+  git add platformio.ini
+  git commit -m "chore: release ${NEXT_TAG}"
+fi
+
+git tag -a "${NEXT_TAG}" -m "Release ${NEXT_TAG}"
+git push "$REMOTE" "$BRANCH"
+git push "$REMOTE" "refs/tags/${NEXT_TAG}"
+
+echo ""
+echo "Pushed ${BRANCH} and tag ${NEXT_TAG} to ${REMOTE}."
+if [[ -n "$GH_SLUG" ]]; then
+  echo "  Actions build: https://github.com/${GH_SLUG}/actions/workflows/release.yml"
+  echo "  Release page:  https://github.com/${GH_SLUG}/releases/tag/${NEXT_TAG}"
+fi
