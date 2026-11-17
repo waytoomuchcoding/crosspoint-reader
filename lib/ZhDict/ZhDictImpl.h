@@ -135,7 +135,7 @@ inline int rubyWidth(int em) {
 }
 
 namespace detail {
-inline void glyphColSpan(const GlyphSet& g, int symIdx, int& firstCol, int& spanW) {
+inline void computeGlyphColSpan(const GlyphSet& g, int symIdx, int& firstCol, int& spanW) {
   // Horizontal ㄧ (index 34, U+3127) fills all columns in the vertical column set; trim
   // 1 column on each side in horizontal layout so it does not fuse with neighbors.
   if (symIdx == 34 && g.w >= 9) {
@@ -152,6 +152,30 @@ inline void glyphColSpan(const GlyphSet& g, int symIdx, int& firstCol, int& span
   while (right > left && (mask & (1 << (g.w - 1 - right))) == 0) --right;
   firstCol = left;
   spanW = right >= left ? (right - left + 1) : g.w;
+}
+
+inline void glyphColSpan(const GlyphSet& g, int symIdx, int& firstCol, int& spanW) {
+  if (symIdx >= 0 && symIdx < ZHUYIN_GLYPH_COUNT && &g >= GLYPH_SETS && &g < GLYPH_SETS + 3) {
+    static bool ready = false;
+    static uint8_t cachedFirst[3][ZHUYIN_GLYPH_COUNT]{};
+    static uint8_t cachedSpan[3][ZHUYIN_GLYPH_COUNT]{};
+    if (!ready) {
+      for (int s = 0; s < 3; ++s) {
+        for (int idx = 0; idx < ZHUYIN_GLYPH_COUNT; ++idx) {
+          int fc = 0, sw = GLYPH_SETS[s].w;
+          computeGlyphColSpan(GLYPH_SETS[s], idx, fc, sw);
+          cachedFirst[s][idx] = static_cast<uint8_t>(fc);
+          cachedSpan[s][idx] = static_cast<uint8_t>(sw);
+        }
+      }
+      ready = true;
+    }
+    const size_t setIdx = static_cast<size_t>(&g - GLYPH_SETS);
+    firstCol = cachedFirst[setIdx][symIdx];
+    spanW = cachedSpan[setIdx][symIdx];
+    return;
+  }
+  computeGlyphColSpan(g, symIdx, firstCol, spanW);
 }
 }  // namespace detail
 

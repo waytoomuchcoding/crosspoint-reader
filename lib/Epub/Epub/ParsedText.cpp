@@ -166,6 +166,57 @@ constexpr int scaleSpace(const int advance, const uint8_t wordSpacingPercent) {
   return wordSpacingPercent == 100 ? advance : (advance * wordSpacingPercent + 50) / 100;
 }
 
+// True when `word` is a single 3-byte UTF-8 CJK Unified Ideograph (U+4E00..U+9FFF).
+bool isSingleHanIdeograph(const std::string_view word) {
+  if (word.size() != 3) return false;
+  const auto* p = reinterpret_cast<const uint8_t*>(word.data());
+  if ((p[0] & 0xF0) != 0xE0 || (p[1] & 0xC0) != 0x80 || (p[2] & 0xC0) != 0x80) return false;
+  const uint32_t cp = (static_cast<uint32_t>(p[0] & 0x0F) << 12) | (static_cast<uint32_t>(p[1] & 0x3F) << 6) |
+                      static_cast<uint32_t>(p[2] & 0x3F);
+  return cp >= 0x4E00 && cp <= 0x9FFF;
+}
+
+// Per-paragraph cache of uniform CJK ideograph advance width keyed by (fontId, baseStyle 0..3).
+// Probes three distinct Han characters; returns 0 when the font is proportional or not Han-capable.
+struct HanAdvanceCache {
+  static constexpr size_t kMaxFonts = 8;
+  int32_t fontIds[kMaxFonts]{};
+  uint16_t advances[kMaxFonts][4]{};
+  bool probed[kMaxFonts][4]{};
+  size_t fontCount = 0;
+
+  uint16_t get(const GfxRenderer& renderer, const int fontId, const EpdFontFamily::Style style) {
+    const uint8_t s = static_cast<uint8_t>(style) & 0x03;
+    size_t idx = fontCount;
+    for (size_t i = 0; i < fontCount; ++i) {
+      if (fontIds[i] == fontId) {
+        idx = i;
+        break;
+      }
+    }
+    if (idx == fontCount) {
+      if (fontCount >= kMaxFonts) return 0;
+      fontIds[idx] = fontId;
+      ++fontCount;
+    }
+    if (!probed[idx][s]) {
+      probed[idx][s] = true;
+      const auto baseStyle = static_cast<EpdFontFamily::Style>(s);
+      static constexpr const char* kProbe1 = "\xE4\xB8\x80";  // 一 U+4E00
+      static constexpr const char* kProbe2 = "\xE7\x9A\x84";  // 的 U+7684
+      static constexpr const char* kProbe3 = "\xE5\x9C\x8B";  // 國 U+570B
+      if (renderer.isSdCardFont(fontId)) {
+        renderer.ensureSdCardFontReady(fontId, "\xE4\xB8\x80\xE7\x9A\x84\xE5\x9C\x8B", static_cast<uint8_t>(1u << s));
+      }
+      const int a = renderer.getTextAdvanceX(fontId, kProbe1, baseStyle, 0);
+      const int b = a > 0 ? renderer.getTextAdvanceX(fontId, kProbe2, baseStyle, 0) : 0;
+      const int c = (b == a) ? renderer.getTextAdvanceX(fontId, kProbe3, baseStyle, 0) : 0;
+      advances[idx][s] = (a > 0 && a == b && b == c) ? static_cast<uint16_t>(a) : 0;
+    }
+    return advances[idx][s];
+  }
+};
+
 // Returns the advance width for a word while ignoring soft hyphen glyphs and optionally appending a visible hyphen.
 // Uses advance width (sum of glyph advances + kerning) rather than bounding box width so that italic glyph overhangs
 // don't inflate inter-word spacing.
@@ -885,22 +936,58 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
     const bool includeSmallCaps = std::any_of(wordSizeSlots.begin(), wordSizeSlots.end(), [](const uint8_t slot) {
       return (slot & TextBlock::SMALL_CAPS_SLOT_FLAG) != 0;
     });
-    // Hand the arena chunks over as packed NUL-separated word runs. Two small
-    // pointer tables (~8 B per live chunk) instead of per-word iteration.
-    std::vector<const char*> segments;
-    std::vector<size_t> segmentLens;
-    segments.reserve(wordStore.chunkCount());
-    segmentLens.reserve(wordStore.chunkCount());
-    for (size_t i = 0; i < wordStore.chunkCount(); ++i) {
-      const char* data = wordStore.chunkData(i);
-      if (!data) continue;  // retired chunk
-      segments.push_back(data);
-      segmentLens.push_back(wordStore.chunkUsed(i));
+    // Hand the arena chunks over as packed NUL-separated word runs, skipping single
+    // Han ideographs when the font uses a uniform 1em Han advance.
+    HanAdvanceCache hanCache;
+    bool allUniformHan = !includeSmallCaps;
+    for (size_t i = 0; i < paragraphFontCount && allUniformHan; ++i) {
+      for (uint8_t s = 0; s < 4; ++s) {
+        if ((styleMask & (1u << s)) != 0 &&
+            hanCache.get(renderer, paragraphFonts[i], static_cast<EpdFontFamily::Style>(s)) == 0) {
+          allUniformHan = false;
+          break;
+        }
+      }
     }
-    for (size_t i = 0; i < paragraphFontCount; ++i) {
-      if (!renderer.isSdCardFont(paragraphFonts[i])) continue;
-      renderer.ensureSdCardFontReady(paragraphFonts[i], segments.data(), segmentLens.data(), segments.size(),
-                                     words.size() > 1, hyphenationEnabled, styleMask, includeSmallCaps);
+
+    if (allUniformHan) {
+      std::string nonHanPacked;
+      for (size_t i = 0; i < words.size(); ++i) {
+        const std::string_view w = wordAt(i);
+        if (wordFocusBoundary[i] == 0 &&
+            (getWordStyleAt(i) & (EpdFontFamily::SUP | EpdFontFamily::SUB | EpdFontFamily::SMALL_CAPS)) == 0 &&
+            isSingleHanIdeograph(w)) {
+          continue;
+        }
+        nonHanPacked.append(w.data(), w.size());
+        nonHanPacked.push_back('\0');
+      }
+      if (!nonHanPacked.empty() || words.size() > 1 || hyphenationEnabled) {
+        const char* segPtr = nonHanPacked.empty() ? nullptr : nonHanPacked.data();
+        const size_t segLen = nonHanPacked.size();
+        for (size_t i = 0; i < paragraphFontCount; ++i) {
+          if (!renderer.isSdCardFont(paragraphFonts[i])) continue;
+          renderer.ensureSdCardFontReady(paragraphFonts[i], segPtr ? &segPtr : nullptr, segPtr ? &segLen : nullptr,
+                                         segPtr ? 1 : 0, words.size() > 1, hyphenationEnabled, styleMask,
+                                         includeSmallCaps);
+        }
+      }
+    } else {
+      std::vector<const char*> segments;
+      std::vector<size_t> segmentLens;
+      segments.reserve(wordStore.chunkCount());
+      segmentLens.reserve(wordStore.chunkCount());
+      for (size_t i = 0; i < wordStore.chunkCount(); ++i) {
+        const char* data = wordStore.chunkData(i);
+        if (!data) continue;  // retired chunk
+        segments.push_back(data);
+        segmentLens.push_back(wordStore.chunkUsed(i));
+      }
+      for (size_t i = 0; i < paragraphFontCount; ++i) {
+        if (!renderer.isSdCardFont(paragraphFonts[i])) continue;
+        renderer.ensureSdCardFontReady(paragraphFonts[i], segments.data(), segmentLens.data(), segments.size(),
+                                       words.size() > 1, hyphenationEnabled, styleMask, includeSmallCaps);
+      }
     }
   }
 
@@ -1043,10 +1130,22 @@ uint8_t ParsedText::sizeSlotFor(const float scale) {
 std::vector<uint16_t> ParsedText::calculateWordWidths(const GfxRenderer& renderer, const int fontId) {
   std::vector<uint16_t> wordWidths;
   wordWidths.reserve(words.size());
+  HanAdvanceCache hanCache;
 
   for (size_t i = 0; i < words.size(); ++i) {
-    wordWidths.push_back(measureFocusWordWidth(renderer, wordFontId(i, fontId), wordAt(i), getWordStyleAt(i),
-                                               wordFocusBoundary[i], blockStyle.characterSpacing, wordSpacingPercent));
+    const std::string_view w = wordAt(i);
+    const EpdFontFamily::Style style = getWordStyleAt(i);
+    if (wordFocusBoundary[i] == 0 &&
+        (style & (EpdFontFamily::SUP | EpdFontFamily::SUB | EpdFontFamily::SMALL_CAPS)) == 0 &&
+        isSingleHanIdeograph(w)) {
+      const uint16_t hanW = hanCache.get(renderer, wordFontId(i, fontId), style);
+      if (hanW > 0) {
+        wordWidths.push_back(hanW);
+        continue;
+      }
+    }
+    wordWidths.push_back(measureFocusWordWidth(renderer, wordFontId(i, fontId), w, style, wordFocusBoundary[i],
+                                               blockStyle.characterSpacing, wordSpacingPercent));
   }
 
   // Zhuyin ruby sits in a column to the right of its character (or below it when
