@@ -351,6 +351,11 @@ TEST(ZhRuby, UnderLinePixelsStayWithinCellAndClearance) {
       EXPECT_LT(maxY, em + underH) << em;
     }
   }
+  for (const int em : {24, 30, 32, 36, 48}) {
+    const uint32_t code = zhuyin("ㄓㄨㄤ", 3);
+    EXPECT_LE(zh::rubyUnderWidth(code, em), em - 2) << em;
+    EXPECT_EQ(zh::rubyUnderExtraWidth(code, em), 0) << em;
+  }
 }
 
 }  // namespace

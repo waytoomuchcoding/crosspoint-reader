@@ -179,7 +179,8 @@ inline void glyphColSpan(const GlyphSet& g, int symIdx, int& firstCol, int& span
 }
 }  // namespace detail
 
-inline int rubyUnderWidth(uint32_t code, int em) {
+namespace detail {
+inline int rubyUnderWidthWithStyle(uint32_t code, const RubyStyle st, const int gap) {
   if (code == 0) return 0;
   int symbols[3];
   int count = 0;
@@ -188,24 +189,52 @@ inline int rubyUnderWidth(uint32_t code, int em) {
     if (sym >= 1 && sym <= ZHUYIN_GLYPH_COUNT) symbols[count++] = sym - 1;
   }
   if (count == 0) return 0;
-  const RubyStyle st = rubyStyle(em);
-  const detail::GlyphSet& g = detail::GLYPH_SETS[st.set];
+  const GlyphSet& g = GLYPH_SETS[st.set];
   int designW = 0;
   const int tone = zhuyinTone(code);
-  if (tone == 5) designW += g.tones[3].w + 1;
+  if (tone == 5) designW += g.tones[3].w + gap;
   for (int k = 0; k < count; ++k) {
     int firstCol = 0, spanW = g.w;
-    detail::glyphColSpan(g, symbols[k], firstCol, spanW);
-    designW += spanW + (k + 1 < count ? 1 : 0);
+    glyphColSpan(g, symbols[k], firstCol, spanW);
+    designW += spanW + (k + 1 < count ? gap : 0);
   }
-  if (tone >= 2 && tone <= 4) designW += 1 + g.tones[tone - 2].w;
+  if (tone >= 2 && tone <= 4) designW += gap + g.tones[tone - 2].w;
   return designW * st.scale;
+}
+
+inline RubyStyle rubyUnderStyle(uint32_t code, int em, int& outGap) {
+  const RubyStyle cur = rubyStyle(em);
+  if (rubyUnderWidthWithStyle(code, cur, 1) <= em - 2 * cur.scale) {
+    outGap = 1;
+    return cur;
+  }
+  int curIdx = 0;
+  constexpr int nSteps = static_cast<int>(sizeof(RUBY_STEPS_BY_EM) / sizeof(RUBY_STEPS_BY_EM[0]));
+  for (int i = 0; i < nSteps; ++i) {
+    if (em >= RUBY_STEPS_BY_EM[i].minEm) curIdx = i;
+  }
+  for (int i = curIdx - 1; i >= 0; --i) {
+    const RubyStyle st = RUBY_STEPS_BY_EM[i].style;
+    if (rubyUnderWidthWithStyle(code, st, 1) <= em - 2 * st.scale) {
+      outGap = 1;
+      return st;
+    }
+  }
+  outGap = 0;
+  return {0, 1};
+}
+}  // namespace detail
+
+inline int rubyUnderWidth(uint32_t code, int em) {
+  int gap = 1;
+  const RubyStyle st = detail::rubyUnderStyle(code, em, gap);
+  return detail::rubyUnderWidthWithStyle(code, st, gap);
 }
 
 inline int rubyUnderExtraWidth(uint32_t code, int em) {
   const int w = rubyUnderWidth(code, em);
   if (w == 0) return 0;
-  const int minCell = w + 4 * rubyStyle(em).scale;
+  const int minCell = w + 2 * rubyStyle(em).scale;
   return minCell > em ? minCell - em : 0;
 }
 
@@ -224,7 +253,8 @@ void forEachRubyUnderPixel(uint32_t code, int em, int cellWidth, int lineHeight,
     if (sym >= 1 && sym <= ZHUYIN_GLYPH_COUNT) symbols[count++] = sym - 1;
   }
   if (count == 0) return;
-  const RubyStyle st = rubyStyle(em);
+  int gap = 1;
+  const RubyStyle st = detail::rubyUnderStyle(code, em, gap);
   const detail::GlyphSet& g = detail::GLYPH_SETS[st.set];
   const int s = st.scale;
   auto dot = [&](int x, int y) {
@@ -235,12 +265,12 @@ void forEachRubyUnderPixel(uint32_t code, int em, int cellWidth, int lineHeight,
   int firstCols[3], spanWs[3];
   int designW = 0;
   const int tone = zhuyinTone(code);
-  if (tone == 5) designW += g.tones[3].w + 1;
+  if (tone == 5) designW += g.tones[3].w + gap;
   for (int k = 0; k < count; ++k) {
     detail::glyphColSpan(g, symbols[k], firstCols[k], spanWs[k]);
-    designW += spanWs[k] + (k + 1 < count ? 1 : 0);
+    designW += spanWs[k] + (k + 1 < count ? gap : 0);
   }
-  if (tone >= 2 && tone <= 4) designW += 1 + g.tones[tone - 2].w;
+  if (tone >= 2 && tone <= 4) designW += gap + g.tones[tone - 2].w;
 
   int curX = (cellWidth - designW * s) / 2;
   const int topY = lineHeight + 3 * s;
@@ -252,7 +282,7 @@ void forEachRubyUnderPixel(uint32_t code, int em, int cellWidth, int lineHeight,
         if (t.rows[y] & (1 << (t.w - 1 - x))) dot(curX + x * s, ty + y * s);
       }
     }
-    curX += (t.w + 1) * s;
+    curX += (t.w + gap) * s;
   }
   for (int k = 0; k < count; ++k) {
     const uint16_t* rows = g.rows + symbols[k] * g.h;
@@ -261,11 +291,11 @@ void forEachRubyUnderPixel(uint32_t code, int em, int cellWidth, int lineHeight,
         if (rows[y] & (1 << (g.w - 1 - (firstCols[k] + x)))) dot(curX + x * s, topY + y * s);
       }
     }
-    curX += (spanWs[k] + (k + 1 < count ? 1 : 0)) * s;
+    curX += (spanWs[k] + (k + 1 < count ? gap : 0)) * s;
   }
   if (tone >= 2 && tone <= 4) {
     const detail::ToneMark& t = g.tones[tone - 2];
-    const int tx = curX + s;
+    const int tx = curX + gap * s;
     const int ty = topY + ((g.h - t.h) / 2) * s;
     for (int y = 0; y < t.h; ++y) {
       for (int x = 0; x < t.w; ++x) {
