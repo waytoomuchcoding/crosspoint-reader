@@ -78,15 +78,21 @@ void TxtEncodingActivity::loop() {
   const int last = static_cast<int>(std::size(kEncodingOrder)) - 1;
   navigator_.onPrevious([this] {
     if (position_ > 0) {
-      --position_;
-      refreshPreview();
+      {
+        RenderLock lock(*this);
+        --position_;
+        refreshPreview();
+      }
       requestUpdate();
     }
   });
   navigator_.onNext([this, last] {
     if (position_ < last) {
-      ++position_;
-      refreshPreview();
+      {
+        RenderLock lock(*this);
+        ++position_;
+        refreshPreview();
+      }
       requestUpdate();
     }
   });

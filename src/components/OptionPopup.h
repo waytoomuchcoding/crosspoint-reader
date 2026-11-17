@@ -39,8 +39,10 @@ class OptionPopup {
 
   void show(const char* titleStr, const char* const* options, int optionCount, int currentIndex,
             std::function<void(int)> onSelect) {
+    active = false;
     title = titleStr;
     headline.clear();
+    message.clear();
     ownedStrings.resize(optionCount);
     for (int i = 0; i < optionCount; i++) {
       ownedStrings[i] = options[i];
@@ -52,22 +54,38 @@ class OptionPopup {
   // It wraps to several lines under the caption; the dialog grows to fit.
   void show(const char* titleStr, const char* headlineStr, const char* const* options, int optionCount,
             int currentIndex, std::function<void(int)> onSelect) {
-    show(titleStr, options, optionCount, currentIndex, std::move(onSelect));
+    active = false;
+    title = titleStr;
     headline = headlineStr ? headlineStr : "";
+    message.clear();
+    ownedStrings.resize(optionCount);
+    for (int i = 0; i < optionCount; i++) {
+      ownedStrings[i] = options[i];
+    }
+    activate(currentIndex, std::move(onSelect));
   }
 
   // Message dialog: a wrapped body under the (optional) title, like the
   // Wi-Fi forget-network prompt. Pass an empty title for a message-only look.
   void showMessage(const char* titleStr, const char* messageStr, const char* const* options, int optionCount,
                    int currentIndex, std::function<void(int)> onSelect) {
-    show(titleStr, options, optionCount, currentIndex, std::move(onSelect));
+    active = false;
+    title = titleStr;
+    headline.clear();
     message = messageStr ? messageStr : "";
+    ownedStrings.resize(optionCount);
+    for (int i = 0; i < optionCount; i++) {
+      ownedStrings[i] = options[i];
+    }
+    activate(currentIndex, std::move(onSelect));
   }
 
   void show(StrId titleId, const std::vector<std::string>& options, int currentIndex,
             std::function<void(int)> onSelect) {
+    active = false;
     title = I18N.get(titleId);
     headline.clear();
+    message.clear();
     ownedStrings = options;
     activate(currentIndex, std::move(onSelect));
   }
@@ -85,7 +103,8 @@ class OptionPopup {
           // Tap released on an option: select it, fire, dismiss.
           selectedIndex = event.value;
           active = false;
-          if (onSelectCallback) onSelectCallback(selectedIndex);
+          auto cb = onSelectCallback;
+          if (cb) cb(selectedIndex);
           haptic_feedback::touchAction();
           requestUpdate();
           return true;
@@ -138,7 +157,8 @@ class OptionPopup {
       return true;
     } else if (confirm) {
       active = false;
-      if (onSelectCallback) onSelectCallback(selectedIndex);
+      auto cb = onSelectCallback;
+      if (cb) cb(selectedIndex);
       requestUpdate();
       return true;
     } else if (back) {
@@ -280,12 +300,11 @@ class OptionPopup {
     const int count = std::min<int>(ownedStrings.size(), MAX_OPTIONS);
     selectedIndex = currentIndex >= 0 && currentIndex < count ? currentIndex : 0;
     onSelectCallback = std::move(onSelect);
-    message.clear();
     uiReady = false;
     active = count > 0;
   }
 
-  bool active = false;
+  std::atomic<bool> active{false};
   std::string title;
   std::string headline;
   std::string message;

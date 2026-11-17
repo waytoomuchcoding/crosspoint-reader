@@ -86,6 +86,7 @@ constexpr size_t EXTRA_ROWS_PER_SECTION = 6;
 }  // namespace
 
 void SettingsActivity::rebuildSettings() {
+  RenderLock lock(*this);
   // Pick up any fonts uploaded/deleted over the web server since the last
   // reader activity ran — otherwise the font-family picker shows stale list.
   sdFontSystem.refreshIfDirty();
@@ -268,6 +269,7 @@ void SettingsActivity::toggleSelectedSetting() {
         syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
         SETTINGS.saveToFile();
         if (reloadsFonts) {
+          RenderLock lock(*this);
           sdFontSystem.ensureLoaded(renderer);
         }
         rebuildSettings();
@@ -287,6 +289,7 @@ void SettingsActivity::toggleSelectedSetting() {
     }
     setting.valueSetter((cur + 1) % totalValues);
     if (reloadsFonts) {
+      RenderLock lock(*this);
       sdFontSystem.ensureLoaded(renderer);
     }
     if (resetsUi) {

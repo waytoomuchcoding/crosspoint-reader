@@ -1,5 +1,7 @@
 #pragma once
 
+#include <BleShareSession.h>
+
 #include <string>
 #include <vector>
 
@@ -54,4 +56,10 @@ class BleShareActivity final : public UiListActivity {
   uint32_t lastRenderedBytes_ = 0;
   uint16_t lastRenderedFileIdx_ = 0xFFFF;
   unsigned long lastProgressPaintMs_ = 0;
+
+  // Render-task snapshots updated under RenderLock on loopTask.
+  xpbt::ActiveFileProgress uiProgress_{};
+  size_t uiSavedCount_ = 0;
+  std::string uiDestFolder_;
+  std::string uiErrorMessage_;
 };

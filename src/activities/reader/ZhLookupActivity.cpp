@@ -118,7 +118,9 @@ void ZhLookupActivity::onEnter() {
 }
 
 void ZhLookupActivity::onExit() {
-  zh::sharedDict().close();
+  if (zh::sharedDict().isOpen()) {
+    zh::sharedDict().close();
+  }
   unloadHeadwordFont();
   if (auto* fcm = renderer.getFontCacheManager()) fcm->releaseSdFontCaches();
   if (onPageChanged) onPageChanged(pageIndex);
@@ -970,8 +972,9 @@ void ZhLookupActivity::render(RenderLock&& lock) {
   // The frame is in the buffer: let input keep moving the cursor during the
   // panel refresh (~380 ms on the X3). Presses made meanwhile are drawn as one
   // frame when it finishes, so a held button sweeps several words per refresh.
+  const bool hadPreview = previewShown;
   lock.unlock();
-  LOG_DBG("ZH", "lookup refresh%s", previewShown ? " (with preview)" : "");
+  LOG_DBG("ZH", "lookup refresh%s", hadPreview ? " (with preview)" : "");
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
 

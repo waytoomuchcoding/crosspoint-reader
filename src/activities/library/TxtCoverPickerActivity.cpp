@@ -259,10 +259,13 @@ bool TxtCoverPickerActivity::drawSelectedPreviewBmp(const int covX, const int co
 }
 
 void TxtCoverPickerActivity::selectIndex(const int newIndex) {
-  selectedIndex_ = newIndex;
-  previewValid_ = false;
-  previewPending_ = true;
-  lastMoveMs_ = millis();
+  {
+    RenderLock lock(*this);
+    selectedIndex_ = newIndex;
+    previewValid_ = false;
+    previewPending_ = true;
+    lastMoveMs_ = millis();
+  }
   requestUpdate();
 }
 
@@ -325,8 +328,13 @@ void TxtCoverPickerActivity::loop() {
 
   if (previewPending_ && (millis() - lastMoveMs_ >= PREVIEW_DEBOUNCE_MS)) {
     previewPending_ = false;
-    ensureSelectedPreviewBmp();
-    if (previewValid_) {
+    bool ready = false;
+    {
+      RenderLock lock(*this);
+      ensureSelectedPreviewBmp();
+      ready = previewValid_;
+    }
+    if (ready) {
       requestUpdate();
     }
   }
@@ -361,8 +369,7 @@ void TxtCoverPickerActivity::render(RenderLock&&) {
     const int imgCount = std::max(0, static_cast<int>(options_.size()) - 1);
     std::snprintf(leftHdr, sizeof(leftHdr), tr(STR_TXT_COVER_SD_IMAGES), imgCount);
     const EpdFontFamily::Style leftHdrStyle = styleForText(leftHdr, true);
-    const std::string clampedLeftHdr =
-        renderer.truncatedText(SMALL_FONT_ID, leftHdr, L.leftPaneW - 20, leftHdrStyle);
+    const std::string clampedLeftHdr = renderer.truncatedText(SMALL_FONT_ID, leftHdr, L.leftPaneW - 20, leftHdrStyle);
     renderer.drawText(SMALL_FONT_ID, L.leftX + 12, L.panesTopY + 8, clampedLeftHdr.c_str(), false, leftHdrStyle);
 
     const int totalOpts = static_cast<int>(options_.size());

@@ -821,7 +821,9 @@ bool Section::finalizeBuild() {
 }
 
 void Section::suspendBuild() {
-  zh::sharedDict().close();
+  if (zh::sharedDict().isOpen()) {
+    zh::sharedDict().close();
+  }
   if (!build_) return;
 
   // Only worth persisting if this build produced pages a pre-existing partial doesn't
@@ -861,7 +863,9 @@ void Section::suspendBuild() {
 }
 
 void Section::abandonBuild() {
-  zh::sharedDict().close();
+  if (zh::sharedDict().isOpen()) {
+    zh::sharedDict().close();
+  }
   if (!build_) return;
   if (build_->parser) build_->parser->abortParse();
   if (build_->cssParser) build_->cssParser->clear();

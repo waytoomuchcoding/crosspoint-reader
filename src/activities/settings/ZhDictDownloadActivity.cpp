@@ -102,6 +102,7 @@ void ZhDictDownloadActivity::onWifi(const bool connected) {
   }
   requestUpdateAndWait();
   if (auto* fcm = renderer.getFontCacheManager()) {
+    RenderLock lock(*this);
     fcm->releaseSdFontCaches();
   }
   const bool ok = fetchManifest();
@@ -231,6 +232,7 @@ bool ZhDictDownloadActivity::swapInDictionary() {
 
 void ZhDictDownloadActivity::download() {
   if (auto* fcm = renderer.getFontCacheManager()) {
+    RenderLock lock(*this);
     fcm->releaseSdFontCaches();
   }
   cancelRequested = false;
@@ -296,7 +298,8 @@ void ZhDictDownloadActivity::render(RenderLock&&) {
   const Rect headerRect = theme.getHeaderRect(renderer, /*hasFrontButtonHints=*/true, /*hasSideButtonHints=*/false);
   GUI.drawHeader(renderer, headerRect, tr(STR_ZH_DICT_DOWNLOAD));
   const int x = safe.x + metrics.contentSidePadding;
-  const int contentWidth = (safe.width > 2 * metrics.contentSidePadding + 60) ? (safe.width - 2 * metrics.contentSidePadding) : 60;
+  const int contentWidth =
+      (safe.width > 2 * metrics.contentSidePadding + 60) ? (safe.width - 2 * metrics.contentSidePadding) : 60;
   const int lh = renderer.getLineHeight(UI_10_FONT_ID);
   int y = headerRect.y + headerRect.height + metrics.verticalSpacing * 3;
   const auto para = [&](const std::string& text) {

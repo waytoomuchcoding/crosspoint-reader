@@ -34,14 +34,20 @@ bool CatalogActivity::wifiConnected() {
 }
 
 void CatalogActivity::fail(const StrId message) {
-  state = State::ERROR;
-  errorMessage = I18N.get(message);
+  {
+    RenderLock lock(*this);
+    errorMessage = I18N.get(message);
+    state = State::ERROR;
+  }
   requestUpdate();
 }
 
 void CatalogActivity::beginLoading() {
-  state = State::LOADING;
-  statusMessage = tr(STR_LOADING);
+  {
+    RenderLock lock(*this);
+    statusMessage = tr(STR_LOADING);
+    state = State::LOADING;
+  }
   requestUpdate(true);
 }
 
@@ -144,10 +150,13 @@ void CatalogActivity::navigateButtons() {
 }
 
 void CatalogActivity::beginDownload(const std::string& title) {
-  state = State::DOWNLOADING;
-  statusMessage = title;
-  downloadProgress = downloadTotal = 0;
-  cancelDownload = goHomeAfterCancel = false;
+  {
+    RenderLock lock(*this);
+    statusMessage = title;
+    downloadProgress = downloadTotal = 0;
+    cancelDownload = goHomeAfterCancel = false;
+    state = State::DOWNLOADING;
+  }
   requestUpdate(true);
 }
 
@@ -185,7 +194,10 @@ HttpDownloader::DownloadError CatalogActivity::downloadFile(const std::string& u
   // a multi-MB file; release them up front (they repopulate on demand) and
   // refuse to start below the floor. A doomed transfer otherwise dies
   // mid-stream with MEMORY_E, or abort()s on an interior allocation.
-  if (auto* fcm = renderer.getFontCacheManager()) fcm->releaseSdFontCaches();
+  if (auto* fcm = renderer.getFontCacheManager()) {
+    RenderLock lock(*this);
+    fcm->releaseSdFontCaches();
+  }
   if (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP ||
       ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC) {
     LOG_ERR("CAT", "Low heap for download (%u free, %u max block)", ESP.getFreeHeap(), ESP.getMaxAllocHeap());

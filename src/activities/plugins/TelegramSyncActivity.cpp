@@ -88,6 +88,7 @@ void TelegramSyncActivity::retryBrowse() {
 
 void TelegramSyncActivity::startBrowse() {
   if (auto* fcm = renderer.getFontCacheManager()) {
+    RenderLock lock(*this);
     fcm->releaseSdFontCaches();
   }
 
@@ -100,8 +101,13 @@ void TelegramSyncActivity::startBrowse() {
   const bool ok = telegram::syncPendingFiles(
       lastSummary_, err,
       [this](const std::string& file, size_t dl, size_t tot) {
-        state = State::DOWNLOADING;
-        statusMessage = file;
+        {
+          RenderLock lock(*this);
+          if (statusMessage != file) {
+            statusMessage = file;
+          }
+          state = State::DOWNLOADING;
+        }
         onDownloadProgress(dl, tot);
       },
       [this] { return cancelDownload; }, &cancelDownload);

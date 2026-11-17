@@ -588,7 +588,10 @@ class FirmwareSessionHost final : public xpbt::SessionHost {
     const bool wasBook = library::isLibraryBookFile(path);
     const bool ok = removeBookFile(path);
     if (ok) {
-      RECENT_BOOKS.removeByPath(path);
+      {
+        RenderLock lock;
+        RECENT_BOOKS.removeByPath(path);
+      }
       if (wasBook) library::markLibraryIndexDirty();
       notifyStorageMutation(path);
       return xpbt::FsStatus::Ok;
@@ -644,7 +647,10 @@ class FirmwareSessionHost final : public xpbt::SessionHost {
         }
         cacheMoved = Storage.rename(oldCachePath.c_str(), newCachePath.c_str());
       }
-      RECENT_BOOKS.updatePath(srcPath, dstPath, oldCachePath, cacheMoved ? newCachePath : oldCachePath);
+      {
+        RenderLock lock;
+        RECENT_BOOKS.updatePath(srcPath, dstPath, oldCachePath, cacheMoved ? newCachePath : oldCachePath);
+      }
     } else {
       if (!Storage.rename(srcPath.c_str(), dstPath.c_str())) return xpbt::FsStatus::IoError;
     }

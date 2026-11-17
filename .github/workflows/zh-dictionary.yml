@@ -4,6 +4,10 @@
 name: Chinese dictionary
 
 on:
+  push:
+    tags:
+      - 'zh-dict'
+      - 'v[0-9]*'
   workflow_dispatch:
   schedule:
     - cron: "17 4 1 * *"  # monthly, to pick up CC-CEDICT updates
@@ -15,18 +19,38 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - name: Check whether zh-dict release needs bootstrapping
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$EVENT_NAME" = "push" ] && [ "$REF_NAME" != "zh-dict" ]; then
+            if gh release view zh-dict --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null | grep -qx 'manifest.json'; then
+              echo "zh-dict release already exists with manifest.json; skipping rebuild on firmware tag ${REF_NAME}."
+              echo "should_build=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "should_build=true" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v6
+        if: steps.gate.outputs.should_build == 'true'
 
       - uses: actions/setup-python@v6
+        if: steps.gate.outputs.should_build == 'true'
         with:
           python-version: "3.12"
 
       - name: Install tools
+        if: steps.gate.outputs.should_build == 'true'
         run: pip install wordfreq freetype-py fonttools pyyaml zopfli
 
       - name: Download sources
+        if: steps.gate.outputs.should_build == 'true'
         run: |
-          mkdir -p src && cd src
+          mkdir -p dl && cd dl
           curl -sSfL -o cedict.txt.gz https://www.mdbg.net/chinese/export/cedict/cedict_1_0_ts_utf-8_mdbg.txt.gz
           gunzip cedict.txt.gz
           curl -sSfLO https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip
@@ -37,27 +61,32 @@ jobs:
           curl -sSfLO https://raw.githubusercontent.com/bluebat/cmexfonts/master/cmex24m.bdf
 
       - name: Build dictionary
+        if: steps.gate.outputs.should_build == 'true'
         run: |
-          python3 scripts/zh/build_zh_dict.py --cedict src/cedict.txt --unihan src/Unihan_Readings.txt \
-            --hsk src/hsk/wordlists/exclusive/new --out out/zh
+          python3 scripts/zh/build_zh_dict.py --cedict dl/cedict.txt --unihan dl/Unihan_Readings.txt \
+            --hsk dl/hsk/wordlists/exclusive/new --out out/zh
 
       - name: Build fonts
+        if: steps.gate.outputs.should_build == 'true'
         run: |
-          python3 lib/EpdFont/scripts/fontconvert_sdcard.py src/unifont-16.0.04.otf --pixel-native 16 \
+          python3 lib/EpdFont/scripts/fontconvert_sdcard.py dl/unifont-16.0.04.otf --pixel-native 16 \
             --intervals latin-ext,punctuation,symbols,zh \
             --sizes 16,32 --style regular --name Unifont --max-intervals 128 --output-dir out/fonts/Unifont
           # 48 px pop-up headword: CMEX Ming 24 at 2x, Han and CJK punctuation only.
-          python3 lib/EpdFont/scripts/fontconvert_sdcard.py src/cmex24m.bdf --pixel-native 24 \
+          python3 lib/EpdFont/scripts/fontconvert_sdcard.py dl/cmex24m.bdf --pixel-native 24 \
             --intervals punctuation,zh --size 48 --max-intervals 64 -o out/headword.cpfont
 
       - name: Package
+        if: steps.gate.outputs.should_build == 'true'
         run: python3 scripts/zh/package_release.py --dict out/zh --fonts out/fonts --headword out/headword.cpfont --version "$(date -u +%Y-%m-%d)" --out dist
 
       - name: Publish to the zh-dict release
+        if: steps.gate.outputs.should_build == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view zh-dict >/dev/null 2>&1 || gh release create zh-dict --title "Chinese reading data" \
-            --notes "Dictionary and fonts for Settings > Reader > Download Chinese Dictionary. Data: CC BY-SA 4.0 (see zh-LICENSE.txt)." \
-            --latest=false
-          gh release upload zh-dict dist/* --clobber
+          gh release view zh-dict --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create zh-dict --repo "$GITHUB_REPOSITORY" --title "Chinese reading data" \
+              --notes "Dictionary and fonts for Settings > Reader > Download Chinese Dictionary. Data: CC BY-SA 4.0 (see zh-LICENSE.txt)." \
+              --latest=false
+          gh release upload zh-dict dist/* --repo "$GITHUB_REPOSITORY" --clobber

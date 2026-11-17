@@ -504,7 +504,7 @@ bool Dictionary::openSynonyms(LookupSession& session) {
     LOG_ERR("DICT", "Synonym index unusable for %s; synonyms skipped", basePath.c_str());
     session.synFailed = true;
     session.synSize = 0;
-    session.sidx.close();
+    if (session.sidx.isOpen()) session.sidx.close();
     session.syn.close();
     return false;
   }

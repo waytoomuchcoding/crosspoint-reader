@@ -530,6 +530,7 @@ bool EpubReaderActivity::openZhLookup(const bool startInJump) {
   // ZhLookupActivity::onEnter(), where openSharedDict() runs on a roomy heap.
   if (!zh::hasSharedDictFiles()) return false;
   if (auto* fcm = renderer.getFontCacheManager()) {
+    RenderLock lock(*this);
     fcm->releaseSdFontCaches();
   }
   int top, right, bottom, left;
@@ -1547,6 +1548,7 @@ bool EpubReaderActivity::launchKOReaderSync() {
     ImageBlock::setExtractor(nullptr, nullptr);
     section.reset();
     if (auto* fcm = renderer.getFontCacheManager()) {
+      RenderLock lock(*this);
       fcm->releaseSdFontCaches();
     }
     // No rendering may run while the chapter mapper borrows the framebuffer.

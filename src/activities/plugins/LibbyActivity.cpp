@@ -101,6 +101,7 @@ void LibbyActivity::runPendingWifiOp() {
   lastAttemptedOp_ = op;
 
   if (auto* fcm = renderer.getFontCacheManager()) {
+    RenderLock lock(*this);
     fcm->releaseSdFontCaches();
   }
 

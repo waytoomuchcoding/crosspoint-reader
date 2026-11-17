@@ -123,10 +123,10 @@ bool Dict::open(const char* dir) {
 }
 
 void Dict::close() {
-  charsFile.close();
-  pairsFile.close();
-  wordsFile.close();
-  entriesFile.close();
+  if (charsFile.isOpen()) charsFile.close();
+  if (pairsFile.isOpen()) pairsFile.close();
+  if (wordsFile.isOpen()) wordsFile.close();
+  if (entriesFile.isOpen()) entriesFile.close();
   pageIndex.reset();
   slices.reset();
   sliceCount = 0;

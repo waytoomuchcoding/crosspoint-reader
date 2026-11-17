@@ -52,6 +52,7 @@ BleShareActivity::BleShareActivity(GfxRenderer& renderer, MappedInputManager& ma
 void BleShareActivity::onEnter() {
   UiListActivity::onEnter();
   if (auto* fcm = renderer.getFontCacheManager()) {
+    RenderLock lock(*this);
     fcm->releaseSdFontCaches();
   }
   BLESHARE_STORE.loadFromFile();
@@ -202,6 +203,12 @@ void BleShareActivity::openIncomingPopup() {
     incomingPopupShown_ = false;
     if (idx == 0) {
       bleshare::respondToOffer(true);
+      {
+        RenderLock lock(RenderLock::Mode::Try);
+        if (lock.ownsLock()) {
+          uiProgress_ = bleshare::currentProgress();
+        }
+      }
       view_ = View::Transferring;
       lastRenderedBytes_ = 0;
       lastRenderedFileIdx_ = 0xFFFF;
@@ -296,15 +303,15 @@ void BleShareActivity::syncSessionToUi() {
         popup_.dismiss();
         incomingPopupShown_ = false;
       }
-      if (view_ != View::Transferring) {
-        view_ = View::Transferring;
-        lastProgressPaintMs_ = millis();
-        requestUpdate();
-      } else {
-        const auto& prog = bleshare::currentProgress();
-        const unsigned long now = millis();
-        if (prog.fileIndex != lastRenderedFileIdx_ ||
-            (now - lastProgressPaintMs_ >= 400 && prog.receivedBytes != lastRenderedBytes_)) {
+      const auto& prog = bleshare::currentProgress();
+      const unsigned long now = millis();
+      const bool needsPaint = view_ != View::Transferring || prog.fileIndex != lastRenderedFileIdx_ ||
+                              (now - lastProgressPaintMs_ >= 400 && prog.receivedBytes != lastRenderedBytes_);
+      if (needsPaint) {
+        RenderLock lock(RenderLock::Mode::Try);
+        if (lock.ownsLock()) {
+          uiProgress_ = prog;
+          view_ = View::Transferring;
           lastRenderedFileIdx_ = prog.fileIndex;
           lastRenderedBytes_ = prog.receivedBytes;
           lastProgressPaintMs_ = now;
@@ -315,9 +322,14 @@ void BleShareActivity::syncSessionToUi() {
     }
     case xpbt::SessionState::Completed:
       if (view_ != View::Done || !donePopupShown_) {
-        view_ = View::Done;
-        openDonePopup();
-        requestUpdate();
+        RenderLock lock(RenderLock::Mode::Try);
+        if (lock.ownsLock()) {
+          uiSavedCount_ = bleshare::savedPaths().size();
+          uiDestFolder_ = bleshare::currentOffer().destFolder;
+          view_ = View::Done;
+          openDonePopup();
+          requestUpdate();
+        }
       }
       break;
     case xpbt::SessionState::Deferred:
@@ -331,9 +343,13 @@ void BleShareActivity::syncSessionToUi() {
       break;
     case xpbt::SessionState::Error:
       if (view_ != View::Error) {
-        popup_.dismiss();
-        view_ = View::Error;
-        requestUpdate();
+        RenderLock lock(RenderLock::Mode::Try);
+        if (lock.ownsLock()) {
+          popup_.dismiss();
+          uiErrorMessage_ = bleshare::errorMessage();
+          view_ = View::Error;
+          requestUpdate();
+        }
       }
       break;
     default:
@@ -461,7 +477,7 @@ void BleShareActivity::renderPairingCard() const {
 void BleShareActivity::renderTransferCard() const {
   const Rect area = UITheme::getContentArea(renderer);
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const auto& prog = bleshare::currentProgress();
+  const auto& prog = uiProgress_;
 
   const int cardW = std::min(area.width - 48, 430);
   const int cardH = 190;
@@ -474,7 +490,8 @@ void BleShareActivity::renderTransferCard() const {
 
   char headerBuf[64];
   std::snprintf(headerBuf, sizeof(headerBuf), tr(STR_BLE_SHARE_RECEIVING_FMT),
-                static_cast<unsigned>(prog.fileIndex + 1), static_cast<unsigned>(std::max<uint16_t>(1, prog.fileCount)));
+                static_cast<unsigned>(prog.fileIndex + 1),
+                static_cast<unsigned>(std::max<uint16_t>(1, prog.fileCount)));
   UITheme::drawCenteredText(renderer, Rect{cardX + 16, cardY + 20, cardW - 32, 26}, UI_12_FONT_ID, cardY + 20,
                             headerBuf, true, EpdFontFamily::BOLD);
 
@@ -507,14 +524,14 @@ void BleShareActivity::renderDoneCard() const {
   const Rect area = UITheme::getContentArea(renderer);
   const int cy = area.y + area.height / 2 - 20;
   char msg[96];
-  std::snprintf(msg, sizeof(msg), tr(STR_BLE_SHARE_COMPLETE_FMT), static_cast<unsigned>(bleshare::savedPaths().size()),
-                bleshare::currentOffer().destFolder.c_str());
+  std::snprintf(msg, sizeof(msg), tr(STR_BLE_SHARE_COMPLETE_FMT), static_cast<unsigned>(uiSavedCount_),
+                uiDestFolder_.c_str());
   UITheme::drawCenteredText(renderer, area, UI_12_FONT_ID, cy, msg, true, EpdFontFamily::BOLD);
 }
 
 void BleShareActivity::renderErrorCard() const {
   const Rect area = UITheme::getContentArea(renderer);
-  const char* err = bleshare::errorMessage().empty() ? "Transfer interrupted" : bleshare::errorMessage().c_str();
+  const char* err = uiErrorMessage_.empty() ? "Transfer interrupted" : uiErrorMessage_.c_str();
   UITheme::drawCenteredWrappedText(renderer, Rect{area.x + 24, area.y + area.height / 3, area.width - 48, 120},
                                    UI_12_FONT_ID, err, 3, true, EpdFontFamily::BOLD);
 }
