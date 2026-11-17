@@ -187,6 +187,8 @@ bool ZhDictDownloadActivity::installFile(const File& file, const size_t index) {
     if (!isZh) Storage.remove(tmpDest.c_str());
     if (err == HttpDownloader::ABORTED || cancelRequested) {
       cancelRequested = true;
+    } else if (err == HttpDownloader::FILE_ERROR) {
+      error = file.asset + ": SD write failed";
     } else {
       error = file.asset + ": download failed (" + std::to_string(HttpDownloader::lastStatus()) + ")";
     }

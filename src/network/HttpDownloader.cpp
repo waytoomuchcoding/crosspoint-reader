@@ -80,7 +80,11 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
   g_lastRedirected = !answeredBySameOrigin;
 
   if (result.aborted) return HttpDownloader::ABORTED;
-  if (result.stopped) return HttpDownloader::FILE_ERROR;
+  if (result.stopped) {
+    LOG_ERR("HTTP", "Download stopped by file sink: got %zu of %zu bytes (status %d): %s", result.bytes, result.total,
+            result.status, UrlUtils::redactUrlForLog(url).c_str());
+    return HttpDownloader::FILE_ERROR;
+  }
   if (result.status == 401 || result.status == 403) {
     LOG_ERR("HTTP", "wolfSSL request unauthorized: status %d: %s", result.status,
             UrlUtils::redactUrlForLog(url).c_str());
@@ -291,11 +295,39 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   }
 
   freeink::FetchSink sink;
-  sink.write = [&file](const uint8_t* data, size_t len) { return file.write(data, len) == len; };
+  sink.write = [&file, &partPath](const uint8_t* data, size_t len) {
+    constexpr int kMaxWriteRetries = 3;
+    size_t offset = 0;
+    for (int attempt = 0; attempt <= kMaxWriteRetries && offset < len; ++attempt) {
+      const size_t posBefore = file.position();
+      const size_t written = file.write(data + offset, len - offset);
+      offset += written;
+      if (offset == len) return true;
+
+      LOG_ERR("HTTP", "SD write failed at %zu (%zu/%zu bytes, attempt %d/%d)", posBefore, written,
+              len - offset + written, attempt + 1, kMaxWriteRetries + 1);
+      if (attempt == kMaxWriteRetries) break;
+
+      file.flush();
+      delay(10);
+      // Reopen on failure so a latched SdFat write error does not poison subsequent writes.
+      file.close();
+      file = Storage.open(partPath.c_str(), O_RDWR);
+      if (!file.isOpen() || !file.seek(posBefore + written)) {
+        LOG_ERR("HTTP", "SD reopen/seek failed at %zu", posBefore + written);
+        return false;
+      }
+    }
+    return false;
+  };
   // Reopening for write truncates: the server restarted the body from byte 0.
   sink.rewind = [&file, &partPath] {
     file.close();
-    return Storage.openFileForWrite("HTTP", partPath.c_str(), file);
+    if (!Storage.openFileForWrite("HTTP", partPath.c_str(), file)) {
+      LOG_ERR("HTTP", "Failed to rewind download file: %s", partPath.c_str());
+      return false;
+    }
+    return true;
   };
   sink.progress = progress;
 

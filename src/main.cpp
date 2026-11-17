@@ -319,7 +319,7 @@ bool deliver(const bleturner::Action action) {
   return false;
 }
 
-bool yieldForRadio() { return true; }        // the reader keeps no parser alive between pages
+bool yieldForRadio() { return true; }  // the reader keeps no parser alive between pages
 bool fileTransferActive() { return bleshare::ownsRadio(); }
 void restartIntoBook() { silentRestartToReader(); }
 
@@ -931,6 +931,8 @@ void loop() {
     const auto heap = HalMemory::getInternalHeap();
     LOG_INF("MEM", "Free: %zu bytes, Total: %zu bytes, Min Free: %zu bytes, MaxAlloc: %zu bytes", heap.freeBytes,
             heap.totalBytes, heap.minFreeBytes, heap.largestBlockBytes);
+    LOG_INF("DIAG", "cpu=%dMHz rawIn=%d pwr=%d usb=%d bleShare=%d", getCpuFrequencyMhz(), gpio.rawInputActive() ? 1 : 0,
+            gpio.isPressed(HalGPIO::BTN_POWER) ? 1 : 0, gpio.isUsbConnected() ? 1 : 0, bleshare::ownsRadio() ? 1 : 0);
 #ifdef BOARD_HAS_PSRAM
     const auto psram = HalMemory::getPsramHeap();
     LOG_INF("MEM", "PSRAM: Free: %zu bytes, Total: %zu bytes, Min Free: %zu bytes, MaxAlloc: %zu bytes",
