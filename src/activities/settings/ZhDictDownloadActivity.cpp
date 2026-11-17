@@ -12,6 +12,7 @@
 #include <ZhDict.h>
 #include <esp_rom_crc.h>
 
+#include <algorithm>
 #include <cstdio>
 
 #include "MappedInputManager.h"
@@ -48,6 +49,13 @@ bool crc32Of(const char* path, uint32_t& out) {
 void makeParents(const std::string& path) {
   const size_t slash = path.rfind('/');
   if (slash != std::string::npos && slash > 0) Storage.mkdir(path.substr(0, slash).c_str());
+}
+
+bool isValidAssetName(const std::string& asset) {
+  if (asset.empty() || asset[0] == '/' || asset.find("..") != std::string::npos) {
+    return false;
+  }
+  return std::none_of(asset.begin(), asset.end(), [](const unsigned char c) { return c <= ' '; });
 }
 
 }  // namespace
@@ -133,7 +141,7 @@ bool ZhDictDownloadActivity::fetchManifest() {
     file.crc32 = f["crc32"] | 0u;
     // Only the two data folders may be written.
     const bool allowed = file.path.rfind("zh/", 0) == 0 || file.path.rfind(".fonts/", 0) == 0;
-    if (file.asset.empty() || !allowed || file.path.find("..") != std::string::npos) {
+    if (!isValidAssetName(file.asset) || !allowed || file.path.find("..") != std::string::npos) {
       error = "manifest: bad entry " + file.path;
       return false;
     }
@@ -146,9 +154,10 @@ bool ZhDictDownloadActivity::fetchManifest() {
 }
 
 bool ZhDictDownloadActivity::installFile(const File& file, const size_t index) {
-  // Dictionary files stage in /zh.new; fonts are independent and go in place.
-  std::string dest = "/" + file.path;
-  if (file.path.rfind("zh/", 0) == 0) dest = std::string(NEW_DIR) + "/" + file.path.substr(3);
+  // Dictionary files stage in /zh.new; font files stage to <dest>.new before rename.
+  const bool isZh = file.path.rfind("zh/", 0) == 0;
+  const std::string dest = isZh ? (std::string(NEW_DIR) + "/" + file.path.substr(3)) : ("/" + file.path);
+  const std::string tmpDest = isZh ? dest : (dest + ".new");
   makeParents(dest);
   {
     RenderLock lock(*this);
@@ -158,7 +167,7 @@ bool ZhDictDownloadActivity::installFile(const File& file, const size_t index) {
   requestUpdate(true);
   unsigned long lastDraw = 0;
   const auto err = HttpDownloader::downloadToFile(
-      std::string(ZH_DICT_RELEASE_URL) + file.asset, dest,
+      std::string(ZH_DICT_RELEASE_URL) + file.asset, tmpDest,
       [&](size_t downloaded, size_t) {
         fileBytes = static_cast<uint32_t>(downloaded);
         mappedInput.update(true);
@@ -174,6 +183,7 @@ bool ZhDictDownloadActivity::installFile(const File& file, const size_t index) {
       },
       &cancelRequested, "", "", {}, true);
   if (err != HttpDownloader::OK) {
+    if (!isZh) Storage.remove(tmpDest.c_str());
     if (err == HttpDownloader::ABORTED || cancelRequested) {
       cancelRequested = true;
     } else {
@@ -183,12 +193,20 @@ bool ZhDictDownloadActivity::installFile(const File& file, const size_t index) {
   }
   uint32_t crc = 0;
   HalFile f;
-  const size_t size = Storage.openFileForRead("ZHDL", dest.c_str(), f) ? f.fileSize() : 0;
+  const size_t size = Storage.openFileForRead("ZHDL", tmpDest.c_str(), f) ? f.fileSize() : 0;
   f.close();
-  if (size != file.size || !crc32Of(dest.c_str(), crc) || crc != file.crc32) {
+  if (size != file.size || !crc32Of(tmpDest.c_str(), crc) || crc != file.crc32) {
     error = file.asset + ": size or CRC mismatch";
-    Storage.remove(dest.c_str());
+    Storage.remove(tmpDest.c_str());
     return false;
+  }
+  if (!isZh) {
+    if (Storage.exists(dest.c_str())) Storage.remove(dest.c_str());
+    if (!Storage.rename(tmpDest.c_str(), dest.c_str())) {
+      error = file.asset + ": could not install";
+      Storage.remove(tmpDest.c_str());
+      return false;
+    }
   }
   doneBytes += file.size;
   return true;
@@ -307,7 +325,8 @@ void ZhDictDownloadActivity::render(RenderLock&&) {
       break;
     case State::Downloading: {
       const uint32_t done = doneBytes + fileBytes;
-      const int pct = totalBytes ? static_cast<int>(static_cast<uint64_t>(done) * 100 / totalBytes) : 0;
+      const int rawPct = totalBytes ? static_cast<int>(static_cast<uint64_t>(done) * 100 / totalBytes) : 0;
+      const int pct = std::clamp(rawPct, 0, 100);
       snprintf(buf, sizeof(buf), "%s %u/%u: %s", tr(STR_ZH_DICT_DOWNLOADING), static_cast<unsigned>(currentFile + 1),
                static_cast<unsigned>(files.size()), currentFile < files.size() ? files[currentFile].asset.c_str() : "");
       para(buf);
