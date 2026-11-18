@@ -140,6 +140,27 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
   }
 }
 
+uint32_t* TextBlock::allocateZhRubies(const uint16_t count) {
+  if (count == 0) {
+    zhRubyData.reset();
+    zhRubyCount = 0;
+    return nullptr;
+  }
+  const size_t bytes = static_cast<size_t>(count) * sizeof(uint32_t);
+  auto buf = makeUniqueNoThrow<uint32_t[]>(count);
+  if (!buf) {
+    freeink::MemoryManager::instance().ensureFree(bytes + 1024);
+    buf = makeUniqueNoThrow<uint32_t[]>(count);
+  }
+  if (!buf) {
+    LOG_ERR("TXB", "OOM: zh rubies (%u bytes)", static_cast<uint32_t>(bytes));
+    return nullptr;
+  }
+  zhRubyData = std::move(buf);
+  zhRubyCount = count;
+  return zhRubyData.get();
+}
+
 bool TextBlock::setZhRubies(const uint32_t* packedEntries, const uint16_t count) {
   if (count == 0) {
     zhRubyData.reset();
@@ -147,16 +168,9 @@ bool TextBlock::setZhRubies(const uint32_t* packedEntries, const uint16_t count)
     return true;
   }
   if (!packedEntries) return false;
-  const size_t bytes = static_cast<size_t>(count) * sizeof(uint32_t);
-  auto buf = makeUniqueNoThrow<uint32_t[]>(count);
-  if (!buf) {
-    freeink::MemoryManager::instance().ensureFree(bytes + 1024);
-    buf = makeUniqueNoThrow<uint32_t[]>(count);
-  }
-  if (!buf) return false;
-  memcpy(buf.get(), packedEntries, bytes);
-  zhRubyData = std::move(buf);
-  zhRubyCount = count;
+  uint32_t* dst = allocateZhRubies(count);
+  if (!dst) return false;
+  memcpy(dst, packedEntries, static_cast<size_t>(count) * sizeof(uint32_t));
   return true;
 }
 

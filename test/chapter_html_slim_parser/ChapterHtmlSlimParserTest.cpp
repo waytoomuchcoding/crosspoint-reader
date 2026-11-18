@@ -2433,3 +2433,71 @@ TEST(CjkPunctDecompose, PunctuatedHanTokensPreserveOrderAndAvoidSdThrashing) {
   EXPECT_EQ(renderer.preparedAdvances.count({0, 0, 0x65E5u}), 0u);
   EXPECT_GT(renderer.preparedAdvances.count({0, 0, 0xFF0Cu}), 0u);
 }
+
+TEST(CjkPunctDecompose, MoreThan16DistinctPunctuationMarksStayExactAndColdFree) {
+  constexpr const char* kText =
+      "一，二。三！四？五；六：七「八」九『十』百（千）萬《億》兆〈京〉垓【秭】穰—溝…澗·正～載";
+  auto runLayout = [&](const bool sdFont, GfxRenderer& renderer, std::vector<std::vector<int16_t>>& xPosPerLine,
+                       std::vector<std::vector<std::string>>& wordsPerLine) {
+    renderer.sdFont = sdFont;
+    ParsedText text(false, false, BlockStyle{}, 0);
+    text.addWord(kText, EpdFontFamily::REGULAR);
+    text.layoutAndExtractLines(
+        renderer, 0, 96,
+        [&](std::unique_ptr<TextBlock> line, uint32_t) {
+          ASSERT_NE(line, nullptr);
+          auto& xs = xPosPerLine.emplace_back();
+          auto& ws = wordsPerLine.emplace_back();
+          for (uint16_t i = 0; i < line->wordCount(); ++i) {
+            xs.push_back(line->wordXpos(i));
+            ws.emplace_back(line->wordText(i));
+          }
+        },
+        true, /*characterSpacing=*/1);
+    EXPECT_FALSE(text.hadDroppedWords());
+  };
+
+  GfxRenderer rendererSd;
+  GfxRenderer rendererFlash;
+  std::vector<std::vector<int16_t>> sdXs, flashXs;
+  std::vector<std::vector<std::string>> sdWords, flashWords;
+  runLayout(true, rendererSd, sdXs, sdWords);
+  runLayout(false, rendererFlash, flashXs, flashWords);
+
+  EXPECT_EQ(sdWords, flashWords);
+  EXPECT_EQ(sdXs, flashXs);
+  EXPECT_EQ(rendererSd.coldMeasurements, 0u);
+  // Beyond-16-entry cache punctuation marks are still prewarmed while non-probe Han stay out.
+  EXPECT_EQ(rendererSd.preparedAdvances.count({0, 0, 0x4E8Cu}), 0u);  // 二
+  EXPECT_EQ(rendererSd.preparedAdvances.count({0, 0, 0x842Cu}), 0u);  // 萬
+  EXPECT_EQ(rendererSd.preparedAdvances.count({0, 0, 0x8F09u}), 0u);  // 載
+  EXPECT_GT(rendererSd.preparedAdvances.count({0, 0, 0xFF0Cu}), 0u);  // ，
+  EXPECT_GT(rendererSd.preparedAdvances.count({0, 0, 0x2014u}), 0u);  // —
+  EXPECT_GT(rendererSd.preparedAdvances.count({0, 0, 0xFF5Eu}), 0u);  // ～
+}
+
+TEST(ZhTextBlockSerialization, AuthorHtmlRubySuppressesDuplicateZhuyinOnGroup) {
+  GfxRenderer renderer;
+  ParsedText text(false, false, BlockStyle{}, 0);
+  text.addWord("琥", EpdFontFamily::REGULAR);
+  text.addWord("珀", EpdFontFamily::REGULAR, false, true);
+  text.addWord("光", EpdFontFamily::REGULAR, false, true);
+  text.addWord("芒", EpdFontFamily::REGULAR, false, true);
+  text.setRubyGroupAt(0, 2, "hǔpò");
+  text.setZhRubyForWordAt(0, 0x41234u);
+  text.setZhRubyForWordAt(1, 0x45678u);
+  text.setZhRubyForWordAt(2, 0x89ABCu);
+
+  std::vector<std::unique_ptr<TextBlock>> lines;
+  text.layoutAndExtractLines(renderer, 0, 200,
+                             [&](std::unique_ptr<TextBlock> line, uint32_t) { lines.push_back(std::move(line)); });
+  ASSERT_EQ(lines.size(), 1u);
+  const TextBlock& block = *lines[0];
+  EXPECT_TRUE(block.hasRuby());
+  ASSERT_EQ(block.getRubyTexts().size(), 4u);
+  EXPECT_EQ(block.getRubyTexts()[0], "hǔpò");
+  EXPECT_EQ(block.wordZhRuby(0), 0u);
+  EXPECT_EQ(block.wordZhRuby(1), 0u);
+  EXPECT_EQ(block.wordZhRuby(2), 0x89ABCu);
+  EXPECT_EQ(block.getZhRubyCount(), 1);
+}

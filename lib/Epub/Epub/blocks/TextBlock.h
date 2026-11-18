@@ -148,6 +148,7 @@ class TextBlock final : public Block {
   static constexpr uint32_t packZhRuby(uint16_t wordIdx, uint32_t code) {
     return (static_cast<uint32_t>(wordIdx) << 21) | (code & ZH_RUBY_CODE_MASK);
   }
+  uint32_t* allocateZhRubies(uint16_t count);
   bool setZhRubies(const uint32_t* packedEntries, uint16_t count);
   uint16_t getZhRubyCount() const { return zhRubyCount; }
   uint32_t wordZhRuby(uint16_t wordIndex) const;

@@ -179,6 +179,7 @@ bool isSingleHanIdeograph(const std::string_view word) {
 constexpr bool isUniformHanCodepoint(const uint32_t cp) { return cp >= 0x4E00 && cp <= 0x9FFF; }
 
 bool isDecomposableCjkPunct(const uint32_t cp) {
+  if (cp > 0xFFFFu) return false;
   return CjkBreaks::isNoBreakBeforeCjkPunctuation(cp) || CjkBreaks::isNoBreakAfterCjkPunctuation(cp) || cp == 0x2014 ||
          cp == 0x2026 || cp == 0x3000 || cp == 0x00B7 || cp == 0xFF5E;
 }
@@ -208,41 +209,43 @@ constexpr int cjkTrackingBetween(const uint32_t leftCp, const uint32_t rightCp, 
 }
 
 // Per-paragraph cache of uniform CJK ideograph advance width keyed by (fontId, baseStyle 0..3),
-// plus a small cache of punctuation advances so punctuated Han tokens (e.g. "說，" or "「你")
+// plus a packed cache of BMP punctuation advances so punctuated Han tokens (e.g. "說，" or "「你")
 // don't pull Han codepoints into SdCardFont's bounded advance table.
 struct HanAdvanceCache {
-  static constexpr size_t kMaxFonts = 8;
-  static constexpr size_t kMaxPunct = 64;
-  int32_t fontIds[kMaxFonts]{};
-  uint16_t advances[kMaxFonts][4]{};
-  bool probed[kMaxFonts][4]{};
-  size_t fontCount = 0;
+  static constexpr size_t kMaxFonts = 4;   // matches ParsedText::MAX_SIZE_SLOTS
+  static constexpr size_t kMaxPunct = 16;  // overflow still hits prewarmed SD advanceTable_
 
   struct PunctEntry {
-    int32_t fontId = 0;
-    uint8_t style = 0;
-    uint32_t cp = 0;
+    uint16_t cp = 0;
     uint16_t advancePx = 0;
+    uint8_t fontIdx = 0;
+    uint8_t style = 0;
   };
+  static_assert(sizeof(PunctEntry) == 6, "PunctEntry must stay packed to 6 bytes");
+
+  int32_t fontIds[kMaxFonts]{};
+  uint16_t advances[kMaxFonts][4]{};
+  uint8_t probedMask[kMaxFonts]{};
   PunctEntry punctEntries[kMaxPunct]{};
-  size_t punctCount = 0;
+  uint8_t fontCount = 0;
+  uint8_t punctCount = 0;
+
+  int findOrAddFont(const int fontId) {
+    for (uint8_t i = 0; i < fontCount; ++i) {
+      if (fontIds[i] == fontId) return i;
+    }
+    if (fontCount >= kMaxFonts) return -1;
+    const uint8_t idx = fontCount++;
+    fontIds[idx] = fontId;
+    return idx;
+  }
 
   uint16_t get(const GfxRenderer& renderer, const int fontId, const EpdFontFamily::Style style) {
     const uint8_t s = static_cast<uint8_t>(style) & 0x03;
-    size_t idx = fontCount;
-    for (size_t i = 0; i < fontCount; ++i) {
-      if (fontIds[i] == fontId) {
-        idx = i;
-        break;
-      }
-    }
-    if (idx == fontCount) {
-      if (fontCount >= kMaxFonts) return 0;
-      fontIds[idx] = fontId;
-      ++fontCount;
-    }
-    if (!probed[idx][s]) {
-      probed[idx][s] = true;
+    const int idx = findOrAddFont(fontId);
+    if (idx < 0) return 0;
+    if ((probedMask[idx] & (1u << s)) == 0) {
+      probedMask[idx] |= static_cast<uint8_t>(1u << s);
       const auto baseStyle = static_cast<EpdFontFamily::Style>(s);
       static constexpr const char* kProbe1 = "\xE4\xB8\x80";  // 一 U+4E00
       static constexpr const char* kProbe2 = "\xE7\x9A\x84";  // 的 U+7684
@@ -261,9 +264,14 @@ struct HanAdvanceCache {
   uint16_t getPunctAdvance(const GfxRenderer& renderer, const int fontId, const EpdFontFamily::Style style,
                            const uint32_t cp, const uint16_t hanW) {
     const uint8_t s = static_cast<uint8_t>(style) & 0x03;
-    for (size_t i = 0; i < punctCount; ++i) {
-      if (punctEntries[i].fontId == fontId && punctEntries[i].style == s && punctEntries[i].cp == cp) {
-        return punctEntries[i].advancePx;
+    const int fontIdx = findOrAddFont(fontId);
+    const uint16_t cp16 = static_cast<uint16_t>(cp);
+    if (fontIdx >= 0 && cp <= 0xFFFFu) {
+      for (uint8_t i = 0; i < punctCount; ++i) {
+        if (punctEntries[i].cp == cp16 && punctEntries[i].fontIdx == static_cast<uint8_t>(fontIdx) &&
+            punctEntries[i].style == s) {
+          return punctEntries[i].advancePx;
+        }
       }
     }
     char probe[8];
@@ -274,8 +282,8 @@ struct HanAdvanceCache {
     *end = '\0';
     const int pairW = renderer.getTextAdvanceX(fontId, probe, static_cast<EpdFontFamily::Style>(s), 0);
     const uint16_t adv = pairW > static_cast<int>(hanW) ? static_cast<uint16_t>(pairW - hanW) : 0;
-    if (punctCount < kMaxPunct) {
-      punctEntries[punctCount++] = {fontId, s, cp, adv};
+    if (fontIdx >= 0 && cp <= 0xFFFFu && punctCount < kMaxPunct) {
+      punctEntries[punctCount++] = {cp16, adv, static_cast<uint8_t>(fontIdx), s};
     }
     return adv;
   }
@@ -300,6 +308,7 @@ struct HanAdvanceCache {
     return total > 0 ? static_cast<uint16_t>(total) : 0;
   }
 };
+static_assert(sizeof(HanAdvanceCache) <= 160, "Keep HanAdvanceCache under 256-byte stack budget");
 
 // Returns the advance width for a word while ignoring soft hyphen glyphs and optionally appending a visible hyphen.
 // Uses advance width (sum of glyph advances + kerning) rather than bounding box width so that italic glyph overhangs
@@ -911,6 +920,10 @@ int ParsedText::resolveFirstLineIndent(const bool isFirstLine, const GfxRenderer
 void ParsedText::setZhRubyForWordAt(size_t index, const uint32_t code) {
   const uint32_t masked = code & TextBlock::ZH_RUBY_CODE_MASK;
   if (index >= words.size() || masked == 0) return;
+  if ((index < rubyTexts.size() && !rubyTexts[index].empty()) ||
+      (index < wordStyles.size() && (wordStyles[index] & EpdFontFamily::RUBY_CONTINUE) != 0)) {
+    return;
+  }
   if (zhRubyCodes.size() <= index) {
     zhRubyCodes.resize(words.size(), 0);
   }
@@ -999,121 +1012,6 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
   isNaturalAlign =
       blockStyle.alignment == CssTextAlign::Justify ||
       (blockStyle.isRtl ? blockStyle.alignment == CssTextAlign::Right : blockStyle.alignment == CssTextAlign::Left);
-
-  // Ensure SD card font glyph metrics are loaded before measuring word widths.
-  // For flash-based fonts isSdCardFont() returns false and this block is skipped
-  // entirely — no heap allocation. For SD card fonts this reads glyph metadata
-  // (advanceX only, no bitmaps) for all unique codepoints in this paragraph so
-  // that calculateWordWidths() can measure text without on-demand SD I/O.
-  // Every size in the paragraph measures through its own font: the block font plus any
-  // inline-size slots resolved by the parser.
-  int32_t paragraphFonts[MAX_SIZE_SLOTS] = {fontId};
-  size_t paragraphFontCount = 1;
-  for (uint8_t slot = 1; slot < sizeSlotCount; ++slot) {
-    const int32_t slotFont = sizeSlotFontIds[slot];
-    if (slotFont != 0 && std::find(paragraphFonts, paragraphFonts + paragraphFontCount, slotFont) ==
-                             paragraphFonts + paragraphFontCount) {
-      paragraphFonts[paragraphFontCount++] = slotFont;
-    }
-  }
-  const bool anySdFont = std::any_of(paragraphFonts, paragraphFonts + paragraphFontCount,
-                                     [&renderer](const int32_t font) { return renderer.isSdCardFont(font); });
-  if (anySdFont) {
-    // Style mask: only ask the SD font to load advances for styles actually
-    // used in this paragraph. Style index is the low two bits (regular/bold/
-    // italic/bold-italic); the underline bit is irrelevant to advance metrics.
-    uint8_t styleMask = 0;
-    for (auto s : wordStyles) {
-      styleMask |= static_cast<uint8_t>(1u << (static_cast<uint8_t>(s) & 0x03));
-    }
-    if (styleMask == 0) styleMask = 0x01;  // defensive: regular only
-    const bool includeSmallCaps = std::any_of(wordSizeSlots.begin(), wordSizeSlots.end(), [](const uint8_t slot) {
-      return (slot & TextBlock::SMALL_CAPS_SLOT_FLAG) != 0;
-    });
-    // Hand the arena chunks over as packed NUL-separated word runs, skipping single
-    // Han ideographs when the font uses a uniform 1em Han advance.
-    HanAdvanceCache hanCache;
-    bool allUniformHan = !includeSmallCaps;
-    for (size_t i = 0; i < paragraphFontCount && allUniformHan; ++i) {
-      for (uint8_t s = 0; s < 4; ++s) {
-        if ((styleMask & (1u << s)) != 0 &&
-            hanCache.get(renderer, paragraphFonts[i], static_cast<EpdFontFamily::Style>(s)) == 0) {
-          allUniformHan = false;
-          break;
-        }
-      }
-    }
-
-    if (allUniformHan) {
-      std::string nonHanPacked;
-      uint32_t seenPunct[HanAdvanceCache::kMaxPunct]{};
-      size_t seenPunctCount = 0;
-      bool sawDecomposedPunct = false;
-      for (size_t i = 0; i < words.size(); ++i) {
-        const std::string_view w = wordAt(i);
-        if (wordFocusBoundary[i] == 0 &&
-            (getWordStyleAt(i) & (EpdFontFamily::SUP | EpdFontFamily::SUB | EpdFontFamily::SMALL_CAPS)) == 0) {
-          if (isSingleHanIdeograph(w)) {
-            continue;
-          }
-          if (canDecomposeHanPunctToken(w)) {
-            const auto* p = reinterpret_cast<const uint8_t*>(w.data());
-            const auto* end = p + w.size();
-            while (p < end) {
-              const uint32_t cp = utf8NextCodepoint(&p);
-              if (cp == 0 || isUniformHanCodepoint(cp)) continue;
-              bool seen = false;
-              for (size_t k = 0; k < seenPunctCount; ++k) {
-                if (seenPunct[k] == cp) {
-                  seen = true;
-                  break;
-                }
-              }
-              if (!seen) {
-                if (seenPunctCount < HanAdvanceCache::kMaxPunct) seenPunct[seenPunctCount++] = cp;
-                utf8AppendCodepoint(cp, nonHanPacked);
-                nonHanPacked.push_back('\0');
-                sawDecomposedPunct = true;
-              }
-            }
-            continue;
-          }
-        }
-        nonHanPacked.append(w.data(), w.size());
-        nonHanPacked.push_back('\0');
-      }
-      if (sawDecomposedPunct) {
-        nonHanPacked.append("\xE4\xB8\x80", 3);
-        nonHanPacked.push_back('\0');
-      }
-      if (!nonHanPacked.empty() || words.size() > 1 || hyphenationEnabled) {
-        const char* segPtr = nonHanPacked.empty() ? nullptr : nonHanPacked.data();
-        const size_t segLen = nonHanPacked.size();
-        for (size_t i = 0; i < paragraphFontCount; ++i) {
-          if (!renderer.isSdCardFont(paragraphFonts[i])) continue;
-          renderer.ensureSdCardFontReady(paragraphFonts[i], segPtr ? &segPtr : nullptr, segPtr ? &segLen : nullptr,
-                                         segPtr ? 1 : 0, words.size() > 1, hyphenationEnabled, styleMask,
-                                         includeSmallCaps);
-        }
-      }
-    } else {
-      std::vector<const char*> segments;
-      std::vector<size_t> segmentLens;
-      segments.reserve(wordStore.chunkCount());
-      segmentLens.reserve(wordStore.chunkCount());
-      for (size_t i = 0; i < wordStore.chunkCount(); ++i) {
-        const char* data = wordStore.chunkData(i);
-        if (!data) continue;  // retired chunk
-        segments.push_back(data);
-        segmentLens.push_back(wordStore.chunkUsed(i));
-      }
-      for (size_t i = 0; i < paragraphFontCount; ++i) {
-        if (!renderer.isSdCardFont(paragraphFonts[i])) continue;
-        renderer.ensureSdCardFontReady(paragraphFonts[i], segments.data(), segmentLens.data(), segments.size(),
-                                       words.size() > 1, hyphenationEnabled, styleMask, includeSmallCaps);
-      }
-    }
-  }
 
   const int pageWidth = viewportWidth;
   auto wordWidths = calculateWordWidths(renderer, fontId);
@@ -1256,9 +1154,108 @@ uint8_t ParsedText::sizeSlotFor(const float scale) {
 }
 
 std::vector<uint16_t> ParsedText::calculateWordWidths(const GfxRenderer& renderer, const int fontId) {
+  HanAdvanceCache hanCache;
+
+  // Ensure SD card font glyph metrics are loaded before measuring word widths.
+  // Every size in the paragraph measures through its own font: the block font plus any
+  // inline-size slots resolved by the parser.
+  int32_t paragraphFonts[MAX_SIZE_SLOTS] = {fontId};
+  size_t paragraphFontCount = 1;
+  for (uint8_t slot = 1; slot < sizeSlotCount; ++slot) {
+    const int32_t slotFont = sizeSlotFontIds[slot];
+    if (slotFont != 0 && std::find(paragraphFonts, paragraphFonts + paragraphFontCount, slotFont) ==
+                             paragraphFonts + paragraphFontCount) {
+      paragraphFonts[paragraphFontCount++] = slotFont;
+    }
+  }
+  const bool anySdFont = std::any_of(paragraphFonts, paragraphFonts + paragraphFontCount,
+                                     [&renderer](const int32_t font) { return renderer.isSdCardFont(font); });
+  if (anySdFont) {
+    uint8_t styleMask = 0;
+    for (auto s : wordStyles) {
+      styleMask |= static_cast<uint8_t>(1u << (static_cast<uint8_t>(s) & 0x03));
+    }
+    if (styleMask == 0) styleMask = 0x01;
+    const bool includeSmallCaps = std::any_of(wordSizeSlots.begin(), wordSizeSlots.end(), [](const uint8_t slot) {
+      return (slot & TextBlock::SMALL_CAPS_SLOT_FLAG) != 0;
+    });
+    bool allUniformHan = !includeSmallCaps;
+    for (size_t i = 0; i < paragraphFontCount && allUniformHan; ++i) {
+      for (uint8_t s = 0; s < 4; ++s) {
+        if ((styleMask & (1u << s)) != 0 &&
+            hanCache.get(renderer, paragraphFonts[i], static_cast<EpdFontFamily::Style>(s)) == 0) {
+          allUniformHan = false;
+          break;
+        }
+      }
+    }
+
+    if (allUniformHan) {
+      std::string nonHanPacked;
+      nonHanPacked.reserve(96);
+      bool sawDecomposedPunct = false;
+      for (size_t i = 0; i < words.size(); ++i) {
+        const std::string_view w = wordAt(i);
+        if (wordFocusBoundary[i] == 0 &&
+            (getWordStyleAt(i) & (EpdFontFamily::SUP | EpdFontFamily::SUB | EpdFontFamily::SMALL_CAPS)) == 0) {
+          if (isSingleHanIdeograph(w)) {
+            continue;
+          }
+          if (canDecomposeHanPunctToken(w)) {
+            const auto* p = reinterpret_cast<const uint8_t*>(w.data());
+            const auto* end = p + w.size();
+            while (p < end) {
+              const uint32_t cp = utf8NextCodepoint(&p);
+              if (cp == 0 || isUniformHanCodepoint(cp)) continue;
+              sawDecomposedPunct = true;
+              char cpBuf[4];
+              const size_t cpLen = static_cast<size_t>(utf8AppendCodepoint(cpBuf, cp) - cpBuf);
+              if (std::string_view(nonHanPacked).find(std::string_view(cpBuf, cpLen)) == std::string_view::npos) {
+                nonHanPacked.append(cpBuf, cpLen);
+                nonHanPacked.push_back('\0');
+              }
+            }
+            continue;
+          }
+        }
+        nonHanPacked.append(w.data(), w.size());
+        nonHanPacked.push_back('\0');
+      }
+      if (sawDecomposedPunct) {
+        nonHanPacked.append("\xE4\xB8\x80", 3);
+        nonHanPacked.push_back('\0');
+      }
+      if (!nonHanPacked.empty() || words.size() > 1 || hyphenationEnabled) {
+        const char* segPtr = nonHanPacked.empty() ? nullptr : nonHanPacked.data();
+        const size_t segLen = nonHanPacked.size();
+        for (size_t i = 0; i < paragraphFontCount; ++i) {
+          if (!renderer.isSdCardFont(paragraphFonts[i])) continue;
+          renderer.ensureSdCardFontReady(paragraphFonts[i], segPtr ? &segPtr : nullptr, segPtr ? &segLen : nullptr,
+                                         segPtr ? 1 : 0, words.size() > 1, hyphenationEnabled, styleMask,
+                                         includeSmallCaps);
+        }
+      }
+    } else {
+      std::vector<const char*> segments;
+      std::vector<size_t> segmentLens;
+      segments.reserve(wordStore.chunkCount());
+      segmentLens.reserve(wordStore.chunkCount());
+      for (size_t i = 0; i < wordStore.chunkCount(); ++i) {
+        const char* data = wordStore.chunkData(i);
+        if (!data) continue;  // retired chunk
+        segments.push_back(data);
+        segmentLens.push_back(wordStore.chunkUsed(i));
+      }
+      for (size_t i = 0; i < paragraphFontCount; ++i) {
+        if (!renderer.isSdCardFont(paragraphFonts[i])) continue;
+        renderer.ensureSdCardFontReady(paragraphFonts[i], segments.data(), segmentLens.data(), segments.size(),
+                                       words.size() > 1, hyphenationEnabled, styleMask, includeSmallCaps);
+      }
+    }
+  }
+
   std::vector<uint16_t> wordWidths;
   wordWidths.reserve(words.size());
-  HanAdvanceCache hanCache;
 
   for (size_t i = 0; i < words.size(); ++i) {
     const std::string_view w = wordAt(i);
@@ -2198,17 +2195,25 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
 
   const auto attachZhRubies = [&](TextBlock& block) {
     if (zhRubyCodes.empty()) return true;
-    uint32_t packed[256];
-    uint16_t zhCount = 0;
     const size_t limit = std::min<size_t>(lineWordCount, TextBlock::MAX_ZH_RUBY_WORD_INDEX + 1);
+    uint16_t zhCount = 0;
     for (size_t i = 0; i < limit; ++i) {
       const size_t logical = lastBreakAt + (willReorder ? visualOrderScratch[i] : i);
       if (logical < zhRubyCodes.size() && zhRubyCodes[logical] != 0) {
-        if (zhCount >= sizeof(packed) / sizeof(packed[0])) break;
-        packed[zhCount++] = TextBlock::packZhRuby(static_cast<uint16_t>(i), zhRubyCodes[logical]);
+        ++zhCount;
       }
     }
-    return block.setZhRubies(packed, zhCount);
+    if (zhCount == 0) return true;
+    uint32_t* dst = block.allocateZhRubies(zhCount);
+    if (!dst) return false;
+    uint16_t pos = 0;
+    for (size_t i = 0; i < limit; ++i) {
+      const size_t logical = lastBreakAt + (willReorder ? visualOrderScratch[i] : i);
+      if (logical < zhRubyCodes.size() && zhRubyCodes[logical] != 0) {
+        dst[pos++] = TextBlock::packZhRuby(static_cast<uint16_t>(i), zhRubyCodes[logical]);
+      }
+    }
+    return true;
   };
 
   if (!lineHasFocusSplit) {
