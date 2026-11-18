@@ -76,6 +76,7 @@ class Dict {
   bool open(const char* dir = "/zh");
   void close();
   bool isOpen() const { return opened; }
+  bool usesFlashTables() const { return flashTablesMatch; }
 
   // Dictionary words starting at cps[i], restricted to cps[i..n), longest first.
   int matchesAt(const uint32_t* cps, size_t n, size_t i, WordMatch* out, int maxOut);
@@ -113,22 +114,35 @@ class Dict {
     uint32_t inlineSlices[4] = {};   // slice starts for directories of 2-4 slices
   };
   // A second-character lookup in a pair directory, cached (absent pairs too).
+  // Once its words.bin group is inspected, two-character match fields are
+  // memoized directly here to skip re-reading words.bin on common bigrams.
   struct PairRecord {
     uint32_t cp1 = 0, cp2 = 0;
     uint32_t groupOff = 0;
     uint16_t groupBytes = 0;
     uint8_t count = 0;  // 0 = no word starts with this pair
-    uint8_t valid = 0;
+    uint8_t valid = 0;  // 0 = empty, 1 = pair dir looked up, 2 = words group memoized
+    bool hasTwoChar = false;
+    bool hasLonger = false;
+    uint8_t twoHsk = 0;
+    uint8_t twoFlags = 0;
+    uint32_t twoEntryOff = 0;
+    uint32_t twoRank = NO_RANK;
+    uint32_t twoZhuyin0 = 0;
+    uint32_t twoZhuyin1 = 0;
   };
-  static constexpr int CACHE_SIZE = 96;
-  static constexpr int PAIR_CACHE_SIZE = 128;
+  static constexpr int CHAR_SETS = 48;
+  static constexpr int PAIR_SETS = 64;
+  static constexpr int CACHE_WAYS = 2;
 
+  static void decodeCharPayload(uint32_t cp, const uint8_t* payload36, CharRecord& rec);
   bool findChar(uint32_t cp, CharRecord& out);
-  bool findPair(const CharRecord& first, uint32_t cp2, PairRecord& out);
+  PairRecord* findPair(const CharRecord& first, uint32_t cp2);
   bool readAt(HalFile& f, uint32_t off, void* buf, size_t len);
 
   HalFile charsFile, pairsFile, wordsFile, entriesFile;
   bool opened = false;
+  bool flashTablesMatch = false;
   uint32_t charCount = 0;
   uint32_t maxGroupBytes = 0;
   uint32_t pageCount = 0;
@@ -140,8 +154,10 @@ class Dict {
   std::unique_ptr<SegmentScratch> scratchBuf;
   // Heap-allocated in open() so a closed dictionary costs no RAM.
   struct Caches {
-    CharRecord chars[CACHE_SIZE];
-    PairRecord pairs[PAIR_CACHE_SIZE];
+    CharRecord chars[CHAR_SETS][CACHE_WAYS];
+    uint8_t charNextWay[CHAR_SETS] = {};
+    PairRecord pairs[PAIR_SETS][CACHE_WAYS];
+    uint8_t pairNextWay[PAIR_SETS] = {};
   };
   std::unique_ptr<Caches> caches;
   Stats statsData;

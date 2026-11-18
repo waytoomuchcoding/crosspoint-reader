@@ -86,6 +86,7 @@ class ParsedText {
   mutable const AbsorbedSourceChunk* absorbedSourceCursor = nullptr;
   mutable uint32_t absorbedSourceCursorStart = 0;
   std::deque<std::string> rubyTexts;
+  std::deque<uint32_t> zhRubyCodes;
   BlockStyle blockStyle;
   uint8_t wordSpacingPercent = 100;
   uint8_t paragraphIndentSpaces;
@@ -135,6 +136,7 @@ class ParsedText {
                    const std::function<void(std::unique_ptr<TextBlock>, uint32_t)>& processLine,
                    const GfxRenderer& renderer, int fontId);
   std::vector<uint16_t> calculateWordWidths(const GfxRenderer& renderer, int fontId);
+  void setZhRubyForWordAt(size_t index, uint32_t code);
   void applyZhRuby();
 
  public:

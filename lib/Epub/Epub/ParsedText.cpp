@@ -176,14 +176,56 @@ bool isSingleHanIdeograph(const std::string_view word) {
   return cp >= 0x4E00 && cp <= 0x9FFF;
 }
 
-// Per-paragraph cache of uniform CJK ideograph advance width keyed by (fontId, baseStyle 0..3).
-// Probes three distinct Han characters; returns 0 when the font is proportional or not Han-capable.
+constexpr bool isUniformHanCodepoint(const uint32_t cp) { return cp >= 0x4E00 && cp <= 0x9FFF; }
+
+bool isDecomposableCjkPunct(const uint32_t cp) {
+  return CjkBreaks::isNoBreakBeforeCjkPunctuation(cp) || CjkBreaks::isNoBreakAfterCjkPunctuation(cp) || cp == 0x2014 ||
+         cp == 0x2026 || cp == 0x3000 || cp == 0x00B7 || cp == 0xFF5E;
+}
+
+bool canDecomposeHanPunctToken(const std::string_view word) {
+  if (word.size() <= 3) return false;
+  const auto* p = reinterpret_cast<const uint8_t*>(word.data());
+  const auto* end = p + word.size();
+  bool sawHan = false;
+  size_t count = 0;
+  while (p < end) {
+    const uint32_t cp = utf8NextCodepoint(&p);
+    if (cp == 0) return false;
+    ++count;
+    if (isUniformHanCodepoint(cp)) {
+      sawHan = true;
+    } else if (!isDecomposableCjkPunct(cp)) {
+      return false;
+    }
+  }
+  return sawHan && count >= 2;
+}
+
+constexpr int cjkTrackingBetween(const uint32_t leftCp, const uint32_t rightCp, const int8_t tracking) {
+  const auto isSpace = [](const uint32_t cp) { return cp == ' ' || cp == 0xA0 || cp == 0x3000; };
+  return leftCp == 0 || isSpace(leftCp) || isSpace(rightCp) ? 0 : tracking;
+}
+
+// Per-paragraph cache of uniform CJK ideograph advance width keyed by (fontId, baseStyle 0..3),
+// plus a small cache of punctuation advances so punctuated Han tokens (e.g. "說，" or "「你")
+// don't pull Han codepoints into SdCardFont's bounded advance table.
 struct HanAdvanceCache {
   static constexpr size_t kMaxFonts = 8;
+  static constexpr size_t kMaxPunct = 64;
   int32_t fontIds[kMaxFonts]{};
   uint16_t advances[kMaxFonts][4]{};
   bool probed[kMaxFonts][4]{};
   size_t fontCount = 0;
+
+  struct PunctEntry {
+    int32_t fontId = 0;
+    uint8_t style = 0;
+    uint32_t cp = 0;
+    uint16_t advancePx = 0;
+  };
+  PunctEntry punctEntries[kMaxPunct]{};
+  size_t punctCount = 0;
 
   uint16_t get(const GfxRenderer& renderer, const int fontId, const EpdFontFamily::Style style) {
     const uint8_t s = static_cast<uint8_t>(style) & 0x03;
@@ -214,6 +256,48 @@ struct HanAdvanceCache {
       advances[idx][s] = (a > 0 && a == b && b == c) ? static_cast<uint16_t>(a) : 0;
     }
     return advances[idx][s];
+  }
+
+  uint16_t getPunctAdvance(const GfxRenderer& renderer, const int fontId, const EpdFontFamily::Style style,
+                           const uint32_t cp, const uint16_t hanW) {
+    const uint8_t s = static_cast<uint8_t>(style) & 0x03;
+    for (size_t i = 0; i < punctCount; ++i) {
+      if (punctEntries[i].fontId == fontId && punctEntries[i].style == s && punctEntries[i].cp == cp) {
+        return punctEntries[i].advancePx;
+      }
+    }
+    char probe[8];
+    probe[0] = '\xE4';
+    probe[1] = '\xB8';
+    probe[2] = '\x80';
+    char* end = utf8AppendCodepoint(probe + 3, cp);
+    *end = '\0';
+    const int pairW = renderer.getTextAdvanceX(fontId, probe, static_cast<EpdFontFamily::Style>(s), 0);
+    const uint16_t adv = pairW > static_cast<int>(hanW) ? static_cast<uint16_t>(pairW - hanW) : 0;
+    if (punctCount < kMaxPunct) {
+      punctEntries[punctCount++] = {fontId, s, cp, adv};
+    }
+    return adv;
+  }
+
+  uint16_t measureDecomposedToken(const GfxRenderer& renderer, const int fontId, const std::string_view word,
+                                  const EpdFontFamily::Style style, const int8_t characterSpacing) {
+    const uint16_t hanW = get(renderer, fontId, style);
+    if (hanW == 0) return 0;
+    const auto* p = reinterpret_cast<const uint8_t*>(word.data());
+    const auto* end = p + word.size();
+    int total = 0;
+    uint32_t prevCp = 0;
+    while (p < end) {
+      const uint32_t cp = utf8NextCodepoint(&p);
+      if (cp == 0) break;
+      if (prevCp != 0) {
+        total += cjkTrackingBetween(prevCp, cp, characterSpacing);
+      }
+      total += isUniformHanCodepoint(cp) ? hanW : getPunctAdvance(renderer, fontId, style, cp, hanW);
+      prevCp = cp;
+    }
+    return total > 0 ? static_cast<uint16_t>(total) : 0;
   }
 };
 
@@ -543,6 +627,9 @@ void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle,
     if (padRuby && !rubyTexts.empty()) {
       rubyTexts.push_back("");
     }
+    if (padRuby && !zhRubyCodes.empty()) {
+      zhRubyCodes.push_back(0);
+    }
   };
 
   const auto pushToken = [&](std::string_view token, const bool continues, const bool noSpaceBefore,
@@ -821,6 +908,15 @@ int ParsedText::resolveFirstLineIndent(const bool isFirstLine, const GfxRenderer
 // characters is segmented into words; a word gets ruby when it is rarer than
 // the reader's frequency threshold. Each CJK character is its own word here
 // (CjkBreaks), possibly with attached punctuation.
+void ParsedText::setZhRubyForWordAt(size_t index, const uint32_t code) {
+  const uint32_t masked = code & TextBlock::ZH_RUBY_CODE_MASK;
+  if (index >= words.size() || masked == 0) return;
+  if (zhRubyCodes.size() <= index) {
+    zhRubyCodes.resize(words.size(), 0);
+  }
+  zhRubyCodes[index] = masked;
+}
+
 void ParsedText::applyZhRuby() {
   const uint32_t threshold = zh::rubyThreshold();
   if (threshold == 0 || words.empty()) return;
@@ -844,9 +940,7 @@ void ParsedText::applyZhRuby() {
       if (!zh::wantsRuby(seg, threshold)) return;
       for (uint8_t k = 0; k < seg.len; ++k) {
         if (!zh::wantsCharRuby(*dictPtr, seg, k, scratch->runCps[seg.start + k], threshold)) continue;
-        char code[8];
-        zh::encodeRubyCode(seg.zhuyin[k], code);
-        setRubyForWordAt(scratch->runWord[seg.start + k], code);
+        setZhRubyForWordAt(scratch->runWord[seg.start + k], seg.zhuyin[k]);
       }
     });
     runLen = 0;
@@ -952,14 +1046,44 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
 
     if (allUniformHan) {
       std::string nonHanPacked;
+      uint32_t seenPunct[HanAdvanceCache::kMaxPunct]{};
+      size_t seenPunctCount = 0;
+      bool sawDecomposedPunct = false;
       for (size_t i = 0; i < words.size(); ++i) {
         const std::string_view w = wordAt(i);
         if (wordFocusBoundary[i] == 0 &&
-            (getWordStyleAt(i) & (EpdFontFamily::SUP | EpdFontFamily::SUB | EpdFontFamily::SMALL_CAPS)) == 0 &&
-            isSingleHanIdeograph(w)) {
-          continue;
+            (getWordStyleAt(i) & (EpdFontFamily::SUP | EpdFontFamily::SUB | EpdFontFamily::SMALL_CAPS)) == 0) {
+          if (isSingleHanIdeograph(w)) {
+            continue;
+          }
+          if (canDecomposeHanPunctToken(w)) {
+            const auto* p = reinterpret_cast<const uint8_t*>(w.data());
+            const auto* end = p + w.size();
+            while (p < end) {
+              const uint32_t cp = utf8NextCodepoint(&p);
+              if (cp == 0 || isUniformHanCodepoint(cp)) continue;
+              bool seen = false;
+              for (size_t k = 0; k < seenPunctCount; ++k) {
+                if (seenPunct[k] == cp) {
+                  seen = true;
+                  break;
+                }
+              }
+              if (!seen) {
+                if (seenPunctCount < HanAdvanceCache::kMaxPunct) seenPunct[seenPunctCount++] = cp;
+                utf8AppendCodepoint(cp, nonHanPacked);
+                nonHanPacked.push_back('\0');
+                sawDecomposedPunct = true;
+              }
+            }
+            continue;
+          }
         }
         nonHanPacked.append(w.data(), w.size());
+        nonHanPacked.push_back('\0');
+      }
+      if (sawDecomposedPunct) {
+        nonHanPacked.append("\xE4\xB8\x80", 3);
         nonHanPacked.push_back('\0');
       }
       if (!nonHanPacked.empty() || words.size() > 1 || hyphenationEnabled) {
@@ -1035,6 +1159,10 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
       const size_t rtConsumed = std::min(consumed, rubyTexts.size());
       rubyTexts.erase(rubyTexts.begin(), rubyTexts.begin() + rtConsumed);
     }
+    if (!zhRubyCodes.empty()) {
+      const size_t zhConsumed = std::min(consumed, zhRubyCodes.size());
+      zhRubyCodes.erase(zhRubyCodes.begin(), zhRubyCodes.begin() + zhConsumed);
+    }
   }
 }
 
@@ -1044,7 +1172,7 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
 int ParsedText::calculateRubyExtraStartOffset(const size_t wordIdx, const size_t maxWordIdx,
                                               const GfxRenderer& renderer, const int fontId) const {
   if (rubyTexts.empty() || wordIdx >= rubyTexts.size() || rubyTexts[wordIdx].empty() ||
-      zh::isRubyCode(rubyTexts[wordIdx].c_str()) || (wordStyles[wordIdx] & EpdFontFamily::RUBY_CONTINUE) != 0) {
+      (wordStyles[wordIdx] & EpdFontFamily::RUBY_CONTINUE) != 0) {
     return 0;
   }
 
@@ -1087,7 +1215,7 @@ int ParsedText::calculateRubyExtraEndOffset(const size_t lineStartIdx, const siz
   }
 
   // leaderIdx must be a ruby group leader (non-empty ruby, no RUBY_CONTINUE flag).
-  if (leaderIdx >= rubyTexts.size() || rubyTexts[leaderIdx].empty() || zh::isRubyCode(rubyTexts[leaderIdx].c_str()) ||
+  if (leaderIdx >= rubyTexts.size() || rubyTexts[leaderIdx].empty() ||
       (wordStyles[leaderIdx] & EpdFontFamily::RUBY_CONTINUE) != 0) {
     return 0;
   }
@@ -1136,12 +1264,20 @@ std::vector<uint16_t> ParsedText::calculateWordWidths(const GfxRenderer& rendere
     const std::string_view w = wordAt(i);
     const EpdFontFamily::Style style = getWordStyleAt(i);
     if (wordFocusBoundary[i] == 0 &&
-        (style & (EpdFontFamily::SUP | EpdFontFamily::SUB | EpdFontFamily::SMALL_CAPS)) == 0 &&
-        isSingleHanIdeograph(w)) {
-      const uint16_t hanW = hanCache.get(renderer, wordFontId(i, fontId), style);
-      if (hanW > 0) {
-        wordWidths.push_back(hanW);
-        continue;
+        (style & (EpdFontFamily::SUP | EpdFontFamily::SUB | EpdFontFamily::SMALL_CAPS)) == 0) {
+      if (isSingleHanIdeograph(w)) {
+        const uint16_t hanW = hanCache.get(renderer, wordFontId(i, fontId), style);
+        if (hanW > 0) {
+          wordWidths.push_back(hanW);
+          continue;
+        }
+      } else if (canDecomposeHanPunctToken(w)) {
+        const uint16_t decomposedW =
+            hanCache.measureDecomposedToken(renderer, wordFontId(i, fontId), w, style, blockStyle.characterSpacing);
+        if (decomposedW > 0) {
+          wordWidths.push_back(decomposedW);
+          continue;
+        }
       }
     }
     wordWidths.push_back(measureFocusWordWidth(renderer, wordFontId(i, fontId), w, style, wordFocusBoundary[i],
@@ -1152,8 +1288,8 @@ std::vector<uint16_t> ParsedText::calculateWordWidths(const GfxRenderer& rendere
   // rubyUnderLine is set, adding only any extra width needed by 3-symbol rubies).
   int emFont = -1, em = 0, rubyW = 0;
   const bool underLine = zh::rubyUnderLine();
-  for (size_t i = 0; i < rubyTexts.size() && i < wordWidths.size(); ++i) {
-    const uint32_t code = zh::decodeRubyCode(rubyTexts[i].c_str());
+  for (size_t i = 0; i < zhRubyCodes.size() && i < wordWidths.size(); ++i) {
+    const uint32_t code = zhRubyCodes[i];
     if (!code) continue;
     const int font = wordFontId(i, fontId);
     if (font != emFont) {
@@ -1179,8 +1315,7 @@ std::vector<uint16_t> ParsedText::calculateWordWidths(const GfxRenderer& rendere
 
     std::vector<RubyGroupInfo> groups;
     for (size_t i = 0; i < words.size(); ++i) {
-      if (i < rubyTexts.size() && !rubyTexts[i].empty() && !zh::isRubyCode(rubyTexts[i].c_str()) &&
-          (wordStyles[i] & EpdFontFamily::RUBY_CONTINUE) == 0) {
+      if (i < rubyTexts.size() && !rubyTexts[i].empty() && (wordStyles[i] & EpdFontFamily::RUBY_CONTINUE) == 0) {
         RubyGroupInfo g;
         g.start = i;
         g.baseWidth = wordWidths[i];
@@ -1608,6 +1743,9 @@ bool ParsedText::hyphenateWordAtIndex(const size_t wordIndex, const int availabl
   if (wordIndex + 1 <= rubyTexts.size()) {
     rubyTexts.insert(rubyTexts.begin() + wordIndex + 1, "");
   }
+  if (wordIndex + 1 <= zhRubyCodes.size()) {
+    zhRubyCodes.insert(zhRubyCodes.begin() + wordIndex + 1, 0);
+  }
 
   // Continuation flag handling after splitting a word into prefix + remainder.
   //
@@ -1659,8 +1797,9 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
 
   const int firstLineIndent = resolveFirstLineIndent(breakIndex == 0, renderer, fontId);
 
-  std::vector<std::string> lineRubyTexts(lineWordCount);
+  std::vector<std::string> lineRubyTexts;
   if (!rubyTexts.empty() && lastBreakAt < rubyTexts.size()) {
+    lineRubyTexts.resize(lineWordCount);
     const size_t copyCount = std::min(lineBreak, rubyTexts.size()) - lastBreakAt;
     std::copy(rubyTexts.begin() + lastBreakAt, rubyTexts.begin() + lastBreakAt + copyCount, lineRubyTexts.begin());
   }
@@ -2057,12 +2196,27 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
     sourceRanges.push_back({start, end});
   }
 
+  const auto attachZhRubies = [&](TextBlock& block) {
+    if (zhRubyCodes.empty()) return true;
+    uint32_t packed[256];
+    uint16_t zhCount = 0;
+    const size_t limit = std::min<size_t>(lineWordCount, TextBlock::MAX_ZH_RUBY_WORD_INDEX + 1);
+    for (size_t i = 0; i < limit; ++i) {
+      const size_t logical = lastBreakAt + (willReorder ? visualOrderScratch[i] : i);
+      if (logical < zhRubyCodes.size() && zhRubyCodes[logical] != 0) {
+        if (zhCount >= sizeof(packed) / sizeof(packed[0])) break;
+        packed[zhCount++] = TextBlock::packZhRuby(static_cast<uint16_t>(i), zhRubyCodes[logical]);
+      }
+    }
+    return block.setZhRubies(packed, zhCount);
+  };
+
   if (!lineHasFocusSplit) {
     // TextBlock flattens the vectors into its arena; they stay owned here and die at return.
     auto block = makeUniqueNoThrow<TextBlock>(lineWords, lineXPos, lineWordStyles, std::vector<uint8_t>{},
                                               std::vector<uint16_t>{}, blockStyle, std::move(lineRubyTexts),
                                               std::move(lineLinks), sourceRanges, paragraphStartWord);
-    if (!block || !block->valid() || !attachWordFonts(*block)) {
+    if (!block || !block->valid() || !attachWordFonts(*block) || !attachZhRubies(*block)) {
       LOG_ERR("PTX", "Dropping line: TextBlock or arena allocation failed");
       // Latch through the same flag as addWord() OOM: the caller releases the
       // consumed words right after this returns, so without it the section
@@ -2096,7 +2250,7 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
   auto block =
       makeUniqueNoThrow<TextBlock>(lineWords, lineXPos, lineWordStyles, outBoundaries, outSplitX, blockStyle,
                                    std::move(lineRubyTexts), std::move(lineLinks), sourceRanges, paragraphStartWord);
-  if (!block || !block->valid() || !attachWordFonts(*block)) {
+  if (!block || !block->valid() || !attachWordFonts(*block) || !attachZhRubies(*block)) {
     LOG_ERR("PTX", "Dropping line: TextBlock or arena allocation failed");
     droppedWords = true;  // see the non-focus branch above
     return;

@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <cstring>
 
+#include "ZhFlashTables.h"
+
 namespace zh {
 
 namespace {
@@ -27,6 +29,37 @@ uint32_t le32(const uint8_t* p) {
 }
 uint32_t le24(const uint8_t* p) {
   return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) | (static_cast<uint32_t>(p[2]) << 16);
+}
+
+uint32_t fnv1aPageIndex(const uint16_t* idx, uint32_t count) {
+  uint32_t h = 2166136261u;
+  for (uint32_t k = 0; k < count; ++k) {
+    const uint16_t v = idx[k];
+    h = (h ^ static_cast<uint8_t>(v & 0xFFu)) * 16777619u;
+    h = (h ^ static_cast<uint8_t>(v >> 8)) * 16777619u;
+  }
+  return h;
+}
+
+uint32_t fnv1aSlices(const uint32_t* s, uint32_t count) {
+  uint32_t h = 2166136261u;
+  for (uint32_t k = 0; k < count; ++k) {
+    const uint32_t v = s[k];
+    for (int b = 0; b < 4; ++b) {
+      h = (h ^ static_cast<uint8_t>((v >> (8 * b)) & 0xFFu)) * 16777619u;
+    }
+  }
+  return h;
+}
+
+int findTopPairIndex(uint32_t cp1, uint32_t cp2) {
+  if (cp1 > 0xFFFFu || cp2 > 0xFFFFu) return -1;
+  const uint32_t key = (cp1 << 16) | cp2;
+  const uint32_t* begin = flash::TOP_PAIR_KEYS;
+  const uint32_t* end = begin + flash::TOP_PAIR_COUNT;
+  const uint32_t* it = std::lower_bound(begin, end, key);
+  if (it == end || *it != key) return -1;
+  return static_cast<int>(it - begin);
 }
 
 // Decodes one UTF-8 codepoint; advances p. Returns 0 on malformed input.
@@ -52,6 +85,20 @@ bool Dict::readAt(HalFile& f, uint32_t off, void* buf, size_t len) {
   ++statsData.reads;
   statsData.bytes += len;
   return f.seekSet(off) && static_cast<int>(f.read(buf, len)) == static_cast<int>(len);
+}
+
+void Dict::decodeCharPayload(uint32_t cp, const uint8_t* p, CharRecord& rec) {
+  rec.cp = cp;
+  rec.dirOff = le32(p);
+  rec.dirCount = static_cast<uint16_t>(p[4] | (p[5] << 8));
+  rec.hsk = p[6];
+  rec.selfHsk = p[7];
+  rec.selfEntry = le32(p + 8);
+  rec.selfRank = le24(p + 12);
+  rec.selfFlags = p[15];
+  rec.selfZhuyin = le24(p + 16);
+  rec.sliceOff = le32(p + 20);
+  for (int s = 0; s < INLINE_SLICES; ++s) rec.inlineSlices[s] = le24(p + 24 + 3 * s);
 }
 
 bool Dict::open(const char* dir) {
@@ -112,13 +159,22 @@ bool Dict::open(const char* dir) {
     }
     slicesFile.close();
   }
+  flashTablesMatch = charCount == flash::DICT_CHAR_COUNT && maxGroupBytes == flash::DICT_MAX_GROUP_BYTES &&
+                     pageCount == flash::DICT_PAGE_COUNT && sliceCount == flash::DICT_SLICE_COUNT &&
+                     static_cast<uint32_t>(pairsFile.fileSize()) == flash::DICT_PAIRS_BYTES &&
+                     static_cast<uint32_t>(wordsFile.fileSize()) == flash::DICT_WORDS_BYTES &&
+                     static_cast<uint32_t>(entriesFile.fileSize()) == flash::DICT_ENTRIES_BYTES &&
+                     fnv1aPageIndex(pageIndex.get(), pageCount) == flash::DICT_PAGE_INDEX_FNV1A &&
+                     fnv1aSlices(slices.get(), sliceCount) == flash::DICT_SLICES_FNV1A;
+
   statsData = Stats{};
   opened = true;
   LOG_INF("ZH",
-          "dictionary open: %u characters; RAM %u B index + %u B slices + %u B buffer + %u B scratch + %u B caches",
-          static_cast<unsigned>(charCount), static_cast<unsigned>(pageCount * 2), static_cast<unsigned>(sliceCount * 4),
-          static_cast<unsigned>(bufBytes), static_cast<unsigned>(sizeof(SegmentScratch)),
-          static_cast<unsigned>(sizeof(Caches)));
+          "dictionary open: %u characters (flash=%d); RAM %u B index + %u B slices + %u B buffer + %u B scratch + %u "
+          "B caches",
+          static_cast<unsigned>(charCount), flashTablesMatch ? 1 : 0, static_cast<unsigned>(pageCount * 2),
+          static_cast<unsigned>(sliceCount * 4), static_cast<unsigned>(bufBytes),
+          static_cast<unsigned>(sizeof(SegmentScratch)), static_cast<unsigned>(sizeof(Caches)));
   return true;
 }
 
@@ -133,14 +189,29 @@ void Dict::close() {
   groupBuf.reset();
   scratchBuf.reset();
   caches.reset();
+  flashTablesMatch = false;
   opened = false;
 }
 
 bool Dict::findChar(uint32_t cp, CharRecord& out) {
-  CharRecord& slot = caches->chars[cp % CACHE_SIZE];
-  if (slot.valid && slot.cp == cp) {
-    out = slot;
-    return slot.valid == 2;
+  if (flashTablesMatch && cp <= 0xFFFFu) {
+    const uint16_t* begin = flash::TOP_CHAR_CPS;
+    const uint16_t* end = begin + flash::TOP_CHAR_COUNT;
+    const uint16_t* it = std::lower_bound(begin, end, static_cast<uint16_t>(cp));
+    if (it != end && *it == static_cast<uint16_t>(cp)) {
+      decodeCharPayload(cp, flash::TOP_CHAR_PAYLOADS[it - begin], out);
+      out.valid = 2;
+      return true;
+    }
+  }
+  const size_t set = cp % CHAR_SETS;
+  for (int w = 0; w < CACHE_WAYS; ++w) {
+    CharRecord& slot = caches->chars[set][w];
+    if (slot.valid && slot.cp == cp) {
+      caches->charNextWay[set] = static_cast<uint8_t>(1 - w);
+      out = slot;
+      return slot.valid == 2;
+    }
   }
   CharRecord rec;
   rec.cp = cp;
@@ -169,68 +240,67 @@ bool Dict::findChar(uint32_t cp, CharRecord& out) {
       const uint32_t c = le32(r);
       if (c > cp) break;
       if (c != cp) continue;
-      rec.dirOff = le32(r + 4);
-      rec.dirCount = static_cast<uint16_t>(r[8] | (r[9] << 8));
-      rec.hsk = r[10];
-      rec.selfHsk = r[11];
-      rec.selfEntry = le32(r + 12);
-      rec.selfRank = le24(r + 16);
-      rec.selfFlags = r[19];
-      rec.selfZhuyin = le24(r + 20);
-      rec.sliceOff = le32(r + 24);
-      for (int s = 0; s < INLINE_SLICES; ++s) rec.inlineSlices[s] = le24(r + 28 + 3 * s);
+      decodeCharPayload(cp, r + 4, rec);
       found = true;
       break;
     }
     if (cp < 0xFFFF || (n > 0 && le32(buf + (n - 1) * CHAR_RECORD_BYTES) >= cp)) break;
   }
   rec.valid = found ? 2 : 1;  // 1 = cached miss
-  slot = rec;
+  const int w = caches->charNextWay[set];
+  caches->charNextWay[set] = static_cast<uint8_t>(1 - w);
+  caches->chars[set][w] = rec;
   out = rec;
   return found;
 }
 
-bool Dict::findPair(const CharRecord& first, uint32_t cp2, PairRecord& out) {
-  PairRecord& slot = caches->pairs[(first.cp * 31 + cp2) % PAIR_CACHE_SIZE];
-  if (slot.valid && slot.cp1 == first.cp && slot.cp2 == cp2) {
-    out = slot;
-    return true;
+Dict::PairRecord* Dict::findPair(const CharRecord& first, uint32_t cp2) {
+  const size_t set = (first.cp * 31u + cp2) % PAIR_SETS;
+  for (int w = 0; w < CACHE_WAYS; ++w) {
+    PairRecord& slot = caches->pairs[set][w];
+    if (slot.valid && slot.cp1 == first.cp && slot.cp2 == cp2) {
+      caches->pairNextWay[set] = static_cast<uint8_t>(1 - w);
+      return &slot;
+    }
   }
   PairRecord rec;
   rec.cp1 = first.cp;
   rec.cp2 = cp2;
   rec.valid = 1;
-  // Directories over 32 entries are split into sector-sized slices; pick the
-  // slice from the RAM-resident slice starts, then read exactly one sector.
-  uint32_t sliceIndex = 0;
-  const uint32_t sliceTotal = (first.dirCount + SLICE_ENTRIES - 1) / SLICE_ENTRIES;
-  if (sliceTotal > 1) {
-    const uint32_t* starts = nullptr;
-    uint32_t inlineStarts[INLINE_SLICES];
-    if (sliceTotal <= INLINE_SLICES) {
-      for (int s = 0; s < INLINE_SLICES; ++s) inlineStarts[s] = first.inlineSlices[s];
-      starts = inlineStarts;
-    } else if (slices && first.sliceOff / 4 + sliceTotal <= sliceCount) {
-      starts = slices.get() + first.sliceOff / 4;
+  if (first.dirCount > 0) {
+    // Directories over 32 entries are split into sector-sized slices; pick the
+    // slice from the RAM-resident slice starts, then read exactly one sector.
+    uint32_t sliceIndex = 0;
+    const uint32_t sliceTotal = (first.dirCount + SLICE_ENTRIES - 1) / SLICE_ENTRIES;
+    if (sliceTotal > 1) {
+      const uint32_t* starts = nullptr;
+      uint32_t inlineStarts[INLINE_SLICES];
+      if (sliceTotal <= INLINE_SLICES) {
+        for (int s = 0; s < INLINE_SLICES; ++s) inlineStarts[s] = first.inlineSlices[s];
+        starts = inlineStarts;
+      } else if (slices && first.sliceOff / 4 + sliceTotal <= sliceCount) {
+        starts = slices.get() + first.sliceOff / 4;
+      }
+      if (!starts) return nullptr;
+      while (sliceIndex + 1 < sliceTotal && starts[sliceIndex + 1] <= cp2) ++sliceIndex;
     }
-    if (!starts) return false;
-    while (sliceIndex + 1 < sliceTotal && starts[sliceIndex + 1] <= cp2) ++sliceIndex;
+    const uint32_t entries = std::min<uint32_t>(SLICE_ENTRIES, first.dirCount - sliceIndex * SLICE_ENTRIES);
+    uint8_t* buf = groupBuf.get();
+    if (!readAt(pairsFile, first.dirOff + sliceIndex * SECTOR, buf, entries * PAIR_RECORD_BYTES)) return nullptr;
+    for (uint32_t k = 0; k < entries; ++k) {
+      const uint8_t* e = buf + k * PAIR_RECORD_BYTES;
+      const uint32_t v = le32(e);
+      if ((v & 0xFFFFFF) != cp2) continue;
+      rec.count = static_cast<uint8_t>(v >> 24);
+      rec.groupOff = le32(e + 4);
+      rec.groupBytes = static_cast<uint16_t>(e[8] | (e[9] << 8));
+      break;
+    }
   }
-  const uint32_t entries = std::min<uint32_t>(SLICE_ENTRIES, first.dirCount - sliceIndex * SLICE_ENTRIES);
-  uint8_t* buf = groupBuf.get();
-  if (!readAt(pairsFile, first.dirOff + sliceIndex * SECTOR, buf, entries * PAIR_RECORD_BYTES)) return false;
-  for (uint32_t k = 0; k < entries; ++k) {
-    const uint8_t* e = buf + k * PAIR_RECORD_BYTES;
-    const uint32_t v = le32(e);
-    if ((v & 0xFFFFFF) != cp2) continue;
-    rec.count = static_cast<uint8_t>(v >> 24);
-    rec.groupOff = le32(e + 4);
-    rec.groupBytes = static_cast<uint16_t>(e[8] | (e[9] << 8));
-    break;
-  }
-  slot = rec;
-  out = rec;
-  return true;
+  const int w = caches->pairNextWay[set];
+  caches->pairNextWay[set] = static_cast<uint8_t>(1 - w);
+  caches->pairs[set][w] = rec;
+  return &caches->pairs[set][w];
 }
 
 int Dict::matchesAt(const uint32_t* cps, size_t n, size_t i, WordMatch* out, int maxOut) {
@@ -240,7 +310,7 @@ int Dict::matchesAt(const uint32_t* cps, size_t n, size_t i, WordMatch* out, int
   if (!findChar(cps[i], rec)) return 0;
   int count = 0;
 
-  auto parseRecord = [&](const uint8_t*& p, const uint8_t* end, size_t start) -> bool {
+  auto parseRecord = [&](const uint8_t*& p, const uint8_t* end, size_t start, PairRecord* memo) -> bool {
     // Returns true if the record matches cps from start and was appended.
     if (end - p < 2) {
       p = end;
@@ -256,6 +326,22 @@ int Dict::matchesAt(const uint32_t* cps, size_t n, size_t i, WordMatch* out, int
       return false;
     }
     p = recEnd;
+    if (memo) {
+      if (nChars == 2) {
+        const uint32_t wrank = le24(fields + 6);
+        if (!memo->hasTwoChar || wrank < memo->twoRank) {
+          memo->hasTwoChar = true;
+          memo->twoEntryOff = le32(fields);
+          memo->twoHsk = fields[4];
+          memo->twoFlags = fields[5];
+          memo->twoRank = wrank;
+          memo->twoZhuyin0 = le24(fields + 9);
+          memo->twoZhuyin1 = le24(fields + 12);
+        }
+      } else if (nChars >= 3) {
+        memo->hasLonger = true;
+      }
+    }
     if (start + nChars > n) return false;
     const uint8_t* q = rest;
     for (size_t k = 2; k < nChars; ++k) {
@@ -273,12 +359,71 @@ int Dict::matchesAt(const uint32_t* cps, size_t n, size_t i, WordMatch* out, int
   };
 
   // Words of two or more characters: their group is found by the second character.
-  PairRecord pair;
-  if (i + 1 < n && findPair(rec, cps[i + 1], pair) && pair.count > 0 && pair.groupBytes <= maxGroupBytes &&
-      readAt(wordsFile, pair.groupOff, groupBuf.get(), pair.groupBytes)) {
-    const uint8_t* p = groupBuf.get();
-    const uint8_t* end = p + pair.groupBytes;
-    for (uint32_t k = 0; k < pair.count && p < end; ++k) parseRecord(p, end, i);
+  if (i + 1 < n && rec.dirCount > 0) {
+    const uint32_t cp1 = cps[i];
+    const uint32_t cp2 = cps[i + 1];
+    if (!flashTablesMatch || flash::pairBloomMayContain(cp1, cp2)) {
+      const int topIdx = flashTablesMatch ? findTopPairIndex(cp1, cp2) : -1;
+      if (topIdx >= 0) {
+        const uint8_t* p22 = flash::TOP_PAIR_PAYLOADS[topIdx];
+        const uint32_t groupOff = le32(p22);
+        const uint16_t groupBytes = static_cast<uint16_t>(p22[4] | (p22[5] << 8));
+        const uint8_t groupCount = p22[6];
+        const uint8_t meta = p22[7];
+        const bool hasTwo = (meta & 1u) != 0;
+        const bool hasLonger = (meta & 2u) != 0;
+        const bool checkLonger = hasLonger && (i + 2 < n) && flash::tripleBloomMayContain(cp1, cp2, cps[i + 2]);
+        if (!checkLonger) {
+          if (hasTwo && count < maxOut) {
+            WordMatch& m = out[count++];
+            m = WordMatch{};
+            m.len = 2;
+            m.entryOff = le32(p22 + 8);
+            m.hsk = static_cast<uint8_t>((meta >> 4) & 0x0Fu);
+            m.flags = static_cast<uint8_t>((meta >> 2) & 0x03u);
+            m.rank = le24(p22 + 12);
+            m.zhuyin[0] = le24(p22 + 15);
+            m.zhuyin[1] = le24(p22 + 18);
+          }
+        } else if (groupBytes <= maxGroupBytes && readAt(wordsFile, groupOff, groupBuf.get(), groupBytes)) {
+          const uint8_t* p = groupBuf.get();
+          const uint8_t* end = p + groupBytes;
+          for (uint32_t k = 0; k < groupCount && p < end; ++k) parseRecord(p, end, i, nullptr);
+        }
+      } else {
+        PairRecord* pair = findPair(rec, cp2);
+        if (pair && pair->count > 0 && pair->groupBytes <= maxGroupBytes) {
+          if (pair->valid == 1) {
+            if (readAt(wordsFile, pair->groupOff, groupBuf.get(), pair->groupBytes)) {
+              const uint8_t* p = groupBuf.get();
+              const uint8_t* end = p + pair->groupBytes;
+              for (uint32_t k = 0; k < pair->count && p < end; ++k) parseRecord(p, end, i, pair);
+              pair->valid = 2;
+            }
+          } else {
+            const bool checkLonger = pair->hasLonger && (i + 2 < n) &&
+                                     (!flashTablesMatch || flash::tripleBloomMayContain(cp1, cp2, cps[i + 2]));
+            if (!checkLonger) {
+              if (pair->hasTwoChar && count < maxOut) {
+                WordMatch& m = out[count++];
+                m = WordMatch{};
+                m.len = 2;
+                m.entryOff = pair->twoEntryOff;
+                m.hsk = pair->twoHsk;
+                m.flags = pair->twoFlags;
+                m.rank = pair->twoRank;
+                m.zhuyin[0] = pair->twoZhuyin0;
+                m.zhuyin[1] = pair->twoZhuyin1;
+              }
+            } else if (readAt(wordsFile, pair->groupOff, groupBuf.get(), pair->groupBytes)) {
+              const uint8_t* p = groupBuf.get();
+              const uint8_t* end = p + pair->groupBytes;
+              for (uint32_t k = 0; k < pair->count && p < end; ++k) parseRecord(p, end, i, nullptr);
+            }
+          }
+        }
+      }
+    }
   }
   if (rec.selfEntry != NO_OFFSET && count < maxOut) {
     WordMatch& m = out[count++];

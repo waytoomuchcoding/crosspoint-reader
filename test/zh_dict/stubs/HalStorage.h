@@ -7,6 +7,8 @@
 
 class HalFile {
  public:
+  static inline size_t totalReads = 0;
+
   HalFile() = default;
   ~HalFile() { close(); }
   HalFile(const HalFile&) = delete;
@@ -18,7 +20,11 @@ class HalFile {
     return file_ != nullptr;
   }
   bool seekSet(size_t pos) { return file_ && std::fseek(file_, static_cast<long>(pos), SEEK_SET) == 0; }
-  int read(void* buf, size_t count) { return file_ ? static_cast<int>(std::fread(buf, 1, count, file_)) : -1; }
+  int read(void* buf, size_t count) {
+    if (!file_) return -1;
+    ++totalReads;
+    return static_cast<int>(std::fread(buf, 1, count, file_));
+  }
   size_t fileSize() {
     if (!file_) return 0;
     const long at = std::ftell(file_);

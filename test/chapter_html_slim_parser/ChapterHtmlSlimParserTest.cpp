@@ -7,6 +7,7 @@
 #include <array>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <set>
@@ -2299,4 +2300,136 @@ TEST(TextDecorationPosition, UnderlineStaysBelowBaseline) {
     line->render(renderer, 0, 0, 20);
     EXPECT_EQ(renderer.lastLineY, 34);
   });
+}
+
+TEST(ZhTextBlockSerialization, SparseHtmlAndPackedZhRubyRoundTripAndRejectCorrupt) {
+  const std::vector<std::string> words = {"「你", "好", "琥", "珀！」"};
+  const std::vector<int16_t> xpos = {0, 16, 32, 48};
+  const std::vector<EpdFontFamily::Style> styles(4, EpdFontFamily::REGULAR);
+  const auto tempPath = std::filesystem::temp_directory_path() / "crosspoint-zh-textblock-test.bin";
+
+  {
+    TextBlock block(words, xpos, styles, {}, {}, BlockStyle{}, {"", "hǎo", "", ""});
+    ASSERT_TRUE(block.valid());
+    const uint32_t packed[2] = {TextBlock::packZhRuby(0, 0x41234u), TextBlock::packZhRuby(2, 0x85678u)};
+    ASSERT_TRUE(block.setZhRubies(packed, 2));
+
+    HalFile out;
+    ASSERT_TRUE(out.open(tempPath.c_str(), "wb"));
+    ASSERT_TRUE(block.serialize(out));
+  }
+  {
+    HalFile in;
+    ASSERT_TRUE(in.open(tempPath.c_str(), "rb"));
+    const auto cached = TextBlock::deserialize(in);
+    ASSERT_NE(cached, nullptr);
+    EXPECT_TRUE(cached->hasRuby());
+    EXPECT_TRUE(cached->hasAnyRuby());
+    EXPECT_EQ(cached->getZhRubyCount(), 2);
+    EXPECT_EQ(cached->wordZhRuby(0), 0x41234u);
+    EXPECT_EQ(cached->wordZhRuby(1), 0u);
+    EXPECT_EQ(cached->wordZhRuby(2), 0x85678u);
+    EXPECT_EQ(cached->wordZhRuby(3), 0u);
+    ASSERT_EQ(cached->getRubyTexts().size(), 4u);
+    EXPECT_EQ(cached->getRubyTexts()[1], "hǎo");
+    EXPECT_TRUE(cached->getRubyTexts()[0].empty());
+  }
+
+  // Zhuyin-only block (no HTML <ruby> text) leaves rubyTexts empty on deserialize.
+  {
+    TextBlock block(words, xpos, styles, {}, {}, BlockStyle{}, {});
+    ASSERT_TRUE(block.valid());
+    const uint32_t packed[1] = {TextBlock::packZhRuby(0, 0x41234u)};
+    ASSERT_TRUE(block.setZhRubies(packed, 1));
+    HalFile out;
+    ASSERT_TRUE(out.open(tempPath.c_str(), "wb"));
+    ASSERT_TRUE(block.serialize(out));
+  }
+  std::vector<uint8_t> rawBytes;
+  {
+    HalFile in;
+    ASSERT_TRUE(in.open(tempPath.c_str(), "rb"));
+    const auto cached = TextBlock::deserialize(in);
+    ASSERT_NE(cached, nullptr);
+    EXPECT_FALSE(cached->hasRuby());
+    EXPECT_TRUE(cached->getRubyTexts().empty());
+    EXPECT_TRUE(cached->hasAnyRuby());
+    EXPECT_EQ(cached->getZhRubyCount(), 1);
+    EXPECT_EQ(cached->wordZhRuby(0), 0x41234u);
+    EXPECT_EQ(cached->wordZhRuby(1), 0u);
+  }
+  {
+    std::ifstream ifs(tempPath, std::ios::binary);
+    rawBytes.assign(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>());
+  }
+  {
+    // Corrupt the packed entry's wordIdx to out-of-bounds (99 >= 4).
+    const uint32_t needle = TextBlock::packZhRuby(0, 0x41234u);
+    const uint32_t bad = TextBlock::packZhRuby(99, 0x41234u);
+    bool patched = false;
+    for (size_t off = rawBytes.size() - 4; off > 0; --off) {
+      uint32_t v = 0;
+      std::memcpy(&v, rawBytes.data() + off, 4);
+      if (v == needle) {
+        std::memcpy(rawBytes.data() + off, &bad, 4);
+        patched = true;
+        break;
+      }
+    }
+    ASSERT_TRUE(patched);
+    std::ofstream ofs(tempPath, std::ios::binary | std::ios::trunc);
+    ofs.write(reinterpret_cast<const char*>(rawBytes.data()), rawBytes.size());
+  }
+  {
+    HalFile in;
+    ASSERT_TRUE(in.open(tempPath.c_str(), "rb"));
+    EXPECT_EQ(TextBlock::deserialize(in), nullptr);
+  }
+
+  // Unsorted word indices must also be rejected by deserialize().
+  {
+    TextBlock block(words, xpos, styles, {}, {}, BlockStyle{}, {});
+    const uint32_t unsorted[2] = {TextBlock::packZhRuby(2, 0x41234u), TextBlock::packZhRuby(1, 0x85678u)};
+    ASSERT_TRUE(block.setZhRubies(unsorted, 2));
+    HalFile out;
+    ASSERT_TRUE(out.open(tempPath.c_str(), "wb"));
+    ASSERT_TRUE(block.serialize(out));
+  }
+  {
+    HalFile in;
+    ASSERT_TRUE(in.open(tempPath.c_str(), "rb"));
+    EXPECT_EQ(TextBlock::deserialize(in), nullptr);
+  }
+  std::filesystem::remove(tempPath);
+}
+
+TEST(CjkPunctDecompose, PunctuatedHanTokensPreserveOrderAndAvoidSdThrashing) {
+  GfxRenderer renderer;
+  renderer.sdFont = true;
+  ParsedText text(false, false, BlockStyle{}, 0);
+  text.addWord("天地玄黄，宇宙洪荒。「日月盈昃？」—…", EpdFontFamily::REGULAR);
+
+  std::string reconstructed;
+  std::vector<std::unique_ptr<TextBlock>> lines;
+  text.layoutAndExtractLines(renderer, 0, 80, [&](std::unique_ptr<TextBlock> line, uint32_t) {
+    ASSERT_NE(line, nullptr);
+    int16_t prevX = -1;
+    for (uint16_t i = 0; i < line->wordCount(); ++i) {
+      EXPECT_GT(line->wordXpos(i), prevX);
+      prevX = line->wordXpos(i);
+      reconstructed += line->wordText(i);
+    }
+    lines.push_back(std::move(line));
+  });
+
+  EXPECT_FALSE(text.hadDroppedWords());
+  EXPECT_EQ(reconstructed, "天地玄黄，宇宙洪荒。「日月盈昃？」—…");
+  EXPECT_GT(lines.size(), 1u);
+  EXPECT_EQ(renderer.coldMeasurements, 0u);
+  // Non-probe Han characters inside punctuated tokens (e.g. 黄 U+9EC4, 荒 U+8352, 日 U+65E5)
+  // must not be pulled into the SD advance table; punctuation like ， (U+FF0C) must be present.
+  EXPECT_EQ(renderer.preparedAdvances.count({0, 0, 0x9EC4u}), 0u);
+  EXPECT_EQ(renderer.preparedAdvances.count({0, 0, 0x8352u}), 0u);
+  EXPECT_EQ(renderer.preparedAdvances.count({0, 0, 0x65E5u}), 0u);
+  EXPECT_GT(renderer.preparedAdvances.count({0, 0, 0xFF0Cu}), 0u);
 }

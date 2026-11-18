@@ -59,7 +59,7 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
   // ruby-less line costs nothing beyond its arena. The layout engine hands one over for
   // every line it extracts, ruby or not; release it here rather than carrying it for the
   // block's lifetime. Move-assigning an empty vector frees the buffer (clear() would not).
-  if (!hasAnyRuby()) {
+  if (!hasRuby()) {
     this->rubyTexts = std::vector<std::string>{};
   }
 
@@ -140,30 +140,59 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
   }
 }
 
-bool TextBlock::hasRuby() const {
-  // Text ruby only (drawn above the line); zhuyin codes sit beside their character.
-  for (const auto& rt : rubyTexts) {
-    if (!rt.empty() && !zh::isRubyCode(rt.c_str())) return true;
+bool TextBlock::setZhRubies(const uint32_t* packedEntries, const uint16_t count) {
+  if (count == 0) {
+    zhRubyData.reset();
+    zhRubyCount = 0;
+    return true;
   }
-  return false;
+  if (!packedEntries) return false;
+  const size_t bytes = static_cast<size_t>(count) * sizeof(uint32_t);
+  auto buf = makeUniqueNoThrow<uint32_t[]>(count);
+  if (!buf) {
+    freeink::MemoryManager::instance().ensureFree(bytes + 1024);
+    buf = makeUniqueNoThrow<uint32_t[]>(count);
+  }
+  if (!buf) return false;
+  memcpy(buf.get(), packedEntries, bytes);
+  zhRubyData = std::move(buf);
+  zhRubyCount = count;
+  return true;
 }
 
-bool TextBlock::hasAnyRuby() const {
+uint32_t TextBlock::wordZhRuby(const uint16_t wordIndex) const {
+  if (zhRubyCount == 0 || !zhRubyData) return 0;
+  uint16_t lo = 0;
+  uint16_t hi = zhRubyCount;
+  while (lo < hi) {
+    const uint16_t mid = lo + (hi - lo) / 2;
+    const uint16_t midIdx = static_cast<uint16_t>(zhRubyData[mid] >> 21);
+    if (midIdx < wordIndex) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  if (lo < zhRubyCount && static_cast<uint16_t>(zhRubyData[lo] >> 21) == wordIndex) {
+    return zhRubyData[lo] & ZH_RUBY_CODE_MASK;
+  }
+  return 0;
+}
+
+bool TextBlock::hasRuby() const {
+  // HTML <ruby> text only (drawn above the line); zhuyin codes live in zhRubyData.
   for (const auto& rt : rubyTexts) {
     if (!rt.empty()) return true;
   }
   return false;
 }
 
+bool TextBlock::hasAnyRuby() const { return zhRubyCount > 0 || hasRuby(); }
+
 int TextBlock::getRubyUnderHeight(const GfxRenderer& renderer, const int lineFontId) const {
-  if (!zh::rubyUnderLine()) return 0;
-  for (const auto& rt : rubyTexts) {
-    if (zh::isRubyCode(rt.c_str())) {
-      const int em = renderer.getTextAdvanceX(lineFontId, zh::EM_PROBE, EpdFontFamily::REGULAR, 0);
-      return zh::rubyUnderHeight(em);
-    }
-  }
-  return 0;
+  if (!zh::rubyUnderLine() || zhRubyCount == 0) return 0;
+  const int em = renderer.getTextAdvanceX(lineFontId, zh::EM_PROBE, EpdFontFamily::REGULAR, 0);
+  return zh::rubyUnderHeight(em);
 }
 
 void TextBlock::zhRubySpan(const uint16_t i, size_t& hanStart, size_t& hanEnd) const {
@@ -265,8 +294,7 @@ void TextBlock::render(const GfxRenderer& renderer, const int sectionFontId, con
   if (blockHasRuby && !scanning) {
     rubies.resize(numWords);
     for (uint16_t i = 0; i < numWords; i++) {
-      if (i < rubyTexts.size() && !rubyTexts[i].empty() && !zh::isRubyCode(rubyTexts[i].c_str()) &&
-          (wordStyle(i) & EpdFontFamily::RUBY_CONTINUE) == 0) {
+      if (i < rubyTexts.size() && !rubyTexts[i].empty() && (wordStyle(i) & EpdFontFamily::RUBY_CONTINUE) == 0) {
         int groupWordCount = 1;
         while (i + groupWordCount < numWords && (wordStyle(i + groupWordCount) & EpdFontFamily::RUBY_CONTINUE) != 0) {
           groupWordCount++;
@@ -358,8 +386,15 @@ void TextBlock::render(const GfxRenderer& renderer, const int sectionFontId, con
   // Loop-invariant: hoisted out of the word loop so rubyTexts is scanned once,
   // not once per word.
   const int rubyShift = getRubyShift(ascender);
+  uint16_t zhCursor = 0;
 
   for (uint16_t i = 0; i < numWords; i++) {
+    while (zhCursor < zhRubyCount && static_cast<uint16_t>(zhRubyData[zhCursor] >> 21) < i) {
+      ++zhCursor;
+    }
+    const uint32_t zhCode = (zhCursor < zhRubyCount && static_cast<uint16_t>(zhRubyData[zhCursor] >> 21) == i)
+                                ? (zhRubyData[zhCursor] & ZH_RUBY_CODE_MASK)
+                                : 0;
     const char* word = wordText(i);
     const int wordX = xposArr[i] + x;
     const EpdFontFamily::Style currentStyle = wordStyle(i);
@@ -402,7 +437,7 @@ void TextBlock::render(const GfxRenderer& renderer, const int sectionFontId, con
       const int suffixX = drawX + (rtl ? 0 : focusSplitXArr[i]);
       renderer.drawText(wordFont, prefixX, wordY, boldBuf, true, boldStyle, baseDir, tracking);
       renderer.drawText(wordFont, suffixX, wordY, word + boldLen, true, currentStyle, baseDir, tracking);
-    } else if (const uint32_t zhCode = i < rubyTexts.size() ? zh::decodeRubyCode(rubyTexts[i].c_str()) : 0) {
+    } else if (zhCode != 0) {
       // Zhuyin: keep any leading punctuation anchored at drawX, render the Han
       // character and its beside/under ruby inside the widened cell, then draw
       // any trailing punctuation after the cell.
@@ -454,7 +489,7 @@ void TextBlock::render(const GfxRenderer& renderer, const int sectionFontId, con
     }
 
     // Horizontal ruby text rendering
-    if (blockHasRuby && i < rubyTexts.size() && !rubyTexts[i].empty() && !zh::isRubyCode(rubyTexts[i].c_str()) &&
+    if (blockHasRuby && i < rubyTexts.size() && !rubyTexts[i].empty() &&
         (wordStyle(i) & EpdFontFamily::RUBY_CONTINUE) == 0) {
       if (scanning) {
         renderer.drawText(fontId, 0, 0, rubyTexts[i].c_str(), true, EpdFontFamily::SUP);
@@ -562,9 +597,28 @@ bool TextBlock::serialize(HalFile& file) const {
     }
   }
 
-  // Ruby text data
-  for (size_t i = 0; i < numWords; i++) {
-    serialization::writeString(file, (i < rubyTexts.size()) ? rubyTexts[i] : std::string());
+  // Sparse HTML <ruby> annotations
+  uint16_t htmlRubyCount = 0;
+  const size_t rtLimit = std::min<size_t>(numWords, rubyTexts.size());
+  for (size_t i = 0; i < rtLimit; ++i) {
+    if (!rubyTexts[i].empty()) ++htmlRubyCount;
+  }
+  serialization::writePod(file, htmlRubyCount);
+  for (size_t i = 0; i < rtLimit; ++i) {
+    if (rubyTexts[i].empty()) continue;
+    const uint16_t idx = static_cast<uint16_t>(i);
+    serialization::writePod(file, idx);
+    serialization::writeString(file, rubyTexts[i]);
+  }
+
+  // Sparse packed Zhuyin codes (4 bytes per annotated word)
+  serialization::writePod(file, zhRubyCount);
+  if (zhRubyCount > 0) {
+    const size_t zhBytes = static_cast<size_t>(zhRubyCount) * sizeof(uint32_t);
+    if (file.write(reinterpret_cast<const uint8_t*>(zhRubyData.get()), zhBytes) != zhBytes) {
+      LOG_ERR("TXB", "Serialization failed: zh rubies (%u bytes)", static_cast<uint32_t>(zhBytes));
+      return false;
+    }
   }
 
   // Style (alignment + margins/padding/indent)
@@ -660,24 +714,53 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(HalFile& file) {
     }
   }
 
-  // Ruby text data. Ruby is a CJK feature, so for nearly every book every entry here
-  // is the empty string. Materializing the vector regardless costs wordCount * 24 bytes
-  // (sizeof(std::string)) plus a heap block per line, held for as long as the page is
-  // resident -- several KB of DRAM on a full page, none of it ever read. An empty
-  // rubyTexts is already the "no ruby" representation: hasRuby() reports false and every
-  // other reader is guarded by `i < rubyTexts.size()`, so allocate lazily and only once a
-  // non-empty annotation actually shows up.
-  //
-  // `scratch` is reused across words: readString() resizes it to the incoming length and
-  // overwrites every byte, so a moved-from value carries nothing into the next iteration.
-  std::string scratch;
-  for (uint16_t i = 0; i < wc; i++) {
-    serialization::readString(file, scratch);
-    if (scratch.empty()) continue;
-    if (block->rubyTexts.empty()) {
-      block->rubyTexts.resize(wc);
+  // Sparse HTML <ruby> annotations: omitted completely when count == 0.
+  uint16_t htmlRubyCount = 0;
+  serialization::readPod(file, htmlRubyCount);
+  if (htmlRubyCount > wc) {
+    LOG_ERR("TXB", "Deserialization failed: html ruby count %u exceeds word count %u", htmlRubyCount, wc);
+    return nullptr;
+  }
+  if (htmlRubyCount > 0) {
+    block->rubyTexts.resize(wc);
+    std::string scratch;
+    for (uint16_t k = 0; k < htmlRubyCount; ++k) {
+      uint16_t idx = 0;
+      serialization::readPod(file, idx);
+      serialization::readString(file, scratch);
+      if (idx >= wc || scratch.empty()) {
+        LOG_ERR("TXB", "Deserialization failed: corrupt html ruby entry %u", k);
+        return nullptr;
+      }
+      block->rubyTexts[idx] = std::move(scratch);
     }
-    block->rubyTexts[i] = std::move(scratch);
+  }
+
+  // Sparse packed Zhuyin codes: (wordIdx << 21) | (zhCode & 0x1FFFFF), strictly sorted by wordIdx.
+  uint16_t zhCount = 0;
+  serialization::readPod(file, zhCount);
+  if (zhCount > wc) {
+    LOG_ERR("TXB", "Deserialization failed: zh ruby count %u exceeds word count %u", zhCount, wc);
+    return nullptr;
+  }
+  if (zhCount > 0) {
+    const size_t zhBytes = static_cast<size_t>(zhCount) * sizeof(uint32_t);
+    block->zhRubyData = makeUniqueNoThrow<uint32_t[]>(zhCount);
+    if (!block->zhRubyData || file.read(reinterpret_cast<uint8_t*>(block->zhRubyData.get()), zhBytes) != zhBytes) {
+      LOG_ERR("TXB", "Deserialization failed: zh rubies");
+      return nullptr;
+    }
+    int32_t prevIdx = -1;
+    for (uint16_t k = 0; k < zhCount; ++k) {
+      const uint32_t entry = block->zhRubyData[k];
+      const uint16_t idx = static_cast<uint16_t>(entry >> 21);
+      if (idx >= wc || static_cast<int32_t>(idx) <= prevIdx || (entry & ZH_RUBY_CODE_MASK) == 0) {
+        LOG_ERR("TXB", "Deserialization failed: corrupt zh ruby entry %u", k);
+        return nullptr;
+      }
+      prevIdx = idx;
+    }
+    block->zhRubyCount = zhCount;
   }
 
   // Style (alignment + margins/padding/indent)

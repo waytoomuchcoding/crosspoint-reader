@@ -76,6 +76,8 @@ class TextBlock final : public Block {
   const uint8_t* focusBoundaryArr = nullptr;  // null when !focusPresent
   const char* textArr = nullptr;
   std::vector<std::string> rubyTexts;
+  uint16_t zhRubyCount = 0;
+  std::unique_ptr<uint32_t[]> zhRubyData;
   // Words sized apart from the line (CSS font-size spans): MAX_WORD_FONTS int32 font ids,
   // then one slot per word (0 = block font, n = font n-1). Null when every word uses the
   // block font, so ordinary lines pay only this pointer.
@@ -141,8 +143,16 @@ class TextBlock final : public Block {
   bool wordHasDiscretionaryHyphen(const uint16_t i) const { return (stylesArr[i] & DISCRETIONARY_HYPHEN_FLAG) != 0; }
   uint8_t focusBoundary(const uint16_t i) const { return focusPresent ? focusBoundaryArr[i] : 0; }
   uint16_t focusSplitX(const uint16_t i) const { return focusPresent ? focusSplitXArr[i] : 0; }
+  static constexpr uint16_t MAX_ZH_RUBY_WORD_INDEX = 2047;
+  static constexpr uint32_t ZH_RUBY_CODE_MASK = 0x1FFFFFu;
+  static constexpr uint32_t packZhRuby(uint16_t wordIdx, uint32_t code) {
+    return (static_cast<uint32_t>(wordIdx) << 21) | (code & ZH_RUBY_CODE_MASK);
+  }
+  bool setZhRubies(const uint32_t* packedEntries, uint16_t count);
+  uint16_t getZhRubyCount() const { return zhRubyCount; }
+  uint32_t wordZhRuby(uint16_t wordIndex) const;
   bool hasRuby() const;
-  // Includes zhuyin codes (see ZhDict.h).
+  // Includes packed zhuyin codes (see ZhDict.h).
   bool hasAnyRuby() const;
   // Byte span [hanStart, hanEnd) of the first Han character of word i (0,0 if none).
   void zhRubySpan(uint16_t i, size_t& hanStart, size_t& hanEnd) const;

@@ -219,7 +219,6 @@ bool ZhLookupActivity::extractChars(const Page& src, const bool visible, std::ve
       const size_t len = block->wordText(last) + block->wordTextLen(last) + 1 - text;
       renderer.ensureSdCardFontReady(fontId, &text, &len, 1, false, false, 1);
     }
-    const auto& rubyTexts = block->getRubyTexts();
     for (uint16_t i = 0; i < block->wordCount(); ++i) {
       if (block->wordStartsParagraph(i)) pendingBreak = true;
       const char* text = block->wordText(i);
@@ -264,7 +263,7 @@ bool ZhLookupActivity::extractChars(const Page& src, const bool visible, std::ve
         memcpy(buf, hanStart, charLen);
         buf[charLen] = 0;
         c.charW = static_cast<int16_t>(renderer.getTextAdvanceX(font, buf, EpdFontFamily::REGULAR, 0));
-        c.ruby = i < rubyTexts.size() ? zh::decodeRubyCode(rubyTexts[i].c_str()) : 0;
+        c.ruby = block->wordZhRuby(i);
         if (c.ruby)
           c.em = static_cast<int16_t>(renderer.getTextAdvanceX(font, zh::EM_PROBE, EpdFontFamily::REGULAR, 0));
         const bool underLine = zh::rubyUnderLine();

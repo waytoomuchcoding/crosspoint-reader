@@ -1,10 +1,12 @@
 #include <gtest/gtest.h>
 
+#include <cstdlib>
 #include <fstream>
 #include <string>
 #include <vector>
 
 #include "ZhDict.h"
+#include "ZhFlashTables.h"
 
 namespace {
 
@@ -356,6 +358,78 @@ TEST(ZhRuby, UnderLinePixelsStayWithinCellAndClearance) {
     EXPECT_LE(zh::rubyUnderWidth(code, em), em - 2) << em;
     EXPECT_EQ(zh::rubyUnderExtraWidth(code, em), 0) << em;
   }
+}
+
+TEST_F(ZhDictTest, TwoWayCacheAndMemoizedBigramSkipRepeatReads) {
+  EXPECT_FALSE(dict.usesFlashTables());
+
+  const auto first = matches("银行");
+  ASSERT_FALSE(first.empty());
+
+  HalFile::totalReads = 0;
+  const auto second = matches("银行");
+  EXPECT_EQ(HalFile::totalReads, 0u);
+  ASSERT_EQ(second.size(), first.size());
+  for (size_t i = 0; i < first.size(); ++i) {
+    EXPECT_EQ(second[i].len, first[i].len);
+    EXPECT_EQ(second[i].entryOff, first[i].entryOff);
+    EXPECT_EQ(second[i].hsk, first[i].hsk);
+    EXPECT_EQ(second[i].flags, first[i].flags);
+    EXPECT_EQ(second[i].rank, first[i].rank);
+    EXPECT_EQ(second[i].zhuyin[0], first[i].zhuyin[0]);
+    EXPECT_EQ(second[i].zhuyin[1], first[i].zhuyin[1]);
+  }
+
+  HalFile::totalReads = 0;
+  const std::string seg1 = segment("工作人员看了看她的资料");
+  const size_t coldReads = HalFile::totalReads;
+  EXPECT_GT(coldReads, 5u);
+
+  HalFile::totalReads = 0;
+  const std::string seg2 = segment("工作人员看了看她的资料");
+  EXPECT_EQ(seg1, seg2);
+  // Only the 4-char word "工作人员" (hasLonger == true) re-reads words.bin on repeat;
+  // all character records, misses, and 2-char words hit the 2-way LRU cache in 0 reads.
+  EXPECT_EQ(HalFile::totalReads, 1u);
+}
+
+TEST(ZhFlashTables, BloomFiltersContainLiveDictionaryWords) {
+  EXPECT_TRUE(zh::flash::pairBloomMayContain(0x5DE5, 0x4F5C));            // 工作
+  EXPECT_TRUE(zh::flash::pairBloomMayContain(0x94F6, 0x884C));            // 银行
+  EXPECT_TRUE(zh::flash::tripleBloomMayContain(0x5DE5, 0x4F5C, 0x4EBA));  // 工作人
+}
+
+TEST(ZhFlashTables, LiveDictionaryMatchesReferenceWhenEnvSet) {
+  const char* liveDir = std::getenv("ZH_LIVE_DIR");
+  if (!liveDir || liveDir[0] == '\0') return;
+
+  zh::Dict live;
+  ASSERT_TRUE(live.open(liveDir));
+  EXPECT_TRUE(live.usesFlashTables());
+
+  std::ifstream golden(ZH_FIXTURE_DIR "/segmentation.txt");
+  ASSERT_TRUE(golden.good());
+  std::string line;
+  std::string joined;
+  while (std::getline(golden, line)) {
+    const size_t tab = line.find('\t');
+    ASSERT_NE(tab, std::string::npos);
+    const std::string text = line.substr(0, tab);
+    const auto cps = decode(text);
+    std::string segOut;
+    zh::segmentRun(live, cps.data(), cps.size(), [&](const zh::Segment& s) {
+      if (!segOut.empty()) segOut += "/";
+      segOut += encode(cps, s.start, s.len);
+    });
+    ASSERT_FALSE(segOut.empty()) << text;
+    joined += text + "\t" + segOut + "\n";
+  }
+  EXPECT_FALSE(joined.empty());
+  if (const char* outPath = std::getenv("ZH_LIVE_SEG_OUT"); outPath && outPath[0] != '\0') {
+    std::ofstream out(outPath);
+    out << joined;
+  }
+  live.close();
 }
 
 }  // namespace
