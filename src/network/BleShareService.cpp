@@ -46,15 +46,11 @@ namespace {
 
 constexpr size_t kMinStartFreeHeapBytes = 81920;  // 49 KiB NimBLE + 32 KiB reader inflate reserve
 constexpr size_t kMinStartLargestBlockBytes = 32768;
-constexpr uint32_t kBackgroundAdvertiseWindowMs = 45000;
 constexpr size_t kRxRingCapacity = 4096;
 
 FontCacheManager* g_fontCache = nullptr;
 bool g_pairingActive = false;
 char g_pairingPin[xpbt::kPinDigits + 1] = "000000";
-bool g_launchIncomingPending = false;
-std::string g_launchReturnBookPath;
-unsigned long g_windowArmedAtMs = 0;
 std::atomic<bool> g_radioRunning{false};
 
 // Active streaming file state (main loop only).
@@ -766,7 +762,14 @@ void begin(FontCacheManager* fontCache) {
   uint8_t rnd[xpbt::kIdBytes];
   esp_fill_random(rnd, sizeof(rnd));
   BLESHARE_STORE.ensureReaderId(rnd);
-  g_windowArmedAtMs = millis();
+}
+
+bool isSupported() {
+#if defined(SIMULATOR) || (defined(FREEINK_CAP_BLE_HID_HOST) && FREEINK_CAP_BLE_HID_HOST)
+  return true;
+#else
+  return false;
+#endif
 }
 
 const char* deviceDisplayName() {
@@ -780,6 +783,11 @@ const char* deviceDisplayName() {
 bool ownsRadio() { return g_radioRunning.load(std::memory_order_acquire); }
 
 bool hasLiveLink() { return g_radioRunning.load(std::memory_order_acquire) && transportConnected(); }
+
+bool startRadio() {
+  if (g_radioRunning.load(std::memory_order_acquire)) return true;
+  return startTransport(/*fastAdv=*/true);
+}
 
 void stopRadio() {
   g_host.abortFileWrite();
@@ -801,13 +809,17 @@ bool startPairingMode() {
   std::snprintf(g_pairingPin, sizeof(g_pairingPin), "%06u", static_cast<unsigned>(code));
 #endif
   g_pairingActive = true;
-  g_windowArmedAtMs = millis();
   g_session.reset();
   if (!g_radioRunning.load(std::memory_order_acquire)) {
     startTransport(/*fastAdv=*/true);
   }
+  if (!g_radioRunning.load(std::memory_order_acquire)) {
+    g_pairingActive = false;
+    LOG_ERR("BLESHARE", "Failed to start BLE radio for pairing");
+    return false;
+  }
   LOG_INF("BLESHARE", "Pairing mode active (PIN=%s)", g_pairingPin);
-  return g_radioRunning.load(std::memory_order_acquire);
+  return true;
 }
 
 void stopPairingMode() { g_pairingActive = false; }
@@ -841,41 +853,18 @@ void clearCompletedState() {
   }
 }
 
-bool consumeIncomingLaunch(std::string& outReturnBookPath) {
-  if (!g_launchIncomingPending) return false;
-  g_launchIncomingPending = false;
-  outReturnBookPath = std::move(g_launchReturnBookPath);
-  g_launchReturnBookPath.clear();
-  return true;
-}
-
 bool tick(const Scene& scene) {
-  const unsigned long now = millis();
   g_activeReaderBookPath = scene.inReader ? scene.currentBookPath : std::string();
-  if (scene.localActivity || scene.shareScreenForeground) {
-    g_windowArmedAtMs = now;
-  }
 
-  // Tear down immediately if Wi-Fi or raw USB storage is active, or if the BLE HID page turner claims the radio.
-  if (scene.storageBusy || scene.wifiOn || (!scene.shareScreenForeground && scene.pageTurnerWantsRadio)) {
+  // Foreground-only: run BLE only while the Phone Share screen is open and Wi-Fi / USB storage are inactive.
+  if (scene.storageBusy || scene.wifiOn || !scene.shareScreenForeground) {
     if (g_radioRunning.load(std::memory_order_acquire)) stopRadio();
     return false;
   }
 
-  const bool backgroundEligible = BLESHARE_STORE.isEnabled() && BLESHARE_STORE.isPaired() &&
-                                  scene.canShowIncomingPopup &&
-                                  (now - g_windowArmedAtMs < kBackgroundAdvertiseWindowMs);
-  const bool wantsRadio = scene.shareScreenForeground || g_pairingActive || backgroundEligible;
-
   if (!g_radioRunning.load(std::memory_order_acquire)) {
-    if (wantsRadio) {
-      startTransport(/*fastAdv=*/scene.shareScreenForeground || g_pairingActive);
-    }
+    startTransport(/*fastAdv=*/true);
     if (!g_radioRunning.load(std::memory_order_acquire)) return false;
-  } else if (!wantsRadio && !transportConnected()) {
-    // Idle background window expired with no phone connected: power down NimBLE so C3 drops to 10 MHz.
-    stopRadio();
-    return false;
   }
 
   bool hadActivity = false;
@@ -889,7 +878,6 @@ bool tick(const Scene& scene) {
       const int flags = ::fcntl(cfd, F_GETFL, 0);
       ::fcntl(cfd, F_SETFL, flags | O_NONBLOCK);
       g_clientFd = cfd;
-      g_windowArmedAtMs = now;
       hadActivity = true;
       LOG_INF("BLESHARE", "Simulator client connected");
     }
@@ -900,7 +888,6 @@ bool tick(const Scene& scene) {
       const ssize_t n = ::recv(g_clientFd, buf, sizeof(buf), 0);
       if (n > 0) {
         hadActivity = true;
-        g_windowArmedAtMs = now;
         g_session.ingestBytes(buf, static_cast<size_t>(n));
       } else if (n == 0) {
         closeClientSocket();
@@ -924,18 +911,9 @@ bool tick(const Scene& scene) {
     const size_t n = popRxBytes(buf, sizeof(buf));
     if (n == 0) break;
     hadActivity = true;
-    g_windowArmedAtMs = now;
     g_session.ingestBytes(buf, n);
   }
 #endif
-
-  const auto st = g_session.state();
-  if (!scene.shareScreenForeground && scene.canShowIncomingPopup &&
-      (st == xpbt::SessionState::OfferPendingDecision || st == xpbt::SessionState::ReceivingFile)) {
-    g_launchIncomingPending = true;
-    g_launchReturnBookPath = scene.inReader ? scene.currentBookPath : std::string();
-    hadActivity = true;
-  }
 
   return hadActivity;
 }

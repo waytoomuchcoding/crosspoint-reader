@@ -34,12 +34,14 @@
 #include "StatusBarSettingsActivity.h"
 #include "TextSettingsActivity.h"
 #include "ZhDictDownloadActivity.h"
+#include "activities/network/BleShareActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/IntervalSelectionActivity.h"
 #include "components/UITheme.h"
 #include "components/UIThemeTokens.h"
 #include "components/UiAppHelpers.h"
 #include "fontIds.h"
+#include "network/BleShareService.h"
 #include "util/PluginEvents.h"
 
 namespace fui = freeink::ui;
@@ -82,7 +84,7 @@ SettingsSection sectionFor(const SettingInfo& setting) {
 }
 
 // Device-only action rows added per section, beyond the shared list.
-constexpr size_t EXTRA_ROWS_PER_SECTION = 6;
+constexpr size_t EXTRA_ROWS_PER_SECTION = 8;
 }  // namespace
 
 void SettingsActivity::rebuildSettings() {
@@ -136,6 +138,9 @@ void SettingsActivity::rebuildSettings() {
   addAction(SettingsSection::Network, StrId::STR_WIFI_NETWORKS, SettingAction::Network);
   if (bleturner::status().compiledIn) {
     addAction(SettingsSection::Network, StrId::STR_BT_PAGE_TURNER, SettingAction::Bluetooth);
+  }
+  if (bleshare::isSupported()) {
+    addAction(SettingsSection::Network, StrId::STR_BLE_SHARE_TITLE, SettingAction::BleShare);
   }
   addAction(SettingsSection::Network, StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync);
   addAction(SettingsSection::Network, StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser);
@@ -364,6 +369,15 @@ void SettingsActivity::toggleSelectedSetting() {
           return;
         }
         startActivityForResult(std::move(activity), resultHandler);
+        break;
+      }
+      case SettingAction::BleShare: {
+        auto activity = makeUniqueNoThrow<BleShareActivity>(renderer, mappedInput);
+        if (!activity) {
+          LOG_ERR("SETTINGS", "OOM: BleShareActivity");
+          return;
+        }
+        startActivityForResult(std::move(activity), [this](const ActivityResult&) { requestUpdate(); });
         break;
       }
       case SettingAction::ClearCache:

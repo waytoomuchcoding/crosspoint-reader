@@ -22,6 +22,7 @@ enum class SettingAction {
   OPDSBrowser,
   Network,
   Bluetooth,
+  BleShare,
   ClearCache,
   CheckForUpdates,
   SdFirmwareUpdate,

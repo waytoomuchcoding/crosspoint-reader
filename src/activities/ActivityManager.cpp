@@ -23,7 +23,6 @@
 #include "home/FileBrowserActivity.h"
 #include "home/HomeActivity.h"
 #include "library/LibraryListActivity.h"
-#include "network/BleShareActivity.h"
 #include "network/BleShareService.h"
 #include "network/CrossPointWebServerActivity.h"
 #include "network/UsbDriveActivity.h"
@@ -280,16 +279,6 @@ void ActivityManager::goToFileTransfer() {
   replaceActivity(std::make_unique<CrossPointWebServerActivity>(renderer, mappedInput));
 }
 
-void ActivityManager::goToBleShare(const bool backgroundLaunch, std::string returnBookPath) {
-  auto activity =
-      makeUniqueNoThrow<BleShareActivity>(renderer, mappedInput, backgroundLaunch, std::move(returnBookPath));
-  if (!activity) {
-    LOG_ERR("ACT", "OOM: BleShareActivity");
-    return;
-  }
-  replaceActivity(std::move(activity));
-}
-
 void ActivityManager::goToJoinNetwork() {
   // Post heap-defrag reboot: enter the web-server activity straight in Join
   // Network mode (skips mode selection, does not reboot again).
@@ -446,20 +435,6 @@ bool ActivityManager::isForegroundHomeShown() const {
 
 bool ActivityManager::isForegroundBleShare() const {
   return pendingAction == PendingAction::None && currentActivity && currentActivity->name == "BleShare";
-}
-
-bool ActivityManager::canInterruptForBleShare() const {
-  if (pendingAction != PendingAction::None || !currentActivity ||
-      paintedVisit.load(std::memory_order_acquire) != screenVisit) {
-    return false;
-  }
-  const auto& n = currentActivity->name;
-  if (n == "Home" || n == "Library" || n == "FileBrowser") return true;
-  if (isForegroundReader()) {
-    auto* reader = static_cast<ReaderActivity*>(currentActivity.get());
-    return reader->pageRendered.load(std::memory_order_acquire) && !reader->inputOverPage();
-  }
-  return false;
 }
 
 bool ActivityManager::remoteShortcut(const bool readerMenu) {

@@ -881,21 +881,13 @@ void loop() {
 
   bleshare::Scene shareScene{};
   shareScene.shareScreenForeground = activityManager.isForegroundBleShare();
-  shareScene.canShowIncomingPopup = activityManager.canInterruptForBleShare();
   shareScene.inReader = activityManager.isReaderActivity();
-  shareScene.pageTurnerWantsRadio =
-      bleturner::holdsHeap() || (remoteContext && SETTINGS.ble.enabled != 0 && SETTINGS.ble.peerAddr[0] != '\0');
   shareScene.storageBusy = scene.storageBusy;
   shareScene.wifiOn = scene.wifiOn;
-  shareScene.localActivity = gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.wasTouchActivity();
   if (shareScene.inReader) {
     shareScene.currentBookPath = APP_STATE.openEpubPath;
   }
   const bool bleShareActed = bleshare::tick(shareScene);
-  std::string bleReturnBook;
-  if (bleshare::consumeIncomingLaunch(bleReturnBook)) {
-    activityManager.goToBleShare(/*backgroundLaunch=*/true, std::move(bleReturnBook));
-  }
 
   if (activityManager.requiresExclusiveStorageLoop()) {
     // USB Drive handed the raw SD card to the host. Do not run screenshots,
@@ -931,8 +923,10 @@ void loop() {
     const auto heap = HalMemory::getInternalHeap();
     LOG_INF("MEM", "Free: %zu bytes, Total: %zu bytes, Min Free: %zu bytes, MaxAlloc: %zu bytes", heap.freeBytes,
             heap.totalBytes, heap.minFreeBytes, heap.largestBlockBytes);
+#ifndef SIMULATOR
     LOG_INF("DIAG", "cpu=%dMHz rawIn=%d pwr=%d usb=%d bleShare=%d", getCpuFrequencyMhz(), gpio.rawInputActive() ? 1 : 0,
             gpio.isPressed(HalGPIO::BTN_POWER) ? 1 : 0, gpio.isUsbConnected() ? 1 : 0, bleshare::ownsRadio() ? 1 : 0);
+#endif
 #ifdef BOARD_HAS_PSRAM
     const auto psram = HalMemory::getPsramHeap();
     LOG_INF("MEM", "PSRAM: Free: %zu bytes, Total: %zu bytes, Min Free: %zu bytes, MaxAlloc: %zu bytes",

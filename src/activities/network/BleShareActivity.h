@@ -10,8 +10,7 @@
 
 class BleShareActivity final : public UiListActivity {
  public:
-  explicit BleShareActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool backgroundLaunch = false,
-                            std::string returnBookPath = {});
+  explicit BleShareActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
 
   void onEnter() override;
   void onExit() override;
@@ -29,20 +28,19 @@ class BleShareActivity final : public UiListActivity {
   bool handleCustomInput() override;
   void onBackButton() override;
   const char* headerTitle() const override;
+  void drawChrome() override;
 
   void rebuildMenuRows();
+  void syncRadioStatus();
   void syncSessionToUi();
   void openIncomingPopup();
   void openDonePopup();
-  void exitAfterBackgroundSession(bool openLibrary);
 
   void renderPairingCard() const;
   void renderTransferCard() const;
   void renderDoneCard() const;
   void renderErrorCard() const;
 
-  bool backgroundLaunch_ = false;
-  std::string returnBookPath_;
   View view_ = View::Menu;
 
   std::vector<freeink::ui::ListItem> rows_;
@@ -56,8 +54,11 @@ class BleShareActivity final : public UiListActivity {
   uint32_t lastRenderedBytes_ = 0;
   uint16_t lastRenderedFileIdx_ = 0xFFFF;
   unsigned long lastProgressPaintMs_ = 0;
+  unsigned long lastStatusPollMs_ = 0;
 
   // Render-task snapshots updated under RenderLock on loopTask.
+  bool uiRadioRunning_ = false;
+  bool uiLinkConnected_ = false;
   xpbt::ActiveFileProgress uiProgress_{};
   size_t uiSavedCount_ = 0;
   std::string uiDestFolder_;

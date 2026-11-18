@@ -6,6 +6,7 @@
 #include <HalDisplay.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <WiFi.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -24,10 +25,9 @@ namespace {
 
 enum class MenuCode : int16_t {
   PairPhone = 0,
-  Discoverable = 1,
-  AutoAccept = 2,
-  DestFolder = 3,
-  ForgetPhone = 4,
+  AutoAccept = 1,
+  DestFolder = 2,
+  ForgetPhone = 3,
 };
 
 void formatBytes(const uint64_t bytes, char* out, const size_t cap) {
@@ -43,11 +43,8 @@ void formatBytes(const uint64_t bytes, char* out, const size_t cap) {
 
 }  // namespace
 
-BleShareActivity::BleShareActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const bool backgroundLaunch,
-                                   std::string returnBookPath)
-    : UiListActivity("BleShare", renderer, mappedInput),
-      backgroundLaunch_(backgroundLaunch),
-      returnBookPath_(std::move(returnBookPath)) {}
+BleShareActivity::BleShareActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
+    : UiListActivity("BleShare", renderer, mappedInput) {}
 
 void BleShareActivity::onEnter() {
   UiListActivity::onEnter();
@@ -55,9 +52,23 @@ void BleShareActivity::onEnter() {
     RenderLock lock(*this);
     fcm->releaseSdFontCaches();
   }
+  if (WiFi.getMode() != WIFI_MODE_NULL) {
+    WiFi.disconnect(false);
+    WiFi.mode(WIFI_OFF);
+    delay(20);
+  }
   BLESHARE_STORE.loadFromFile();
-  incomingPopupShown_ = false;
-  donePopupShown_ = false;
+  bleshare::startRadio();
+  {
+    RenderLock lock(*this);
+    view_ = View::Menu;
+    incomingPopupShown_ = false;
+    donePopupShown_ = false;
+    wasPairingBeforeTick_ = false;
+    uiRadioRunning_ = bleshare::ownsRadio();
+    uiLinkConnected_ = bleshare::hasLiveLink();
+  }
+  lastStatusPollMs_ = millis();
   rebuildMenuRows();
   syncSessionToUi();
   requestUpdate();
@@ -66,6 +77,7 @@ void BleShareActivity::onEnter() {
 void BleShareActivity::onExit() {
   popup_.dismiss();
   bleshare::stopPairingMode();
+  bleshare::stopRadio();
   UiListActivity::onExit();
 }
 
@@ -76,6 +88,14 @@ bool BleShareActivity::skipLoopDelay() {
 
 const char* BleShareActivity::headerTitle() const { return tr(STR_BLE_SHARE_TITLE); }
 
+void BleShareActivity::drawChrome() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const char* trailing =
+      uiLinkConnected_ ? tr(STR_CONNECTED) : (uiRadioRunning_ ? tr(STR_STATE_ON) : tr(STR_STATE_OFF));
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, renderer.getScreenWidth(), metrics.headerHeight}, headerTitle(),
+                 trailing);
+}
+
 int BleShareActivity::listCount() const { return view_ == View::Menu ? static_cast<int>(rows_.size()) : 0; }
 
 void BleShareActivity::rebuildMenuRows() {
@@ -83,9 +103,9 @@ void BleShareActivity::rebuildMenuRows() {
   rows_.clear();
   subtitles_.clear();
   values_.clear();
-  rows_.reserve(5);
-  subtitles_.reserve(5);
-  values_.reserve(5);
+  rows_.reserve(4);
+  subtitles_.reserve(4);
+  values_.reserve(4);
 
   const auto addRow = [&](const char* label, std::string sub, std::string val, const MenuCode code,
                           const bool isToggle = false, const bool checked = false) {
@@ -110,9 +130,6 @@ void BleShareActivity::rebuildMenuRows() {
     pairSub = tr(STR_BLE_SHARE_NOT_PAIRED);
   }
   addRow(tr(STR_BLE_SHARE_PAIR_PHONE), std::move(pairSub), ">", MenuCode::PairPhone);
-
-  addRow(tr(STR_BLE_SHARE_DISCOVERABLE), tr(STR_BLE_SHARE_DISCOVERABLE_SUB), {}, MenuCode::Discoverable, true,
-         BLESHARE_STORE.isEnabled());
 
   addRow(tr(STR_BLE_SHARE_AUTO_ACCEPT), tr(STR_BLE_SHARE_AUTO_ACCEPT_SUB), {}, MenuCode::AutoAccept, true,
          BLESHARE_STORE.isAutoAccept());
@@ -152,18 +169,22 @@ void BleShareActivity::activateIndex(const int index) {
   app.clearTapFlash();
   switch (static_cast<MenuCode>(rows_[index].actionValue)) {
     case MenuCode::PairPhone:
-      bleshare::startPairingMode();
-      wasPairingBeforeTick_ = true;
-      view_ = View::Pairing;
+      if (!bleshare::startPairingMode()) {
+        RenderLock lock(*this);
+        uiErrorMessage_ = tr(STR_BT_START_FAILED);
+        view_ = View::Error;
+        requestUpdate();
+        return;
+      }
+      {
+        RenderLock lock(*this);
+        wasPairingBeforeTick_ = true;
+        view_ = View::Pairing;
+        uiRadioRunning_ = bleshare::ownsRadio();
+        uiLinkConnected_ = bleshare::hasLiveLink();
+      }
       requestUpdate();
       return;
-    case MenuCode::Discoverable:
-      BLESHARE_STORE.setEnabled(!BLESHARE_STORE.isEnabled());
-      BLESHARE_STORE.saveToFile();
-      if (!BLESHARE_STORE.isEnabled()) {
-        bleshare::stopRadio();
-      }
-      break;
     case MenuCode::AutoAccept:
       BLESHARE_STORE.setAutoAccept(!BLESHARE_STORE.isAutoAccept());
       BLESHARE_STORE.saveToFile();
@@ -216,12 +237,8 @@ void BleShareActivity::openIncomingPopup() {
     } else {
       bleshare::respondToOffer(false);
       bleshare::clearCompletedState();
-      if (backgroundLaunch_) {
-        exitAfterBackgroundSession(false);
-      } else {
-        view_ = View::Menu;
-        requestUpdate();
-      }
+      view_ = View::Menu;
+      requestUpdate();
     }
   });
   incomingPopupShown_ = true;
@@ -241,43 +258,38 @@ void BleShareActivity::openDonePopup() {
     body += (slash != std::string::npos) ? p.substr(slash + 1) : p;
   }
 
-  if (!returnBookPath_.empty()) {
-    const char* opts[2] = {tr(STR_BLE_SHARE_RESUME_BOOK), tr(STR_BLE_SHARE_OPEN_LIBRARY)};
-    popup_.showMessage(titleBuf, body.c_str(), opts, 2, 0, [this](const int idx) {
-      donePopupShown_ = false;
-      bleshare::clearCompletedState();
-      exitAfterBackgroundSession(/*openLibrary=*/idx == 1);
-    });
-  } else {
-    const char* opts[2] = {tr(STR_BLE_SHARE_OPEN_LIBRARY), tr(STR_BACK)};
-    popup_.showMessage(titleBuf, body.c_str(), opts, 2, 0, [this](const int idx) {
-      donePopupShown_ = false;
-      bleshare::clearCompletedState();
-      if (idx == 0) {
-        activityManager.goToLibrary();
-      } else if (backgroundLaunch_) {
-        exitAfterBackgroundSession(false);
-      } else {
-        view_ = View::Menu;
-        rebuildMenuRows();
-        requestUpdate();
-      }
-    });
-  }
+  const char* opts[2] = {tr(STR_BLE_SHARE_OPEN_LIBRARY), tr(STR_BACK)};
+  popup_.showMessage(titleBuf, body.c_str(), opts, 2, 0, [this](const int idx) {
+    donePopupShown_ = false;
+    bleshare::clearCompletedState();
+    if (idx == 0) {
+      bleshare::stopPairingMode();
+      bleshare::stopRadio();
+      activityManager.goToLibrary();
+    } else {
+      view_ = View::Menu;
+      rebuildMenuRows();
+      requestUpdate();
+    }
+  });
   donePopupShown_ = true;
 }
 
-void BleShareActivity::exitAfterBackgroundSession(const bool openLibrary) {
-  if (openLibrary) {
-    activityManager.goToLibrary();
+void BleShareActivity::syncRadioStatus() {
+  const unsigned long now = millis();
+  if (now - lastStatusPollMs_ < 250) return;
+  const bool running = bleshare::ownsRadio();
+  const bool connected = bleshare::hasLiveLink();
+  if (running == uiRadioRunning_ && connected == uiLinkConnected_) {
+    lastStatusPollMs_ = now;
     return;
   }
-  if (!returnBookPath_.empty()) {
-    bleshare::stopRadio();
-    activityManager.goToReader(returnBookPath_, true);
-    return;
-  }
-  activityManager.goHome();
+  RenderLock lock(RenderLock::Mode::Try);
+  if (!lock.ownsLock()) return;
+  lastStatusPollMs_ = now;
+  uiRadioRunning_ = running;
+  uiLinkConnected_ = connected;
+  requestUpdate();
 }
 
 void BleShareActivity::syncSessionToUi() {
@@ -334,9 +346,7 @@ void BleShareActivity::syncSessionToUi() {
       break;
     case xpbt::SessionState::Deferred:
       bleshare::clearCompletedState();
-      if (backgroundLaunch_) {
-        exitAfterBackgroundSession(false);
-      } else if (view_ != View::Menu) {
+      if (view_ != View::Menu) {
         view_ = View::Menu;
         requestUpdate();
       }
@@ -366,22 +376,14 @@ bool BleShareActivity::handleCustomInput() {
       incomingPopupShown_ = false;
       bleshare::respondToOffer(false);
       bleshare::clearCompletedState();
-      if (backgroundLaunch_) {
-        exitAfterBackgroundSession(false);
-      } else {
-        view_ = View::Menu;
-        requestUpdate();
-      }
+      view_ = View::Menu;
+      requestUpdate();
     } else if (wasOpen && !popup_.isActive() && donePopupShown_) {
       donePopupShown_ = false;
       bleshare::clearCompletedState();
-      if (backgroundLaunch_) {
-        exitAfterBackgroundSession(false);
-      } else {
-        view_ = View::Menu;
-        rebuildMenuRows();
-        requestUpdate();
-      }
+      view_ = View::Menu;
+      rebuildMenuRows();
+      requestUpdate();
     }
     return handled;
   }
@@ -411,33 +413,24 @@ void BleShareActivity::onBackButton() {
   }
   if (view_ == View::Transferring) {
     bleshare::cancelTransfer();
-    if (backgroundLaunch_) {
-      exitAfterBackgroundSession(false);
-    } else {
-      view_ = View::Menu;
-      requestUpdate();
-    }
+    view_ = View::Menu;
+    requestUpdate();
     return;
   }
   if (view_ == View::Error || view_ == View::Done) {
     bleshare::clearCompletedState();
-    if (backgroundLaunch_) {
-      exitAfterBackgroundSession(false);
-    } else {
-      view_ = View::Menu;
-      rebuildMenuRows();
-      requestUpdate();
-    }
+    view_ = View::Menu;
+    rebuildMenuRows();
+    requestUpdate();
     return;
   }
-  if (backgroundLaunch_) {
-    exitAfterBackgroundSession(false);
-    return;
-  }
+  bleshare::stopPairingMode();
+  bleshare::stopRadio();
   finish();
 }
 
 void BleShareActivity::loop() {
+  syncRadioStatus();
   syncSessionToUi();
   UiListActivity::loop();
 }
@@ -546,9 +539,7 @@ void BleShareActivity::render(RenderLock&& lock) {
   drawChrome();
   switch (view_) {
     case View::Menu:
-      if (!backgroundLaunch_ || !popup_.isActive()) {
-        renderUi();
-      }
+      renderUi();
       break;
     case View::Pairing:
       renderPairingCard();

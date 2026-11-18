@@ -171,18 +171,17 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
   isApMode = (mode == NetworkMode::CREATE_HOTSPOT);
 
   if (mode == NetworkMode::BLE_SHARE) {
-    startActivityForResult(
-        std::make_unique<BleShareActivity>(renderer, mappedInput), [this](const ActivityResult&) {
-          state = WebServerActivityState::MODE_SELECTION;
-          startActivityForResult(std::make_unique<NetworkModeSelectionActivity>(renderer, mappedInput),
-                                 [this](const ActivityResult& result) {
-                                   if (result.isCancelled) {
-                                     onGoHome();
-                                   } else {
-                                     onNetworkModeSelected(std::get<NetworkModeResult>(result.data).mode);
-                                   }
-                                 });
-        });
+    startActivityForResult(std::make_unique<BleShareActivity>(renderer, mappedInput), [this](const ActivityResult&) {
+      state = WebServerActivityState::MODE_SELECTION;
+      startActivityForResult(std::make_unique<NetworkModeSelectionActivity>(renderer, mappedInput),
+                             [this](const ActivityResult& result) {
+                               if (result.isCancelled) {
+                                 onGoHome();
+                               } else {
+                                 onNetworkModeSelected(std::get<NetworkModeResult>(result.data).mode);
+                               }
+                             });
+    });
     return;
   }
 
@@ -240,7 +239,11 @@ void CrossPointWebServerActivity::onWifiSelectionComplete(const bool connected) 
     // Start the web server
     startWebServer();
   } else {
-    // User cancelled - go back to mode selection
+    // User cancelled - tear down STA WiFi so it doesn't stay active if switching to BLE Share.
+    if (WiFi.getMode() != WIFI_MODE_NULL) {
+      WiFi.disconnect(false);
+      WiFi.mode(WIFI_OFF);
+    }
     state = WebServerActivityState::MODE_SELECTION;
 
     startActivityForResult(std::make_unique<NetworkModeSelectionActivity>(renderer, mappedInput),
