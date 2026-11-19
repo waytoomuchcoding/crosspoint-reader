@@ -67,6 +67,10 @@ void EpubReaderMenuActivity::buildMenuItems(std::vector<MenuItem>& items, const 
                                             const bool hasBookmarks, const bool hasClippings, const bool isTxtOrMd) {
   items.clear();
   items.reserve(MAX_MENU_ITEMS);
+  const bool hasZhDict = Storage.exists("/zh/chars.bin");
+  if (SETTINGS.dictionaryName[0] != '\0' || hasZhDict) {
+    items.push_back({MenuAction::DICTIONARY, StrId::STR_LOOKUP});
+  }
   items.push_back({MenuAction::SELECT_CHAPTER, StrId::STR_SELECT_CHAPTER});
   if (hasFootnotes) {
     items.push_back({MenuAction::FOOTNOTES, StrId::STR_FOOTNOTES});
@@ -87,10 +91,6 @@ void EpubReaderMenuActivity::buildMenuItems(std::vector<MenuItem>& items, const 
   }
   if (bleturner::status().compiledIn && SETTINGS.ble.peerAddr[0] != '\0') {
     items.push_back({MenuAction::BLUETOOTH, StrId::STR_BT_PAGE_TURNER});
-  }
-  const bool hasZhDict = Storage.exists("/zh/chars.bin");
-  if (SETTINGS.dictionaryName[0] != '\0' || hasZhDict) {
-    items.push_back({MenuAction::DICTIONARY, StrId::STR_LOOKUP});
   }
   if (hasZhDict) {
     items.push_back({MenuAction::ZH_RUBY, StrId::STR_ZH_RUBY});

@@ -3,6 +3,7 @@
 #include <Epub/Page.h>
 #include <SdCardFont.h>
 #include <ZhDict.h>
+#include <ZhJump.h>
 
 #include <functional>
 #include <memory>
@@ -70,6 +71,8 @@ class ZhLookupActivity final : public Activity {
   struct Word {
     uint16_t first;
     uint8_t len;
+    uint8_t inDict;
+    uint32_t rank;
   };
   struct Reading {
     uint8_t hsk = 0;
@@ -125,9 +128,10 @@ class ZhLookupActivity final : public Activity {
 
   // Jump mode
   void startJump();
-  void pickBand(int band);
+  void nextJumpBatch();
+  void pickJump(uint8_t col);
   void undoJump();
-  void bandRange(int band, int& firstLine, int& lineCount) const;
+  void cancelJump();
 
   // Drawing
   void drawFrame();
@@ -135,6 +139,7 @@ class ZhLookupActivity final : public Activity {
   void drawPreview();
   void drawPopup();
   void drawJump();
+  void drawJumpButtonHints();
   int popupTop(int height) const;
   void cancel();
 
@@ -200,11 +205,9 @@ class ZhLookupActivity final : public Activity {
   int tabWidth = 0;
   uint32_t lastSavedEntry = UINT32_MAX;  // one record per word when it is reopened in a row
 
-  // Jump mode: a stack of (first line, line count) narrowings.
-  struct Band {
-    int first, count;
-  };
-  std::vector<Band> jumpStack;
+  // Jump mode: rarest-first visible words, paged in batches of 16.
+  std::vector<uint16_t> jumpOrder;
+  zh::JumpBatch jumpBatch;
   Focus jumpReturn = Focus::Cursor;
 
   Key keyLeft, keyRight, keyUp, keyDown, keyConfirm, keyBack;

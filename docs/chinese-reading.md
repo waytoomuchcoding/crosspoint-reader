@@ -127,24 +127,25 @@ Copy the `zh` folder (about 21 MB) to the root of the SD card.
 - **Settings > Reader > Zhuyin Position** switches between **Beside** (vertical
   column to the right of each character) and **Under** (horizontal line below
   each character).
-- For lookup, open the reader menu and choose **Look Up**, or set
-  **Settings > Controls > Long-press Menu** to **Dictionary** and hold Confirm.
+- For lookup, open the reader menu and choose **Look Up** (first in the menu),
+  or hold Confirm while reading to enter jump mode directly (unless
+  **Settings > Controls > Long-press Menu** is assigned to another action).
 
 Changing the threshold or position lays the chapter out again. Books whose
 language is Japanese or Korean never get zhuyin.
 
 ## Using lookup
 
-Open it from the reader menu (**Look Up**), or hold Confirm while reading
-(with **Settings > Controls > Long-press Menu** set to **Dictionary**) to
-start in jump mode.
+Open it from the reader menu (**Look Up**), or hold Confirm while reading to
+start directly in jump mode (unless **Settings > Controls > Long-press Menu** is
+set to another action).
 
 | Button | Cursor | Pop-up | Jump |
 | --- | --- | --- | --- |
-| ◀ / ▶ | Previous / next word (or character); hold to sweep | Previous / next page of readings | Band 3 / 4 |
+| ◀ / ▶ | Previous / next word (or character); hold to sweep | Previous / next page of readings | Column 3 / 4 |
 | Side buttons | Line up / down | Move the start one character | Undo / cancel |
-| Confirm | Open the pop-up; hold for jump mode | Next shorter word starting here | Band 2 |
-| Back | Leave lookup; hold to switch word / character cursor | Close the pop-up | Band 1 |
+| Confirm | Open the pop-up; hold for jump mode | Next shorter word starting here | Column 2; hold for next 16 rarest words |
+| Back | Leave lookup; hold to switch word / character cursor | Close the pop-up | Column 1 |
 
 - Held buttons repeat after 280 ms, then every 90 ms, and every 45 ms after
   1.2 s. Presses are applied at once and only the latest state is drawn.
@@ -154,8 +155,11 @@ start in jump mode.
   starting at the cursor.
 - The pop-up shows one tab per reading on the left; ◀ ▶ page through every
   reading and its senses in turn.
-- Jump mode splits the page's lines into four bands; pick bands until one
-  line is left, and the cursor lands on its first word.
+- Jump mode tags the 16 rarest words on the page with a joined 2-slice
+  4-column strip under each word's first character. Each slice mirrors the four
+  bottom buttons: press the top slice's column (it fills solid black to show
+  progress), then press the bottom slice's column to land directly on the word.
+  Hold Confirm again to cycle to the next 16 rarest words on the page.
 
 ### Saving looked-up words
 

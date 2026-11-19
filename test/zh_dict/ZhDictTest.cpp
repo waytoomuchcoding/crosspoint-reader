@@ -7,6 +7,7 @@
 
 #include "ZhDict.h"
 #include "ZhFlashTables.h"
+#include "ZhJump.h"
 
 namespace {
 
@@ -430,6 +431,104 @@ TEST(ZhFlashTables, LiveDictionaryMatchesReferenceWhenEnvSet) {
     out << joined;
   }
   live.close();
+}
+
+TEST(ZhJump, RarestFirstBatchingAndTwoPressPick) {
+  static_assert(sizeof(zh::JumpBatch) <= 40, "JumpBatch must stay tiny on ESP32-C3");
+
+  // 20 visible words with varying ranks, including an unranked dict word and non-dict word.
+  std::vector<zh::JumpCandidate> cands;
+  for (uint16_t i = 0; i < 20; ++i) {
+    cands.push_back({i, static_cast<uint32_t>((i + 1) * 1000), 1});
+  }
+  cands[2].rank = zh::NO_RANK;  // unranked dictionary word -> rarest
+  cands[5].inDict = 0;          // non-dict word -> sorted after dictionary words
+  cands[5].rank = zh::NO_RANK;
+
+  std::vector<uint16_t> order;
+  zh::buildJumpOrder(cands, order);
+  ASSERT_EQ(order.size(), 20u);
+  EXPECT_EQ(order.front(), 2);  // unranked dict word first
+  EXPECT_EQ(order.back(), 5);   // non-dict word last
+
+  zh::JumpBatch batch;
+  batch.load(order, 0);
+  ASSERT_EQ(batch.count, 16);
+  EXPECT_EQ(batch.offset, 0);
+  EXPECT_EQ(batch.firstPress, -1);
+
+  // Targets within the batch must be sorted in reading order.
+  for (uint8_t i = 1; i < batch.count; ++i) {
+    EXPECT_LT(batch.targets[i - 1], batch.targets[i]);
+  }
+
+  // Every target in a full 16-word batch has a unique 2-slice code (col1, col2).
+  for (uint8_t i = 0; i < 16; ++i) {
+    const auto code = batch.codeFor(i);
+    EXPECT_EQ(code.slices, 2);
+    EXPECT_EQ(code.col1, i / 4);
+    EXPECT_EQ(code.col2, i % 4);
+  }
+
+  // Pick target 7 (col1 = 1, col2 = 3): 1st press narrows, 2nd press lands.
+  EXPECT_EQ(batch.pick(1), zh::JumpBatch::PICK_NARROWED);
+  EXPECT_EQ(batch.firstPress, 1);
+  EXPECT_EQ(batch.pick(3), batch.targets[7]);
+
+  // Undo clears firstPress before stepping back a batch.
+  EXPECT_TRUE(batch.undo(order));
+  EXPECT_EQ(batch.firstPress, -1);
+  EXPECT_FALSE(batch.undo(order));  // already at batch 0 -> exit jump mode
+
+  // Second hold cycles to the next batch (remaining 4 words), then wraps to 0.
+  EXPECT_EQ(batch.pick(2), zh::JumpBatch::PICK_NARROWED);
+  batch.nextBatch(order);
+  EXPECT_EQ(batch.offset, 16);
+  EXPECT_EQ(batch.count, 4);
+  EXPECT_EQ(batch.firstPress, -1);
+
+  // Batch of 4 words needs only 1 slice and lands on the first press.
+  for (uint8_t i = 0; i < 4; ++i) {
+    const auto code = batch.codeFor(i);
+    EXPECT_EQ(code.slices, 1);
+    EXPECT_EQ(code.col1, i);
+  }
+  EXPECT_EQ(batch.pick(2), batch.targets[2]);
+
+  // Undo from batch 1 returns to batch 0.
+  EXPECT_TRUE(batch.undo(order));
+  EXPECT_EQ(batch.offset, 0);
+  EXPECT_EQ(batch.count, 16);
+
+  // Wrap around from last batch back to batch 0.
+  batch.nextBatch(order);
+  EXPECT_EQ(batch.offset, 16);
+  batch.nextBatch(order);
+  EXPECT_EQ(batch.offset, 0);
+}
+
+TEST(ZhJump, BalancedGroupingForPartialBatch) {
+  std::vector<uint16_t> order = {10, 20, 30, 40, 50, 60};
+  zh::JumpBatch batch;
+  batch.load(order, 0);
+  ASSERT_EQ(batch.count, 6);
+
+  // 6 items across 4 buttons -> groups of (2, 2, 1, 1).
+  EXPECT_EQ(batch.codeFor(0).slices, 2);
+  EXPECT_EQ(batch.codeFor(1).slices, 2);
+  EXPECT_EQ(batch.codeFor(2).slices, 2);
+  EXPECT_EQ(batch.codeFor(3).slices, 2);
+  EXPECT_EQ(batch.codeFor(4).slices, 1);
+  EXPECT_EQ(batch.codeFor(5).slices, 1);
+
+  // Buttons 2 and 3 have 1 item each -> land immediately in 1 press.
+  EXPECT_EQ(batch.pick(2), 50);
+  EXPECT_EQ(batch.pick(3), 60);
+
+  // Button 0 has 2 items -> narrows, then invalid col 2 is NOOP, valid col 1 lands.
+  EXPECT_EQ(batch.pick(0), zh::JumpBatch::PICK_NARROWED);
+  EXPECT_EQ(batch.pick(2), zh::JumpBatch::PICK_NOOP);
+  EXPECT_EQ(batch.pick(1), 20);
 }
 
 }  // namespace

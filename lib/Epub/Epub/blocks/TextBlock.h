@@ -155,6 +155,7 @@ class TextBlock final : public Block {
   bool hasRuby() const;
   // Includes packed zhuyin codes (see ZhDict.h).
   bool hasAnyRuby() const;
+  bool hasHan() const;
   // Byte span [hanStart, hanEnd) of the first Han character of word i (0,0 if none).
   void zhRubySpan(uint16_t i, size_t& hanStart, size_t& hanEnd) const;
   int getRubyShift(int ascender) const { return hasRuby() ? (ascender / 2) : 0; }

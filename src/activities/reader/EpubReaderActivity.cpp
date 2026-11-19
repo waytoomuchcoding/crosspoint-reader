@@ -298,6 +298,7 @@ bool EpubReaderActivity::loadBook() {
     return false;
   }
   epub = std::move(loadedEpub);
+  zhDictAvailable = zh::hasSharedDictFiles();
   vocabularyMetadata.reset();
 
   ImageBlock::clearRenderFailures();
@@ -1008,8 +1009,12 @@ void EpubReaderActivity::loop() {
           openFootnoteSelect(false);
         }
         return;
-      case CrossPointSettings::LP_MENU_READER_MENU:
       case CrossPointSettings::LP_MENU_DISABLED:
+        if (zhDictAvailable && openZhLookup(true)) {
+          return;
+        }
+        break;
+      case CrossPointSettings::LP_MENU_READER_MENU:
       default:
         break;
     }
@@ -1496,8 +1501,16 @@ unsigned long EpubReaderActivity::confirmLongPressThreshold() const {
       return ReaderUtils::BOOKMARK_HOLD_MS;
     case CrossPointSettings::LP_MENU_KOSYNC:
       return KOREADER_STORE.hasCredentials() ? ReaderUtils::GO_HOME_MS : 0;
-    case CrossPointSettings::LP_MENU_READER_MENU:
     case CrossPointSettings::LP_MENU_DISABLED:
+      if (zhDictAvailable && epub) {
+        const std::string& lang = epub->getLanguage();
+        if (lang.rfind("ja", 0) != 0 && lang.rfind("ko", 0) != 0 &&
+            (lang.rfind("zh", 0) == 0 || SETTINGS.dictionaryName[0] == '\0')) {
+          return ReaderUtils::BOOKMARK_HOLD_MS;
+        }
+      }
+      return 0;
+    case CrossPointSettings::LP_MENU_READER_MENU:
     default:
       return 0;
   }

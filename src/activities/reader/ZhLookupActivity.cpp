@@ -368,14 +368,25 @@ void ZhLookupActivity::segment() {
       const size_t n = std::min(end - a, zh::MAX_RUN);
       const size_t base = a;
       const bool ok = zh::segmentRun(dict, cps.data() + base, n, [&](const zh::Segment& seg) {
-        words.push_back({static_cast<uint16_t>(base + seg.start), seg.len});
+        words.push_back(
+            {static_cast<uint16_t>(base + seg.start), seg.len, static_cast<uint8_t>(seg.inDict ? 1 : 0), seg.rank});
       });
       if (!ok) {
-        for (size_t k = 0; k < n; ++k) words.push_back({static_cast<uint16_t>(base + k), 1});
+        for (size_t k = 0; k < n; ++k) {
+          words.push_back({static_cast<uint16_t>(base + k), 1, 0, zh::NO_RANK});
+        }
       }
       a += n;
     }
   }
+  std::vector<zh::JumpCandidate> candidates;
+  candidates.reserve(words.size());
+  for (size_t w = 0; w < words.size(); ++w) {
+    if (wordVisible(words[w])) {
+      candidates.push_back({static_cast<uint16_t>(w), words[w].rank, words[w].inDict});
+    }
+  }
+  zh::buildJumpOrder(candidates, jumpOrder);
 }
 
 // ---------------------------------------------------------------------------
@@ -705,48 +716,45 @@ void ZhLookupActivity::buildPreview() {
 }
 
 // ---------------------------------------------------------------------------
-// Jump mode (DESIGN 6)
+// Jump mode (2-press 4-column button-slice jump to rarest words)
 
 void ZhLookupActivity::startJump() {
-  if (hanLines.empty()) return;
+  if (jumpOrder.empty()) return;
   jumpReturn = focus == Focus::Jump ? Focus::Cursor : focus;
-  focus = Focus::Jump;
-  jumpStack.clear();
-  jumpStack.push_back({0, static_cast<int>(hanLines.size())});
-}
-
-void ZhLookupActivity::bandRange(const int band, int& first, int& count) const {
-  // DESIGN 6.2: g = min(4, n) groups; the first n mod g get one extra line.
-  const Band& top = jumpStack.back();
-  const int n = top.count;
-  const int g = std::min(4, n);
-  first = top.first;
-  for (int b = 0; b < band && b < g; ++b) first += n / g + (b < n % g ? 1 : 0);
-  count = band < g ? n / g + (band < n % g ? 1 : 0) : 0;
-}
-
-void ZhLookupActivity::pickBand(const int band) {
-  int first, count;
-  bandRange(band, first, count);
-  if (count <= 0) return;
-  if (count > 1) {
-    jumpStack.push_back({first, count});
+  jumpBatch.load(jumpOrder, 0);
+  if (jumpBatch.count == 1) {
+    const uint16_t w = jumpBatch.targets[0];
+    cursor = charMode ? static_cast<int>(std::max<size_t>(words[w].first, firstOn)) : static_cast<int>(w);
+    jumpBatch.clear();
+    focus = Focus::Cursor;
     return;
   }
-  // One line left: the cursor lands on its first word.
-  const uint16_t line = hanLines[first];
-  for (size_t i = firstOn; i < endOn; ++i) {
-    if (chars[i].line != line) continue;
-    cursor = charMode ? static_cast<int>(i) : wordContaining(i);
-    break;
-  }
-  jumpStack.clear();
+  focus = Focus::Jump;
+}
+
+void ZhLookupActivity::nextJumpBatch() {
+  if (jumpOrder.empty()) return;
+  jumpBatch.nextBatch(jumpOrder);
+}
+
+void ZhLookupActivity::pickJump(const uint8_t col) {
+  const int picked = jumpBatch.pick(col);
+  if (picked < 0) return;  // PICK_NOOP or PICK_NARROWED
+  const uint16_t w = static_cast<uint16_t>(picked);
+  cursor = charMode ? static_cast<int>(std::max<size_t>(words[w].first, firstOn)) : static_cast<int>(w);
+  jumpBatch.clear();
   focus = Focus::Cursor;
 }
 
 void ZhLookupActivity::undoJump() {
-  if (!jumpStack.empty()) jumpStack.pop_back();
-  if (jumpStack.empty()) focus = jumpReturn;
+  if (!jumpBatch.undo(jumpOrder)) {
+    cancelJump();
+  }
+}
+
+void ZhLookupActivity::cancelJump() {
+  jumpBatch.clear();
+  focus = jumpReturn;
 }
 
 // ---------------------------------------------------------------------------
@@ -899,30 +907,98 @@ void ZhLookupActivity::drawPopup() {
 }
 
 void ZhLookupActivity::drawJump() {
-  if (jumpStack.empty()) return;
-  const int width = renderer.getScreenWidth();
-  const int g = std::min(4, jumpStack.back().count);
-  const char* labels[] = {"1", "2", "3", "4"};
-  for (int b = 0; b < g; ++b) {
-    int first, count;
-    bandRange(b, first, count);
-    const int top = lineTops[hanLines[first]];
-    const int bottom = lineTops[hanLines[first + count - 1]] + lineHeight;
-    // Margin bar and label (DESIGN 6.1).
-    renderer.fillRect(0, top + 2, 4, bottom - top - 4, true);
-    const int labelH = renderer.getLineHeight(UI_10_FONT_ID);
-    const int labelW = renderer.getTextWidth(UI_10_FONT_ID, labels[b]) + 8;
-    const int ly = top + (bottom - top - labelH) / 2;
-    renderer.fillRect(0, ly, labelW, labelH, true);
-    renderer.drawText(UI_10_FONT_ID, 4, ly, labels[b], false);
-    // Dashed rule between bands.
-    if (b + 1 < g) {
-      int nextFirst, nextCount;
-      bandRange(b + 1, nextFirst, nextCount);
-      const int ruleY = (bottom + lineTops[hanLines[nextFirst]]) / 2;
-      for (int dx = 0; dx < width; dx += 10) renderer.fillRect(dx, ruleY, 6, 2, true);
+  if (jumpBatch.count == 0) return;
+  const int screenW = renderer.getScreenWidth();
+  const int screenH = renderer.getScreenHeight();
+  const int barTop = screenH - UITheme::getInstance().getMetrics().buttonHintsHeight - 4;
+  const bool underRuby = zh::rubyUnderLine();
+
+  for (uint8_t i = 0; i < jumpBatch.count; ++i) {
+    const auto code = jumpBatch.codeFor(i);
+    if (jumpBatch.firstPress >= 0 && code.col1 != static_cast<uint8_t>(jumpBatch.firstPress)) continue;
+
+    const Word& w = words[jumpBatch.targets[i]];
+    const size_t anchorIdx = std::max<size_t>(w.first, firstOn);
+    if (anchorIdx >= endOn) continue;
+    const CharBox& c = chars[anchorIdx];
+
+    int sw = std::clamp<int>(c.charW, 24, 36);
+    sw = (sw / 4) * 4;
+    const int rowH = (c.h >= 28) ? 3 : 2;
+    const int totalH = code.slices * (rowH + 1) + 1;
+
+    int sx = c.x;
+    if (sx < 2) sx = 2;
+    if (sx + sw > screenW - 2) sx = screenW - 2 - sw;
+
+    // Under-character ruby mode reserves dedicated space below each line;
+    // otherwise sit flush above the next line, borrowing 1-3px from the char bottom.
+    int sy = underRuby ? (c.y + c.h + 1) : (c.y + c.h - (rowH >= 3 ? 3 : 1));
+    if (sy + totalH > barTop) sy = barTop - totalH;
+    if (sy < 1) sy = 1;
+
+    // 1px white halo + 1px black outer frame, joined rows with shared 1px divider.
+    renderer.fillRect(sx - 1, sy - 1, sw + 2, totalH + 2, false);
+    renderer.drawRect(sx, sy, sw, totalH, true);
+
+    const int cellW = sw / 4;
+    for (uint8_t r = 0; r < code.slices; ++r) {
+      const int ry = sy + 1 + r * (rowH + 1);
+      if (r + 1 < code.slices) {
+        renderer.drawLine(sx, ry + rowH, sx + sw - 1, ry + rowH, true);
+      }
+      if (r == 0 && jumpBatch.firstPress >= 0) {
+        // Completed first press: fill the entire top slice solid black.
+        renderer.fillRect(sx + 1, ry, sw - 2, rowH, true);
+      } else {
+        const uint8_t activeCol = (r == 0) ? code.col1 : code.col2;
+        for (uint8_t col = 0; col < 4; ++col) {
+          const int cx = sx + col * cellW;
+          const int cw = (col == 3) ? (sw - col * cellW) : cellW;
+          if (col > 0) renderer.drawLine(cx, ry, cx, ry + rowH - 1, true);
+          if (col == activeCol) renderer.fillRect(cx, ry, cw, rowH, true);
+        }
+      }
     }
   }
+}
+
+void ZhLookupActivity::drawJumpButtonHints() {
+  if (mappedInput.hasTouch()) return;
+  const auto labels = mappedInput.mapLabels("0", "1", "2", "3");
+
+  const GfxRenderer::Orientation orig = renderer.getOrientation();
+  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
+  const int pageH = renderer.getScreenHeight();
+  const int btnH = UITheme::getInstance().getMetrics().buttonHintsHeight;
+  constexpr int btnW = 80;
+  constexpr int cornerR = 8;
+  constexpr int narrowPos[] = {58, 146, 254, 342};
+  constexpr int widePos[] = {65, 157, 291, 383};
+  const int* pos = renderer.getScreenWidth() >= 528 ? widePos : narrowPos;
+  const char* slots[] = {labels.btn1, labels.btn2, labels.btn3, labels.btn4};
+
+  constexpr int iconW = 48;
+  constexpr int iconH = 10;
+  constexpr int cellW = iconW / 4;
+  for (int i = 0; i < 4; ++i) {
+    if (!slots[i] || slots[i][0] < '0' || slots[i][0] > '3') continue;
+    const int activeCol = slots[i][0] - '0';
+    const int bx = pos[i];
+    const int by = pageH - btnH;
+    renderer.fillRoundedRect(bx, by, btnW, btnH, cornerR, Color::White);
+    renderer.drawRoundedRect(bx, by, btnW, btnH, 1, cornerR, true, true, false, false, true);
+    const int ix = bx + (btnW - iconW) / 2;
+    const int iy = by + (btnH - iconH) / 2;
+    renderer.fillRect(ix, iy, iconW, iconH, false);
+    renderer.drawRect(ix, iy, iconW, iconH, true);
+    for (int col = 0; col < 4; ++col) {
+      const int cx = ix + col * cellW;
+      if (col > 0) renderer.drawLine(cx, iy, cx, iy + iconH - 1, true);
+      if (col == activeCol) renderer.fillRect(cx, iy, cellW, iconH, true);
+    }
+  }
+  renderer.setOrientation(orig);
 }
 
 void ZhLookupActivity::drawFrame() {
@@ -946,8 +1022,7 @@ void ZhLookupActivity::drawFrame() {
   const char* b3 = charMode ? tr(STR_ZH_CHAR) : tr(STR_ZH_WORD);
   const char* b4 = ">";
   if (focus == Focus::Jump) {
-    const auto labels = mappedInput.mapLabels("1", "2", "3", "4");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    drawJumpButtonHints();
     return;
   }
   if (focus == Focus::Popup) {
@@ -1096,13 +1171,14 @@ void ZhLookupActivity::handleInput() {
         }
         break;
       case Focus::Jump:
-        // DESIGN 6.1: Back, Confirm, ◀, ▶ pick bands 1-4 top to bottom.
-        if (back == PRESS) consume(keyBack), pickBand(0), changed = true;
-        if (confirm == PRESS) consume(keyConfirm), pickBand(1), changed = true;
-        if (left == PRESS) consume(keyLeft), pickBand(2), changed = true;
-        if (right == PRESS) consume(keyRight), pickBand(3), changed = true;
+        // Back, Confirm, ◀, ▶ pick columns 0..3; holding Confirm cycles to the next 16 rarest words.
+        if (back == PRESS) consume(keyBack), pickJump(0), changed = true;
+        if (confirm == RELEASE_SHORT) pickJump(1), changed = true;
+        if (confirm == HOLD) nextJumpBatch(), changed = true;
+        if (left == PRESS) consume(keyLeft), pickJump(2), changed = true;
+        if (right == PRESS) consume(keyRight), pickJump(3), changed = true;
         if (up == PRESS) consume(keyUp), undoJump(), changed = true;
-        if (down == PRESS) consume(keyDown), jumpStack.clear(), focus = jumpReturn, changed = true;
+        if (down == PRESS) consume(keyDown), cancelJump(), changed = true;
         break;
     }
     if (focus != wasFocus) {

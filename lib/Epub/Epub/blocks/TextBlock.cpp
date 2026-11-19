@@ -203,8 +203,22 @@ bool TextBlock::hasRuby() const {
 
 bool TextBlock::hasAnyRuby() const { return zhRubyCount > 0 || hasRuby(); }
 
+bool TextBlock::hasHan() const {
+  const uint16_t count = wordCount();
+  for (uint16_t i = 0; i < count; ++i) {
+    const auto* p = reinterpret_cast<const unsigned char*>(wordText(i));
+    while (const uint32_t cp = utf8NextCodepoint(&p)) {
+      if (zh::isHan(cp)) return true;
+    }
+  }
+  return false;
+}
+
 int TextBlock::getRubyUnderHeight(const GfxRenderer& renderer, const int lineFontId) const {
-  if (!zh::rubyUnderLine() || zhRubyCount == 0) return 0;
+  if (!zh::rubyUnderLine()) return 0;
+  // When under-character ruby is active, give every Chinese line the same ruby
+  // spacing so line pitch stays uniform even on lines with no rare words.
+  if (zhRubyCount == 0 && (!zh::rubyThreshold() || !hasHan())) return 0;
   const int em = renderer.getTextAdvanceX(lineFontId, zh::EM_PROBE, EpdFontFamily::REGULAR, 0);
   return zh::rubyUnderHeight(em);
 }
