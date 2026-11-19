@@ -194,6 +194,7 @@ size_t g_rxCount = 0;
 std::atomic<bool> g_peerConnected{false};
 std::atomic<bool> g_peerDisconnectEdge{false};
 std::atomic<uint16_t> g_peerMtu{23};
+std::atomic<uint16_t> g_peerConnHandle{BLE_HS_CONN_HANDLE_NONE};
 
 NimBLEServer* g_server = nullptr;
 NimBLECharacteristic* g_rxChar = nullptr;
@@ -225,12 +226,14 @@ size_t popRxBytes(uint8_t* out, const size_t maxLen) {
 
 class ShareServerCallbacks final : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer*, NimBLEConnInfo& connInfo) override {
+    g_peerConnHandle.store(connInfo.getConnHandle(), std::memory_order_release);
     g_peerMtu.store(connInfo.getMTU(), std::memory_order_release);
     g_peerConnected.store(true, std::memory_order_release);
   }
 
   void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override {
     g_peerConnected.store(false, std::memory_order_release);
+    g_peerConnHandle.store(BLE_HS_CONN_HANDLE_NONE, std::memory_order_release);
     g_peerDisconnectEdge.store(true, std::memory_order_release);
     if (g_radioRunning.load(std::memory_order_acquire) && NimBLEDevice::isInitialized()) {
       NimBLEDevice::startAdvertising();
@@ -292,6 +295,7 @@ bool startTransport(const bool fastAdv) {
   g_rxHead = g_rxTail = g_rxCount = 0;
   portEXIT_CRITICAL(&g_rxMux);
   g_peerConnected.store(false, std::memory_order_release);
+  g_peerConnHandle.store(BLE_HS_CONN_HANDLE_NONE, std::memory_order_release);
   g_peerDisconnectEdge.store(false, std::memory_order_release);
   g_peerMtu.store(23, std::memory_order_release);
 
@@ -375,6 +379,7 @@ void stopTransport() {
     NimBLEDevice::deinit(true);
   }
   g_peerConnected.store(false, std::memory_order_release);
+  g_peerConnHandle.store(BLE_HS_CONN_HANDLE_NONE, std::memory_order_release);
   g_peerDisconnectEdge.store(false, std::memory_order_release);
   portENTER_CRITICAL(&g_rxMux);
   g_rxHead = g_rxTail = g_rxCount = 0;
@@ -387,11 +392,34 @@ bool transportConnected() { return g_peerConnected.load(std::memory_order_acquir
 bool transportSend(const uint8_t* data, const size_t len) {
   if (!g_radioRunning.load(std::memory_order_acquire) || !g_txChar || !transportConnected() || !data) return false;
   const uint16_t mtu = g_peerMtu.load(std::memory_order_acquire);
-  const size_t maxSlice = mtu > 6 ? static_cast<size_t>(mtu - 3) : 20;
+  // Cap at 244 bytes so each notification fits in a single 251-byte BLE DLE LL PDU
+  // (244 + 3 ATT + 4 L2CAP = 251) without splitting across multiple ACL buffers.
+  const size_t maxSlice = mtu > 6 ? std::min<size_t>(static_cast<size_t>(mtu - 3), 244) : 20;
+  constexpr unsigned long kSliceRetryTimeoutMs = 3000;
   size_t off = 0;
   while (off < len) {
     const size_t slice = std::min(len - off, maxSlice);
-    if (!g_txChar->notify(data + off, slice)) {
+    bool sent = false;
+    const unsigned long startMs = millis();
+    unsigned long backoffMs = 4;
+    while (g_radioRunning.load(std::memory_order_acquire) && g_txChar && transportConnected()) {
+      const uint16_t connHandle = g_peerConnHandle.load(std::memory_order_acquire);
+      if (connHandle == BLE_HS_CONN_HANDLE_NONE) break;
+      if (g_txChar->notify(data + off, slice, connHandle)) {
+        sent = true;
+        break;
+      }
+      if (static_cast<unsigned long>(millis() - startMs) >= kSliceRetryTimeoutMs) {
+        break;
+      }
+      // Yield to FreeRTOS so the NimBLE host/controller can drain in-flight mbufs and ACL buffers.
+      delay(backoffMs);
+      if (backoffMs < 20) backoffMs += 4;
+    }
+    if (!sent) {
+      LOG_ERR("BLESHARE", "BLE notify failed after %lums (off=%u/%u, slice=%u, mtu=%u, connected=%d)",
+              static_cast<unsigned long>(millis() - startMs), static_cast<unsigned>(off), static_cast<unsigned>(len),
+              static_cast<unsigned>(slice), static_cast<unsigned>(mtu), transportConnected() ? 1 : 0);
       return false;
     }
     off += slice;
