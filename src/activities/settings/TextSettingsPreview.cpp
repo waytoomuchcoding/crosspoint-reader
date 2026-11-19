@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "CrossPointSettings.h"
+#include "SdCardFontSystem.h"
 #include "fontIds.h"
 
 namespace textsettings {
@@ -31,7 +32,8 @@ CssTextAlign toCssAlign(uint8_t align) {
 
 constexpr const char* ZH_PREVIEW_TEXT = "天地玄黄，宇宙洪荒。日月盈昃，辰宿列张。寒来暑往，秋收冬藏。";
 
-const char* sampleTextForFont(const GfxRenderer& renderer, const int fontId) {
+const char* sampleTextForFont(const GfxRenderer& renderer, const int fontId, const bool previewChinese) {
+  if (previewChinese) return ZH_PREVIEW_TEXT;
   const auto it = renderer.getFontMap().find(fontId);
   if (it != renderer.getFontMap().end() && it->second.hasCodepoint(0x4E00)) {
     return ZH_PREVIEW_TEXT;
@@ -40,7 +42,7 @@ const char* sampleTextForFont(const GfxRenderer& renderer, const int fontId) {
 }
 
 // Lay the sample text out through the reader engine into layout.lines
-void relayout(PreviewLayout& layout, const GfxRenderer& renderer, int fontId, int textWidth) {
+void relayout(PreviewLayout& layout, const GfxRenderer& renderer, int fontId, int textWidth, bool previewChinese) {
   layout.lines.clear();
 
   BlockStyle style;
@@ -56,7 +58,7 @@ void relayout(PreviewLayout& layout, const GfxRenderer& renderer, int fontId, in
                     SETTINGS.paragraphIndentSpaces);
 
   // Feed one space-separated word at a time; addWord handles NFC/CJK/RTL/focus splitting
-  const char* text = sampleTextForFont(renderer, fontId);
+  const char* text = sampleTextForFont(renderer, fontId, previewChinese);
   std::string word;
   for (const char* p = text;; p++) {
     if (*p == ' ' || *p == '\0') {
@@ -83,7 +85,7 @@ void relayout(PreviewLayout& layout, const GfxRenderer& renderer, int fontId, in
 }  // namespace
 
 void renderPreview(const GfxRenderer& renderer, PreviewLayout& layout, int previewPadding, int labelGap, Rect bounds,
-                   const char* caption) {
+                   const char* caption, bool previewChinese) {
   const int top = bounds.y;
   const int height = bounds.height;
   const int left = bounds.x + previewPadding;
@@ -96,7 +98,8 @@ void renderPreview(const GfxRenderer& renderer, PreviewLayout& layout, int previ
   const int labelY = top + height - previewPadding - labelH;
   renderer.drawText(UI_10_FONT_ID, left, labelY, caption);
 
-  const int fontId = SETTINGS.getReaderFontId();
+  const int fontId = (previewChinese && sdFontSystem.getZhReaderFontId() != 0) ? sdFontSystem.getZhReaderFontId()
+                                                                               : SETTINGS.getReaderFontId();
   if (fontId == 0) return;
 
   const int lineH = renderer.getTextHeight(fontId);
@@ -107,17 +110,15 @@ void renderPreview(const GfxRenderer& renderer, PreviewLayout& layout, int previ
   if (textWidth <= 0) return;
 
   const float compression = SETTINGS.getReaderLineCompression();
+  const int baseFontLineH = renderer.getLineHeight(fontId);
   const int lineAdvance = std::max(1, renderer.getLineHeight(fontId, compression));
   const int paragraphGap = SETTINGS.extraParagraphSpacing ? lineAdvance / 2 : 0;
 
-  // Re-lay-out (and re-prewarm glyphs) only when a layout-affecting setting or the
-  // geometry changed; else reuse the cache. The prewarm inputs are (fontId, constant
-  // sample text, styleMask<-focusReading), all of which are key fields, so a matching
-  // key means an identical prewarm call. This relies on nothing else evicting the SD
-  // glyph cache while this activity is up — true today: the only evictor is
-  // FontCacheManager::PrewarmScope, used solely by the reader/dictionary activities.
+  const int activePt = previewChinese
+                           ? (SETTINGS.zhFontPointSize ? SETTINGS.zhFontPointSize : sdFontSystem.resolvedZhPointSize())
+                           : SETTINGS.fontPointSize;
   const PreviewKey key{.fontId = fontId,
-                       .fontPointSize = SETTINGS.fontPointSize,
+                       .fontPointSize = activePt,
                        .screenMargin = SETTINGS.screenMargin,
                        .textWidth = textWidth,
                        .lineCompression = compression,
@@ -129,12 +130,14 @@ void renderPreview(const GfxRenderer& renderer, PreviewLayout& layout, int previ
                        .focusReading = SETTINGS.focusReadingEnabled != 0,
                        .hyphenation = SETTINGS.hyphenationEnabled != 0,
                        .zhRuby = SETTINGS.zhRuby,
-                       .zhRubyStyle = SETTINGS.zhRubyStyle};
+                       .zhRubyStyle = SETTINGS.zhRubyStyle,
+                       .previewChinese = previewChinese};
   if (key != layout.key) {
     if (auto* fcm = renderer.getFontCacheManager()) {
-      fcm->prewarmCache(fontId, sampleTextForFont(renderer, fontId), SETTINGS.focusReadingEnabled ? 0x03 : 0x01);
+      fcm->prewarmCache(fontId, sampleTextForFont(renderer, fontId, previewChinese),
+                        SETTINGS.focusReadingEnabled ? 0x03 : 0x01);
     }
-    relayout(layout, renderer, fontId, textWidth);
+    relayout(layout, renderer, fontId, textWidth, previewChinese);
     layout.key = key;
   }
 
@@ -145,8 +148,7 @@ void renderPreview(const GfxRenderer& renderer, PreviewLayout& layout, int previ
     for (const auto& line : layout.lines) {
       const int rubyShift = line->getRubyShift(renderer.getFontAscenderSize(fontId));
       const int rubyUnder = line->getRubyUnderHeight(renderer, fontId);
-      const int unspacedGap = std::max(0, renderer.getLineHeight(fontId) - lineAdvance);
-      const int stepY = lineAdvance + rubyShift + (rubyUnder > 0 ? rubyUnder + unspacedGap : 0);
+      const int stepY = (rubyUnder > 0 ? std::max(lineAdvance, baseFontLineH + rubyUnder) : lineAdvance) + rubyShift;
       if (y + lineH + rubyShift + rubyUnder > textBottomLimit) return;
       line->render(renderer, fontId, textLeft, y);
       y += stepY;

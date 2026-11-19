@@ -18,7 +18,7 @@
 // names for the Font/Style tabs.)
 class TextSettingsActivity final : public UiTabListActivity {
  public:
-  enum class Tab : uint8_t { Family, Size, Layout, Style, Count };
+  enum class Tab : uint8_t { Family, Chinese, Layout, Style, Count };
 
   TextSettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const SdCardFontRegistry* registry,
                        Tab initialTab = Tab::Family);
@@ -57,9 +57,13 @@ class TextSettingsActivity final : public UiTabListActivity {
 
   void applyFamily(int listIndex);
   void applySize(int listIndex);
-  // Repopulates sizes_ (and currentSizeIndex_) from the active family's
-  // installed point sizes. Call after any family change.
+  void applyZhFamily(int listIndex);
+  void applyZhSize(int listIndex);
+  void openEnglishSizePopup();
+  void openChineseSizePopup();
+  // Repopulates sizes_ / zhSizes_ from the active family's installed point sizes.
   void rebuildSizeList();
+  void rebuildZhSizeList();
   void confirmLayoutRow(int row);
   void confirmStyleRow(int row);
   // Applies the row at the given list index for the active tab (Confirm and tap share this).
@@ -96,11 +100,16 @@ class TextSettingsActivity final : public UiTabListActivity {
   OptionPopup optionPopup_;
   std::vector<FontEntry> fonts_;
   std::vector<SizeEntry> sizes_;
+  std::vector<FontEntry> zhFonts_;
+  std::vector<SizeEntry> zhSizes_;
   textsettings::PreviewLayout previewLayout_;  // cached preview line layout; relaid only on setting/geometry change
 
   Tab tab_;
+  bool previewChinese_ = false;
   int currentFamilyIndex_ = 0;
   int currentSizeIndex_ = 0;
+  int currentZhFamilyIndex_ = 0;
+  int currentZhSizeIndex_ = 0;
 
   ThemeMetrics metrics_ = {};
   int afterHeader = 0;

@@ -202,8 +202,17 @@ inline int rubyUnderWidthWithStyle(uint32_t code, const RubyStyle st, const int 
   return designW * st.scale;
 }
 
+inline RubyStyle rubyUnderBaseStyle(int em) {
+  int curIdx = 0;
+  constexpr int nSteps = static_cast<int>(sizeof(RUBY_STEPS_BY_EM) / sizeof(RUBY_STEPS_BY_EM[0]));
+  for (int i = 0; i < nSteps; ++i) {
+    if (em >= RUBY_STEPS_BY_EM[i].minEm) curIdx = i;
+  }
+  return RUBY_STEPS_BY_EM[curIdx > 0 ? curIdx - 1 : 0].style;
+}
+
 inline RubyStyle rubyUnderStyle(uint32_t code, int em, int& outGap) {
-  const RubyStyle cur = rubyStyle(em);
+  const RubyStyle cur = rubyUnderBaseStyle(em);
   if (rubyUnderWidthWithStyle(code, cur, 1) <= em - 2 * cur.scale) {
     outGap = 1;
     return cur;
@@ -213,7 +222,8 @@ inline RubyStyle rubyUnderStyle(uint32_t code, int em, int& outGap) {
   for (int i = 0; i < nSteps; ++i) {
     if (em >= RUBY_STEPS_BY_EM[i].minEm) curIdx = i;
   }
-  for (int i = curIdx - 1; i >= 0; --i) {
+  const int startIdx = curIdx > 0 ? curIdx - 1 : 0;
+  for (int i = startIdx - 1; i >= 0; --i) {
     const RubyStyle st = RUBY_STEPS_BY_EM[i].style;
     if (rubyUnderWidthWithStyle(code, st, 1) <= em - 2 * st.scale) {
       outGap = 1;
@@ -234,13 +244,14 @@ inline int rubyUnderWidth(uint32_t code, int em) {
 inline int rubyUnderExtraWidth(uint32_t code, int em) {
   const int w = rubyUnderWidth(code, em);
   if (w == 0) return 0;
-  const int minCell = w + 2 * rubyStyle(em).scale;
+  const int minCell = w + 2 * detail::rubyUnderBaseStyle(em).scale;
   return minCell > em ? minCell - em : 0;
 }
 
 inline int rubyUnderHeight(int em) {
-  const RubyStyle st = rubyStyle(em);
-  return (detail::GLYPH_SETS[st.set].h + 6) * st.scale;
+  const RubyStyle st = detail::rubyUnderBaseStyle(em);
+  // 1px top gap (hugs character above) + glyph height + 3px bottom clearance.
+  return (detail::GLYPH_SETS[st.set].h + 4) * st.scale;
 }
 
 template <typename F>
@@ -273,7 +284,7 @@ void forEachRubyUnderPixel(uint32_t code, int em, int cellWidth, int lineHeight,
   if (tone >= 2 && tone <= 4) designW += gap + g.tones[tone - 2].w;
 
   int curX = (cellWidth - designW * s) / 2;
-  const int topY = lineHeight + 3 * s;
+  const int topY = lineHeight + 1 * s;
   if (tone == 5) {
     const detail::ToneMark& t = g.tones[3];
     const int ty = topY + ((g.h - t.h) / 2) * s;

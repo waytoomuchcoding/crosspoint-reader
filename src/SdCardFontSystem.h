@@ -69,6 +69,13 @@ class SdCardFontSystem {
   /// True when the active UI fonts (or their registered SD/TTF fallbacks) cover CJK ideographs.
   bool hasCjkUiFallback(const GfxRenderer& renderer) const;
 
+  /// Loaded Chinese reader/fallback font id (0 if no CJK SD font is installed).
+  int getZhReaderFontId() const { return loadedZhFontId_; }
+  const std::string& resolvedZhFamilyName() const { return resolvedZhFamilyName_; }
+  uint8_t resolvedZhPointSize() const { return resolvedZhPointSize_; }
+  /// True when a bitmap SD font family contains Han glyphs (probes U+4E00).
+  bool familyHasHan(const SdCardFontFamilyInfo& fam) const;
+
  private:
   // Load the active SD family at the built-in UI point sizes and register each
   // as a size-matched script fallback for the corresponding UI font, so book
@@ -84,8 +91,12 @@ class SdCardFontSystem {
   // in the manager); unloadCpfonts() frees them.
   bool uiOnlyFallbacks_ = false;
   uint8_t loadedReaderFallbackPt_ = 0;
+  uint8_t loadedZhFontPt_ = 0;
+  int loadedZhFontId_ = 0;
   std::string loadedUiFontFamily_;
   std::string loadedZhFontFamily_;
+  std::string resolvedZhFamilyName_;
+  uint8_t resolvedZhPointSize_ = 0;
   // SETTINGS.uiFontFamilyName: swap the built-in UI fonts for that SD family's
   // nearest sizes, keeping the built-ins to put back when SD fonts unload.
   void applyUiFontFamily(GfxRenderer& renderer);

@@ -27,6 +27,7 @@ struct PreviewKey {
   bool hyphenation = false;
   uint8_t zhRuby = 0;
   uint8_t zhRubyStyle = 0;
+  bool previewChinese = false;
   bool operator==(const PreviewKey&) const = default;
 };
 
@@ -42,6 +43,6 @@ struct PreviewLayout {
 // Draws the sample-text pane via the reader engine, reusing layout across redraws.
 // The caption is borrowed for this draw; only the sample layout is cached.
 void renderPreview(const GfxRenderer& renderer, PreviewLayout& layout, int previewPadding, int labelGap, Rect bounds,
-                   const char* caption);
+                   const char* caption, bool previewChinese = false);
 
 }  // namespace textsettings

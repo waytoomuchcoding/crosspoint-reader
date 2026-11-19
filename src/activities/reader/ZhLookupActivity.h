@@ -39,8 +39,8 @@ class ZhLookupActivity final : public Activity {
   using VocabularyFor = std::function<VocabularyContext(int pageIndex, uint32_t sourceOffset)>;
 
   ZhLookupActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, PageLoader loader, int pageIndex,
-                   int pageCount, int marginLeft, int marginTop, bool startInJump, PageChanged onPageChanged,
-                   VocabularyFor vocabularyFor)
+                   int pageCount, int marginLeft, int marginTop, bool startInJump, int bookFontId,
+                   PageChanged onPageChanged, VocabularyFor vocabularyFor)
       : Activity("ZhLookup", renderer, mappedInput),
         loadPage(std::move(loader)),
         onPageChanged(std::move(onPageChanged)),
@@ -49,7 +49,8 @@ class ZhLookupActivity final : public Activity {
         pageCount(pageCount),
         marginLeft(marginLeft),
         marginTop(marginTop),
-        startInJump(startInJump) {}
+        startInJump(startInJump),
+        bookFontId(bookFontId) {}
 
   void onEnter() override;
   void onExit() override;
@@ -161,6 +162,7 @@ class ZhLookupActivity final : public Activity {
   const int marginLeft;
   const int marginTop;
   const bool startInJump;
+  const int bookFontId = 0;
   int fontId = 0;
   int lineHeight = 0;
   int smallFont = 0;  // about half the reader size, for readings and definitions

@@ -479,6 +479,13 @@ void EpubReaderActivity::backgroundBuildTick() {
   }
 }
 
+int EpubReaderActivity::activeBookFontId() const {
+  if (epub && epub->getLanguage().rfind("zh", 0) == 0) {
+    if (const int zhId = sdFontSystem.getZhReaderFontId(); zhId != 0) return zhId;
+  }
+  return SETTINGS.getReaderFontId();
+}
+
 void EpubReaderActivity::openDictionaryWordSelect(const bool startInJump) {
   if (openZhLookup(startInJump)) return;
   if (SETTINGS.dictionaryName[0] == '\0') {
@@ -536,6 +543,7 @@ bool EpubReaderActivity::openZhLookup(const bool startInJump) {
   auto activity = makeUniqueNoThrow<ZhLookupActivity>(
       renderer, mappedInput, [this](const int index) { return section ? section->loadPage(index) : nullptr; },
       section->currentPage, section->pageCount, left + SETTINGS.screenMargin, top + SETTINGS.screenMargin, startInJump,
+      activeBookFontId(),
       [this](const int index) {
         if (section && index >= 0 && index < section->pageCount && index != section->currentPage) {
           section->currentPage = index;
@@ -828,7 +836,7 @@ void EpubReaderActivity::loop() {
           if (auto* fcm = renderer.getFontCacheManager()) {
             const auto t0 = millis();
             auto scope = fcm->createPrewarmScope();
-            p->render(renderer, SETTINGS.getReaderFontId(), 0, 0);
+            p->render(renderer, activeBookFontId(), 0, 0);
             scope.endScanAndPrewarm();
             LOG_DBG("ERS", "Idle prewarm: page %d in %lums", nextPage, millis() - t0);
           }
@@ -1333,21 +1341,23 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       break;
     }
     case EpubReaderMenuActivity::MenuAction::TEXT_SETTINGS: {
-      startActivityForResult(std::make_unique<TextSettingsActivity>(renderer, mappedInput, &sdFontSystem.registry(),
-                                                                    TextSettingsActivity::Tab::Family),
-                             [this](const ActivityResult&) {
-                               {
-                                 RenderLock lock;
-                                 if (section) {
-                                   rememberCurrentContentOffset();
-                                   cachedSpineIndex = currentSpineIndex;
-                                   cachedChapterTotalPageCount = section->pageCount;
-                                   nextPageNumber = section->currentPage;
-                                 }
-                                 section.reset();
-                               }
-                               openReaderMenu();
-                             });
+      const auto initialTab = (epub && epub->getLanguage().rfind("zh", 0) == 0) ? TextSettingsActivity::Tab::Chinese
+                                                                                : TextSettingsActivity::Tab::Family;
+      startActivityForResult(
+          std::make_unique<TextSettingsActivity>(renderer, mappedInput, &sdFontSystem.registry(), initialTab),
+          [this](const ActivityResult&) {
+            {
+              RenderLock lock;
+              if (section) {
+                rememberCurrentContentOffset();
+                cachedSpineIndex = currentSpineIndex;
+                cachedChapterTotalPageCount = section->pageCount;
+                nextPageNumber = section->currentPage;
+              }
+              section.reset();
+            }
+            openReaderMenu();
+          });
       break;
     }
     case EpubReaderMenuActivity::MenuAction::BLUETOOTH:
@@ -1861,7 +1871,8 @@ void EpubReaderActivity::renderBook() {
   buildViewportWidth = viewportWidth;
   buildViewportHeight = viewportHeight;
 
-  const ReaderRenderSpec renderSpec = SETTINGS.readerRenderSpec(viewportWidth, viewportHeight);
+  ReaderRenderSpec renderSpec = SETTINGS.readerRenderSpec(viewportWidth, viewportHeight);
+  renderSpec.fontId = activeBookFontId();
 
   if (!section) {
     const auto filepath = epub->getSpineItem(currentSpineIndex).href;
@@ -2258,7 +2269,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
                                         const int orientedMarginRight, const int orientedMarginBottom,
                                         const int orientedMarginLeft) {
   const auto t0 = millis();
-  const int fontId = SETTINGS.getReaderFontId();
+  const int fontId = activeBookFontId();
   ImageBlock::clearRenderFailures();
 
   struct PxcSlotGuard {
@@ -2517,9 +2528,10 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
 int EpubReaderActivity::clippingAtPoint(const Page& page, const int x, const int y) const {
   int top, right, bottom, left;
   renderer.getOrientedViewableTRBL(&top, &right, &bottom, &left);
-  const int fontId = SETTINGS.getReaderFontId();
-  const uint32_t signature =
-      readerRenderSpecSignature(SETTINGS.readerRenderSpec(buildViewportWidth, buildViewportHeight));
+  const int fontId = activeBookFontId();
+  ReaderRenderSpec spec = SETTINGS.readerRenderSpec(buildViewportWidth, buildViewportHeight);
+  spec.fontId = fontId;
+  const uint32_t signature = readerRenderSpecSignature(spec);
   uint16_t wordIndex = 0;
   for (const auto& element : page.elements) {
     if (element->getTag() != TAG_PageLine) continue;

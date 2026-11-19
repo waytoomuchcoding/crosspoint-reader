@@ -49,7 +49,7 @@ constexpr int HEADWORD_FONT_ID = 0x5A48574F;  // "ZHWO"; outside the FNV-hashed 
 void ZhLookupActivity::onEnter() {
   Activity::onEnter();
   if (auto* fcm = renderer.getFontCacheManager()) fcm->releaseSdFontCaches();
-  fontId = SETTINGS.getReaderFontId();
+  fontId = bookFontId != 0 ? bookFontId : SETTINGS.getReaderFontId();
   lineHeight = renderer.getLineHeight(fontId);
   // Readings and definitions use the reader family at about half size
   // (pixel fonts ship a 1x file next to the 2x reading size).

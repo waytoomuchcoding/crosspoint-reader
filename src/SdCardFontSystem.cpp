@@ -177,8 +177,9 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
 #endif
 
   const std::string& currentFamily = manager_.currentFamilyName();
-  const bool auxChanged =
-      (loadedUiFontFamily_ != SETTINGS.uiFontFamilyName) || (loadedZhFontFamily_ != SETTINGS.zhFontFamilyName);
+  const bool auxChanged = (loadedUiFontFamily_ != SETTINGS.uiFontFamilyName) ||
+                          (loadedZhFontFamily_ != SETTINGS.zhFontFamilyName) ||
+                          (loadedZhFontPt_ != SETTINGS.zhFontPointSize);
 
   if (wantedFamily[0] == '\0') {
     // Back on a built-in family, which exists only at BUILTIN_READER_POINT_SIZES:
@@ -367,16 +368,29 @@ void SdCardFontSystem::setupUiFallbacks(GfxRenderer& renderer) {
 
   // When the active reader font lacks CJK glyphs (built-in Noto Sans or a Latin
   // SD family), attach the preferred Chinese family at the nearest reading size
-  // so CJK books and passages render with Chinese glyphs instead of boxes.
+  // Resolve and load the Chinese reader/fallback font at its own configured
+  // point size (or nearest to the reader size when zhFontPointSize == 0).
+  loadedZhFontId_ = 0;
+  resolvedZhFamilyName_.clear();
+  resolvedZhPointSize_ = 0;
+  const uint8_t targetZhPt = SETTINGS.zhFontPointSize != 0 ? SETTINGS.zhFontPointSize : SETTINGS.fontPointSize;
   const int readerId = family ? manager_.getFontId(familyName) : SETTINGS.getReaderFontId();
   const auto readerIt = renderer.getFontMap().find(readerId);
   const bool readerHasHan = readerIt != renderer.getFontMap().end() && readerIt->second.hasCodepoint(0x4E00);
-  if (!readerHasHan) {
-    if (const auto* zhFam = findUiFallbackFamily(SETTINGS.fontPointSize, family)) {
-      if (const auto* f = zhFam->findNearestSize(SETTINGS.fontPointSize)) {
+  if (const auto* zhFam = findUiFallbackFamily(targetZhPt, nullptr)) {
+    if (const auto* f = zhFam->findNearestSize(targetZhPt)) {
+      int zhFontId = 0;
+      if (family && zhFam == family && f->pointSize == manager_.currentPointSize()) {
+        zhFontId = readerId;
+      } else {
         const int id = variantFontId(static_cast<int>(std::hash<std::string>{}(zhFam->name)), f->pointSize);
-        const int zhFontId = manager_.loadFamilyExtraSize(*zhFam, renderer, f->pointSize, id);
-        if (zhFontId != 0) {
+        zhFontId = manager_.loadFamilyExtraSize(*zhFam, renderer, f->pointSize, id);
+      }
+      if (zhFontId != 0) {
+        loadedZhFontId_ = zhFontId;
+        resolvedZhFamilyName_ = zhFam->name;
+        resolvedZhPointSize_ = f->pointSize;
+        if (!readerHasHan) {
           if (family) {
             renderer.setFallbackFont(readerId, zhFontId);
           } else {
@@ -393,6 +407,7 @@ void SdCardFontSystem::setupUiFallbacks(GfxRenderer& renderer) {
 
   loadedUiFontFamily_ = SETTINGS.uiFontFamilyName;
   loadedZhFontFamily_ = SETTINGS.zhFontFamilyName;
+  loadedZhFontPt_ = SETTINGS.zhFontPointSize;
   loadedReaderFallbackPt_ = SETTINGS.fontPointSize;
 }
 
@@ -499,10 +514,26 @@ int SdCardFontSystem::variantFontId(const int readerFontId, const uint8_t pointS
   return id != 0 ? id : 1;
 }
 
+bool SdCardFontSystem::familyHasHan(const SdCardFontFamilyInfo& fam) const {
+  if (fam.vector) return false;
+  const SdCardFontFileInfo* file = fam.findNearestSize(15);
+  if (!file) return false;
+  char path[SdCardFontFamilyInfo::PATH_BUFFER_SIZE];
+  if (!fam.filePath(*file, path, sizeof(path))) return false;
+  auto probe = makeUniqueNoThrow<SdCardFont>();
+  if (!probe || !probe->load(path)) return false;
+  const EpdFont* regular = probe->getEpdFont(0);
+  return regular && regular->hasCodepoint(0x4E00);
+}
+
 void SdCardFontSystem::unloadCpfonts(GfxRenderer& renderer) {
   cpfontVariants_.clear();  // the manager owns and frees the fonts themselves
   uiOnlyFallbacks_ = false;
   loadedReaderFallbackPt_ = 0;
+  loadedZhFontPt_ = 0;
+  loadedZhFontId_ = 0;
+  resolvedZhFamilyName_.clear();
+  resolvedZhPointSize_ = 0;
   manager_.unloadAll(renderer);
   restoreBuiltinUiFonts(renderer);
 }

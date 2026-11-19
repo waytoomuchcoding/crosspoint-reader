@@ -22,8 +22,8 @@
 namespace fui = freeink::ui;
 
 namespace {
-// Tab labels for Font | Size | Layout | Style.
-constexpr StrId TAB_NAME_IDS[] = {StrId::STR_FONT, StrId::STR_SIZE, StrId::STR_LAYOUT, StrId::STR_STYLE};
+// Tab labels for English | Chinese | Layout | Style.
+constexpr StrId TAB_NAME_IDS[] = {StrId::STR_ENGLISH, StrId::STR_CHINESE, StrId::STR_LAYOUT, StrId::STR_STYLE};
 
 constexpr StrId LAYOUT_ROW_NAME_IDS[] = {
     StrId::STR_LINE_SPACING,          StrId::STR_WORD_SPACING, StrId::STR_CHARACTER_SPACING, StrId::STR_EXTRA_SPACING,
@@ -80,31 +80,56 @@ void TextSettingsActivity::onEnter() {
   previewHeight = usableHeight * metrics_.previewHeightPercent / 100;
 
   fonts_.clear();
-  fonts_.reserve(CrossPointSettings::BUILTIN_FONT_COUNT + (registry_ ? registry_->getFamilyCount() : 0));
+  zhFonts_.clear();
   fonts_.push_back({I18N.get(StrId::STR_NOTO_SANS), true, static_cast<uint8_t>(CrossPointSettings::NOTOSANS)});
+  zhFonts_.push_back({I18N.get(StrId::STR_CLOCK_DST_AUTO), true, 0});
   if (registry_) {
     const auto& families = registry_->getFamilies();
     for (int i = 0; i < static_cast<int>(families.size()); i++) {
-      fonts_.push_back({families[i].name, false, static_cast<uint8_t>(CrossPointSettings::BUILTIN_FONT_COUNT + i)});
+      const uint8_t idx = static_cast<uint8_t>(CrossPointSettings::BUILTIN_FONT_COUNT + i);
+      if (sdFontSystem.familyHasHan(families[i])) {
+        zhFonts_.push_back({families[i].name, false, idx});
+      } else {
+        fonts_.push_back({families[i].name, false, idx});
+      }
+    }
+  }
+
+  currentFamilyIndex_ = 0;
+  if (SETTINGS.sdFontFamilyName[0] != '\0') {
+    for (int i = 1; i < static_cast<int>(fonts_.size()); ++i) {
+      if (fonts_[i].name == SETTINGS.sdFontFamilyName) {
+        currentFamilyIndex_ = i;
+        break;
+      }
+    }
+  }
+  currentZhFamilyIndex_ = 0;
+  if (SETTINGS.zhFontFamilyName[0] != '\0') {
+    for (int i = 1; i < static_cast<int>(zhFonts_.size()); ++i) {
+      if (zhFonts_[i].name == SETTINGS.zhFontFamilyName) {
+        currentZhFamilyIndex_ = i;
+        break;
+      }
     }
   }
 
   rebuildSizeList();
+  rebuildZhSizeList();
 
-  currentFamilyIndex_ = findCurrentFontIndex(registry_, SETTINGS.sdFontFamilyName, SETTINGS.fontFamily);
-  // Per-tab ring positions (0 = tab bar, 1..N = row). The base reset each
-  // tab's nav with followOnBuild armed, so each tab's first build shows its
-  // remembered selection (Family/Size open on the current item).
-  for (auto& n : tabNavs) n.selected = 1;  // default to the first list row
-  tabNavs[static_cast<int>(Tab::Family)].selected = currentFamilyIndex_ + 1;
-  tabNavs[static_cast<int>(Tab::Size)].selected = currentSizeIndex_ + 1;
-  tabNavs[static_cast<int>(tab_)].selected = 0;  // screen opens with the tab bar focused, not a list row
+  previewChinese_ = (tab_ == Tab::Chinese);
+  // Per-tab ring positions (0 = tab bar, 1..N = row). Row 0 in English/Chinese
+  // is the Size picker, followed by the font families.
+  for (auto& n : tabNavs) n.selected = 1;
+  tabNavs[static_cast<int>(Tab::Family)].selected = currentFamilyIndex_ + 2;
+  tabNavs[static_cast<int>(Tab::Chinese)].selected = currentZhFamilyIndex_ + 2;
+  tabNavs[static_cast<int>(tab_)].selected = 0;  // screen opens with the tab bar focused
 
   rebuildRowItems();
 }
 
 // Rebuilds rowItems_ (label + actionValue) for the active tab. Structural —
-// call only when tab_ or its backing data (fonts_/sizes_) changes, never from
+// call only when tab_ or its backing data (fonts_/zhFonts_) changes, never from
 // buildScreen(), which just refreshes rowValues_/rowItems_[].value in place.
 void TextSettingsActivity::rebuildRowItems() {
   const int count = listCount();
@@ -115,10 +140,10 @@ void TextSettingsActivity::rebuildRowItems() {
     fui::ListItem item;
     switch (tab_) {
       case Tab::Family:
-        item.label = fonts_[i].name.c_str();
+        item.label = (i == 0) ? I18N.get(StrId::STR_SIZE) : fonts_[i - 1].name.c_str();
         break;
-      case Tab::Size:
-        item.label = sizes_[i].name.c_str();
+      case Tab::Chinese:
+        item.label = (i == 0) ? I18N.get(StrId::STR_SIZE) : zhFonts_[i - 1].name.c_str();
         break;
       case Tab::Layout:
         item.label = I18N.get(LAYOUT_ROW_NAME_IDS[i]);
@@ -134,26 +159,38 @@ void TextSettingsActivity::rebuildRowItems() {
   }
 }
 
-// The selectable sizes belong to the active family, so this runs on entry and
-// again after every family change. A family change goes through ensureLoaded(),
-// which snaps SETTINGS.fontPointSize into the new family's set — but entry does
-// not, so the highlight is resolved by snapping rather than by exact match.
 void TextSettingsActivity::rebuildSizeList() {
-  const std::vector<uint8_t> points = readerFontPointSizes(registry_, SETTINGS.sdFontFamilyName);
-
-  // The stored size can still sit outside this family's set — e.g. the family
-  // was deleted while selected, or the card was swapped. Highlight the size the
-  // reader actually renders, which getReaderFontId() resolves the same way.
+  const char* famName = (currentFamilyIndex_ > 0 && currentFamilyIndex_ < static_cast<int>(fonts_.size()))
+                            ? fonts_[currentFamilyIndex_].name.c_str()
+                            : "";
+  const std::vector<uint8_t> points = readerFontPointSizes(registry_, famName);
   const uint8_t selectedPt = snapToNearestPointSize(points, SETTINGS.fontPointSize);
 
   sizes_.clear();
   sizes_.reserve(points.size());
   currentSizeIndex_ = 0;
   for (const uint8_t pt : points) {
-    // "pt" is deliberately not translated: it is the typographic unit symbol,
-    // written the same way in every language CrossPoint ships.
     if (pt == selectedPt) currentSizeIndex_ = static_cast<int>(sizes_.size());
-    sizes_.push_back({formatReaderFontSizeLabel(registry_, SETTINGS.sdFontFamilyName, pt), pt});
+    sizes_.push_back({formatReaderFontSizeLabel(registry_, famName, pt), pt});
+  }
+}
+
+void TextSettingsActivity::rebuildZhSizeList() {
+  const std::string& resolvedName = SETTINGS.zhFontFamilyName[0] != '\0' ? std::string(SETTINGS.zhFontFamilyName)
+                                                                         : sdFontSystem.resolvedZhFamilyName();
+  const char* famName = resolvedName.c_str();
+  zhSizes_.clear();
+  zhSizes_.push_back({I18N.get(StrId::STR_CLOCK_DST_AUTO), 0});
+  currentZhSizeIndex_ = 0;
+  if (famName[0] == '\0' || !registry_) return;
+  const std::vector<uint8_t> points = readerFontPointSizes(registry_, famName);
+  const uint8_t snappedPt =
+      SETTINGS.zhFontPointSize != 0 ? snapToNearestPointSize(points, SETTINGS.zhFontPointSize) : 0;
+  for (const uint8_t pt : points) {
+    if (snappedPt != 0 && pt == snappedPt) {
+      currentZhSizeIndex_ = static_cast<int>(zhSizes_.size());
+    }
+    zhSizes_.push_back({formatReaderFontSizeLabel(registry_, famName, pt), pt});
   }
 }
 
@@ -161,6 +198,8 @@ void TextSettingsActivity::onTabAction(const int index) {
   if (optionPopup_.isActive()) return;
   if (tab_ != static_cast<Tab>(index)) {
     tab_ = static_cast<Tab>(index);
+    if (tab_ == Tab::Family) previewChinese_ = false;
+    if (tab_ == Tab::Chinese) previewChinese_ = true;
     rebuildRowItems();
     auto& n = activeNav();
     n.selected = 0;          // tab taps land with the tab bar focused (legacy tap behavior)
@@ -220,10 +259,31 @@ void TextSettingsActivity::buildScreen(UiScreen& screen) {
   for (int i = 0; i < count; i++) {
     switch (tab_) {
       case Tab::Family:
-        rowValues_[i] = (i == currentFamilyIndex_) ? tr(STR_SELECTED) : "";
+        if (i == 0) {
+          rowValues_[i] = (currentSizeIndex_ >= 0 && currentSizeIndex_ < static_cast<int>(sizes_.size()))
+                              ? sizes_[currentSizeIndex_].name
+                              : "";
+        } else {
+          rowValues_[i] = (i - 1 == currentFamilyIndex_) ? tr(STR_SELECTED) : "";
+        }
         break;
-      case Tab::Size:
-        rowValues_[i] = (i == currentSizeIndex_) ? tr(STR_SELECTED) : "";
+      case Tab::Chinese:
+        if (i == 0) {
+          if (currentZhSizeIndex_ > 0 && currentZhSizeIndex_ < static_cast<int>(zhSizes_.size())) {
+            rowValues_[i] = zhSizes_[currentZhSizeIndex_].name;
+          } else {
+            const uint8_t resolvedPt = sdFontSystem.resolvedZhPointSize();
+            if (resolvedPt != 0) {
+              char buf[32];
+              snprintf(buf, sizeof(buf), "%s (%u pt)", I18N.get(StrId::STR_CLOCK_DST_AUTO), resolvedPt);
+              rowValues_[i] = buf;
+            } else {
+              rowValues_[i] = I18N.get(StrId::STR_CLOCK_DST_AUTO);
+            }
+          }
+        } else {
+          rowValues_[i] = (i - 1 == currentZhFamilyIndex_) ? tr(STR_SELECTED) : "";
+        }
         break;
       case Tab::Layout:
         rowValues_[i] = layoutValueText(i);
@@ -272,14 +332,32 @@ const char* TextSettingsActivity::confirmLabelText() const {
 void TextSettingsActivity::drawChrome() {
   GUI.drawHeader(renderer, UITheme::getInstance().getHeaderRect(renderer, true, false), tr(STR_TEXT_SETTINGS));
 
-  const char* familyName = (currentFamilyIndex_ >= 0 && currentFamilyIndex_ < static_cast<int>(fonts_.size()))
-                               ? fonts_[currentFamilyIndex_].name.c_str()
-                               : "";
-  const char* sizeName = (currentSizeIndex_ >= 0 && currentSizeIndex_ < static_cast<int>(sizes_.size()))
-                             ? sizes_[currentSizeIndex_].name.c_str()
-                             : "";
+  std::string familyName;
+  std::string sizeName;
+  if (previewChinese_) {
+    const std::string& resolvedFam = sdFontSystem.resolvedZhFamilyName();
+    familyName = !resolvedFam.empty()
+                     ? resolvedFam
+                     : ((currentZhFamilyIndex_ >= 0 && currentZhFamilyIndex_ < static_cast<int>(zhFonts_.size()))
+                            ? zhFonts_[currentZhFamilyIndex_].name
+                            : "");
+    const uint8_t resolvedPt =
+        SETTINGS.zhFontPointSize != 0 ? SETTINGS.zhFontPointSize : sdFontSystem.resolvedZhPointSize();
+    if (resolvedPt != 0) {
+      sizeName = formatReaderFontSizeLabel(registry_, familyName.c_str(), resolvedPt);
+    } else if (currentZhSizeIndex_ >= 0 && currentZhSizeIndex_ < static_cast<int>(zhSizes_.size())) {
+      sizeName = zhSizes_[currentZhSizeIndex_].name;
+    }
+  } else {
+    familyName = (currentFamilyIndex_ >= 0 && currentFamilyIndex_ < static_cast<int>(fonts_.size()))
+                     ? fonts_[currentFamilyIndex_].name
+                     : "";
+    sizeName = (currentSizeIndex_ >= 0 && currentSizeIndex_ < static_cast<int>(sizes_.size()))
+                   ? sizes_[currentSizeIndex_].name
+                   : "";
+  }
   char labelBuf[128];
-  snprintf(labelBuf, sizeof(labelBuf), "%s \"%s, %s\"", tr(STR_PREVIEW), familyName, sizeName);
+  snprintf(labelBuf, sizeof(labelBuf), "%s \"%s, %s\"", tr(STR_PREVIEW), familyName.c_str(), sizeName.c_str());
   const Rect safeArea = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
   const Rect previewBounds{safeArea.x, afterHeader, safeArea.width, previewHeight};
   const auto [savedX, savedY, savedWidth, savedHeight] = renderer.getClipRect();
@@ -289,7 +367,7 @@ void TextSettingsActivity::drawChrome() {
   const int clipBottom = std::min(previewBounds.y + previewBounds.height, savedY + savedHeight);
   renderer.setClipRect(clipLeft, clipTop, std::max(0, clipRight - clipLeft), std::max(0, clipBottom - clipTop));
   textsettings::renderPreview(renderer, previewLayout_, metrics_.previewPadding, metrics_.verticalSpacing,
-                              previewBounds, labelBuf);
+                              previewBounds, labelBuf, previewChinese_);
   renderer.setClipRect(savedX, savedY, savedWidth, savedHeight);
 }
 
@@ -329,32 +407,78 @@ void TextSettingsActivity::applyFamily(int listIndex) {
 
   if (currentFamilyIndex_ != listIndex) return;  // switch failed — keep the old size list
 
-  // The new family ships its own set of point sizes, and ensureLoaded() may have
-  // snapped the selection into it, so the Size tab's list and its nav position
-  // both have to be rebuilt.
   rebuildSizeList();
-  tabNavs[static_cast<int>(Tab::Size)].selected = currentSizeIndex_ + 1;
+}
+
+void TextSettingsActivity::applyZhFamily(int listIndex) {
+  RenderLock lock;
+  const auto& font = zhFonts_[listIndex];
+  if (font.isBuiltin) {
+    SETTINGS.zhFontFamilyName[0] = '\0';
+  } else {
+    strncpy(SETTINGS.zhFontFamilyName, font.name.c_str(), sizeof(SETTINGS.zhFontFamilyName) - 1);
+    SETTINGS.zhFontFamilyName[sizeof(SETTINGS.zhFontFamilyName) - 1] = '\0';
+  }
+  sdFontSystem.ensureLoaded(renderer);
+  currentZhFamilyIndex_ = listIndex;
+  rebuildZhSizeList();
+}
+
+void TextSettingsActivity::applyZhSize(int listIndex) {
+  RenderLock lock;
+  currentZhSizeIndex_ = listIndex;
+  SETTINGS.zhFontPointSize = zhSizes_[listIndex].pointSize;
+  sdFontSystem.ensureLoaded(renderer);
+}
+
+void TextSettingsActivity::openEnglishSizePopup() {
+  std::vector<const char*> labels;
+  labels.reserve(sizes_.size());
+  for (const auto& s : sizes_) labels.push_back(s.name.c_str());
+  optionPopup_.show(I18N.get(StrId::STR_SIZE), labels.data(), static_cast<int>(labels.size()), currentSizeIndex_,
+                    [this](int idx) {
+                      if (idx >= 0 && idx < static_cast<int>(sizes_.size()) && idx != currentSizeIndex_) {
+                        applySize(idx);
+                        SETTINGS.saveToFile();
+                        requestUpdate();
+                      }
+                    });
+  requestUpdate();
+}
+
+void TextSettingsActivity::openChineseSizePopup() {
+  std::vector<const char*> labels;
+  labels.reserve(zhSizes_.size());
+  for (const auto& s : zhSizes_) labels.push_back(s.name.c_str());
+  optionPopup_.show(I18N.get(StrId::STR_SIZE), labels.data(), static_cast<int>(labels.size()), currentZhSizeIndex_,
+                    [this](int idx) {
+                      if (idx >= 0 && idx < static_cast<int>(zhSizes_.size()) && idx != currentZhSizeIndex_) {
+                        applyZhSize(idx);
+                        SETTINGS.saveToFile();
+                        requestUpdate();
+                      }
+                    });
+  requestUpdate();
 }
 
 void TextSettingsActivity::activateRow(int row) {
   switch (tab_) {
     case Tab::Family:
-      if (row != currentFamilyIndex_) {
-        applyFamily(row);
-        // Persist immediately (like SettingsActivity's per-change saves): the
-        // parent's result callback only runs on a normal finish(), so relying
-        // on it loses the change when this screen is left via the home
-        // gesture/key or a sleep. Saved here, not inside applyFamily, so the
-        // SD write happens outside its RenderLock.
-        if (currentFamilyIndex_ == row) {
+      if (row == 0) {
+        openEnglishSizePopup();
+      } else if (row - 1 != currentFamilyIndex_) {
+        applyFamily(row - 1);
+        if (currentFamilyIndex_ == row - 1) {
           SETTINGS.saveToFile();
         }
         requestUpdate();
       }
       break;
-    case Tab::Size:
-      if (row != currentSizeIndex_) {
-        applySize(row);
+    case Tab::Chinese:
+      if (row == 0) {
+        openChineseSizePopup();
+      } else if (row - 1 != currentZhFamilyIndex_) {
+        applyZhFamily(row - 1);
         SETTINGS.saveToFile();
         requestUpdate();
       }
@@ -523,6 +647,8 @@ void TextSettingsActivity::switchTab(const int direction) {
   const bool onTabBar = ringPos() == 0;
   constexpr int count = static_cast<int>(Tab::Count);
   tab_ = static_cast<Tab>((static_cast<int>(tab_) + direction + count) % count);
+  if (tab_ == Tab::Family) previewChinese_ = false;
+  if (tab_ == Tab::Chinese) previewChinese_ = true;
   rebuildRowItems();
   auto& n = activeNav();
   if (onTabBar) n.selected = 0;
@@ -533,9 +659,9 @@ void TextSettingsActivity::switchTab(const int direction) {
 int TextSettingsActivity::listCount() const {
   switch (tab_) {
     case Tab::Family:
-      return static_cast<int>(fonts_.size());
-    case Tab::Size:
-      return static_cast<int>(sizes_.size());
+      return 1 + static_cast<int>(fonts_.size());
+    case Tab::Chinese:
+      return 1 + static_cast<int>(zhFonts_.size());
     case Tab::Layout:
       return static_cast<int>(LayoutRow::Count);
     case Tab::Style:

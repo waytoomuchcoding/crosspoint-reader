@@ -87,7 +87,7 @@ namespace {
 // v76: Explicit zhRubyStyle and zhFontFamilyHash in the section header; under-character
 //      zhuyin ruby layout and CJK fallback font changes invalidate cached sections.
 // v77: Sparse HTML <ruby> annotations and packed uint32_t Zhuyin codes in TextBlock.
-constexpr uint8_t SECTION_FILE_VERSION = 78;
+constexpr uint8_t SECTION_FILE_VERSION = 79;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects

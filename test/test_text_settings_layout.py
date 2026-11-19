@@ -113,7 +113,7 @@ struct UiTabListActivity {
   int tabPillMaxPad = 0, selected = 0;
   int tabCount() const { return 4; }
   const char* tabLabel(int index) const {
-    static const char* labels[] = {"Font", "Size", "Layout", "Style"};
+    static const char* labels[] = {"English", "Chinese", "Layout", "Style"};
     return labels[index];
   }
   virtual int activeTab() const = 0;
@@ -122,15 +122,20 @@ struct UiTabListActivity {
   void buildTabBar(UiScreen&);
 };
 struct TextSettingsActivity : UiTabListActivity {
-  enum class Tab { Family, Size, Layout, Style };
+  enum class Tab { Family, Chinese, Layout, Style };
   Tab tab_ = Tab::Layout;
+  bool previewChinese_ = false;
   int activeTab() const override { return static_cast<int>(tab_); }
   GfxRenderer renderer;
   ThemeMetrics metrics_;
   int afterHeader = 0, previewHeight = 0;
   struct Entry { std::string name; };
-  std::vector<Entry> fonts_{{"Bitter"}}, sizes_{{"12 pt"}};
-  int currentFamilyIndex_ = 0, currentSizeIndex_ = 0;
+  std::vector<Entry> fonts_{{"Bitter"}}, sizes_{{"12 pt"}}, zhFonts_{{"Auto"}}, zhSizes_{{"Auto"}};
+  int currentFamilyIndex_ = 0, currentSizeIndex_ = 0, currentZhFamilyIndex_ = 0, currentZhSizeIndex_ = 0;
+  struct { std::string resolvedZhFamilyName() const { return ""; } uint8_t resolvedZhPointSize() const { return 0; } } sdFontSystem;
+  struct { uint8_t zhFontPointSize = 0; } SETTINGS;
+  const void* registry_ = nullptr;
+  static std::string formatReaderFontSizeLabel(const void*, const char*, uint8_t pt) { return std::to_string(pt) + " pt"; }
   textsettings::PreviewLayout previewLayout_;
   std::vector<fui::ListItem> rowItems_;
   fui::ListNav nav;
@@ -401,7 +406,7 @@ int main() {
     for (auto orientation : {GfxRenderer::Portrait, GfxRenderer::PortraitInverted,
                              GfxRenderer::LandscapeClockwise, GfxRenderer::LandscapeCounterClockwise})
       for (const auto& metrics : {LyraMetrics::values, RoundedRaffMetrics::values})
-        for (Tab tab : {Tab::Family, Tab::Size, Tab::Layout, Tab::Style})
+        for (Tab tab : {Tab::Family, Tab::Chinese, Tab::Layout, Tab::Style})
           checkLayout(profile, orientation, metrics, tab);
   checkSharedPartialRows();
 }

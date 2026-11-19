@@ -390,6 +390,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // SD bitmap family used as CJK fallback in book text and UI when the active
   // font lacks Han glyphs (empty = Auto, preferring Unifont when installed).
   char zhFontFamilyName[32] = "";
+  // Point size for the Chinese font (0 = Auto / nearest to reader fontPointSize).
+  uint8_t zhFontPointSize = 0;
   // SD bitmap family drawn in place of the built-in UI fonts (menus, status
   // bar, buttons); empty = built-in. Each UI size takes the nearest file.
   char uiFontFamilyName[32] = "";

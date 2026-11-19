@@ -203,6 +203,7 @@ class EpubReaderActivity final : public ReaderActivity {
   void openFootnoteSelect(bool reopenMenuOnCancel);
   void openDictionaryWordSelect(bool startInJump = false);
   bool openZhLookup(bool startInJump = false);
+  int activeBookFontId() const;
   void fillVocabularySeries(VocabularyContext& vocabulary);
   // Selection to restore when returning from a dictionary lookup.
   ClipSelectionActivity::Selection pendingLookupSelection;

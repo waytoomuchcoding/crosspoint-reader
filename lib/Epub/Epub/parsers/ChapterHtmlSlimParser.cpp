@@ -1264,12 +1264,13 @@ void ChapterHtmlSlimParser::finishTableRow() {
       if (lineIndex < tableCellLines[column].size()) {
         const TextBlock& line = *tableCellLines[column][lineIndex];
         const int lineFontId = line.blockFontId(fontId);
+        const int baseFontLineH = renderer.getLineHeight(lineFontId);
         const int spacedHeight = renderer.getLineHeight(lineFontId, lineCompression);
-        const int unspacedGap = std::max(0, renderer.getLineHeight(lineFontId) - spacedHeight);
+        const int unspacedGap = std::max(0, baseFontLineH - spacedHeight);
         const int rubyUnder = line.getRubyUnderHeight(renderer, lineFontId);
-        const int height = spacedHeight + line.extraAscent(renderer, fontId) +
-                           line.getRubyShift(renderer.getFontAscenderSize(lineFontId)) +
-                           (rubyUnder > 0 ? rubyUnder + unspacedGap : 0);
+        const int lineBase = rubyUnder > 0 ? std::max(spacedHeight, baseFontLineH + rubyUnder) : spacedHeight;
+        const int height =
+            lineBase + line.extraAscent(renderer, fontId) + line.getRubyShift(renderer.getFontAscenderSize(lineFontId));
         rowLineHeight = std::max<int16_t>(rowLineHeight, static_cast<int16_t>(height));
         const int contentHeight = height + (rubyUnder > 0 ? 0 : unspacedGap);
         rowContentHeight = std::max<int16_t>(rowContentHeight, static_cast<int16_t>(contentHeight));
@@ -3160,11 +3161,13 @@ void ChapterHtmlSlimParser::addLineToPage(std::unique_ptr<TextBlock> line, const
   const int lineFontId = line->blockFontId(fontId);
   const int rubyShift = line->getRubyShift(renderer.getFontAscenderSize(lineFontId));
   const int rubyUnder = line->getRubyUnderHeight(renderer, lineFontId);
+  const int baseFontLineH = renderer.getLineHeight(lineFontId);
   const int spacedHeight = renderer.getLineHeight(lineFontId, lineCompression);
-  const int unspacedGap = std::max(0, renderer.getLineHeight(lineFontId) - spacedHeight);
+  const int unspacedGap = std::max(0, baseFontLineH - spacedHeight);
   // Taller inline words push the shared baseline down.
   const int baseLineHeight = spacedHeight + line->extraAscent(renderer, fontId);
-  const int lineHeight = baseLineHeight + rubyShift + (rubyUnder > 0 ? rubyUnder + unspacedGap : 0);
+  const int lineBase = rubyUnder > 0 ? std::max(spacedHeight, baseFontLineH + rubyUnder) : spacedHeight;
+  const int lineHeight = lineBase + line->extraAscent(renderer, fontId) + rubyShift;
   // Spacing can be shorter than the font's own line height; fit and frame the full glyphs.
   const int contentHeight = lineHeight + (rubyUnder > 0 ? 0 : unspacedGap);
 
