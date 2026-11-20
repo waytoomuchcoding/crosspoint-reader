@@ -687,31 +687,44 @@ void ZhLookupActivity::showPreviewNow() {
 
 void ZhLookupActivity::buildPreview() {
   // DESIGN 4.4: every dictionary word starting at the cursor, longest first,
-  // one line each in the small font: word, first reading, first sense.
+  // one line per reading in the small font: word, reading, first sense.
   previewLines.clear();
   const size_t start = cursorStart();
   if (start >= chars.size()) return;
   const int count = zh::sharedDict().matchesAt(cps.data(), runEnd(start), start, previewMatches, zh::MAX_MATCHES);
   const int width = renderer.getScreenWidth() - 2 * (POPUP_MARGIN + POPUP_BORDER + POPUP_PAD);
   std::vector<std::string> wrapped;
-  for (int k = 0; k < count && static_cast<int>(previewLines.size()) < smallLinesPerPage; ++k) {
-    std::string line;
-    for (int c = 0; c < previewMatches[k].len; ++c) utf8AppendCodepoint(cps[start + c], line);
-    const size_t got = zh::sharedDict().readEntry(previewMatches[k].entryOff, entryBuf.get(), ENTRY_BUF_BYTES);
-    zh::EntryReader entry(entryBuf.get(), got);
-    zh::EntryReading er;
-    if (entry.next(er)) {
-      line += "  ";
-      line.append(er.pinyin, er.pinyinLen);
-      size_t e = 0;
-      while (e < er.sensesLen && er.senses[e] != '\x1f') ++e;
-      line += "  ";
-      line.append(er.senses, e);
-    }
+  const auto pushPreviewLine = [&](const std::string& line) {
     // Keep the first wrapped line only.
     wrapped.clear();
     wrapInto(smallFont, line, width, 0, wrapped);
     if (!wrapped.empty()) previewLines.push_back(wrapped.size() > 1 ? wrapped[0] + "…" : wrapped[0]);
+  };
+  for (int k = 0; k < count && static_cast<int>(previewLines.size()) < smallLinesPerPage; ++k) {
+    std::string word;
+    for (int c = 0; c < previewMatches[k].len; ++c) utf8AppendCodepoint(cps[start + c], word);
+    const size_t got = zh::sharedDict().readEntry(previewMatches[k].entryOff, entryBuf.get(), ENTRY_BUF_BYTES);
+    zh::EntryReader entry(entryBuf.get(), got);
+    zh::EntryReading er;
+    bool hasReading = false;
+    while (static_cast<int>(previewLines.size()) < smallLinesPerPage && entry.next(er)) {
+      hasReading = true;
+      std::string line = word;
+      if (er.pinyinLen > 0) {
+        line += "  ";
+        line.append(er.pinyin, er.pinyinLen);
+      }
+      size_t e = 0;
+      while (e < er.sensesLen && er.senses[e] != '\x1f') ++e;
+      if (e > 0) {
+        line += "  ";
+        line.append(er.senses, e);
+      }
+      pushPreviewLine(line);
+    }
+    if (!hasReading) {
+      pushPreviewLine(word);
+    }
   }
 }
 
