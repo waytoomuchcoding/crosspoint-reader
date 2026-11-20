@@ -46,7 +46,8 @@ namespace {
 
 constexpr size_t kMinStartFreeHeapBytes = 81920;  // 49 KiB NimBLE + 32 KiB reader inflate reserve
 constexpr size_t kMinStartLargestBlockBytes = 32768;
-constexpr size_t kRxRingCapacity = 4096;
+constexpr size_t kRxRingCapacity = 8192;
+constexpr size_t kFileWriteBufBytes = 4096;  // Sector-aligned SD write buffer (8 x 512B)
 
 FontCacheManager* g_fontCache = nullptr;
 bool g_pairingActive = false;
@@ -56,11 +57,39 @@ std::atomic<bool> g_radioRunning{false};
 // Active streaming file state (main loop only).
 HalFile g_outFile;
 bool g_outFileOpen = false;
+uint8_t g_writeBuf[kFileWriteBufBytes]{};
+size_t g_writeBufLen = 0;
 std::string g_tempFilePath;
 std::string g_finalFilePath;
 HalFile g_inFile;
 bool g_inFileOpen = false;
 std::string g_activeReaderBookPath;
+
+bool flushOutFileBuffer() {
+  if (!g_outFileOpen) return false;
+  if (g_writeBufLen == 0) return true;
+  const size_t written = g_outFile.write(g_writeBuf, g_writeBufLen);
+  const bool ok = (written == g_writeBufLen);
+  g_writeBufLen = 0;
+  return ok;
+}
+
+bool writeOutFileBuffered(const uint8_t* data, const size_t len) {
+  if (!g_outFileOpen) return false;
+  if (!data || len == 0) return true;
+  size_t off = 0;
+  while (off < len) {
+    const size_t space = kFileWriteBufBytes - g_writeBufLen;
+    const size_t take = std::min(len - off, space);
+    memcpy(g_writeBuf + g_writeBufLen, data + off, take);
+    g_writeBufLen += take;
+    off += take;
+    if (g_writeBufLen == kFileWriteBufBytes) {
+      if (!flushOutFileBuffer()) return false;
+    }
+  }
+  return true;
+}
 
 bool isHiddenListEntryName(const char* name) {
   if (!name || name[0] == '\0') return true;
@@ -191,6 +220,7 @@ uint8_t g_rxRing[kRxRingCapacity]{};
 size_t g_rxHead = 0;
 size_t g_rxTail = 0;
 size_t g_rxCount = 0;
+std::atomic<uint32_t> g_rxDroppedBytes{0};
 std::atomic<bool> g_peerConnected{false};
 std::atomic<bool> g_peerDisconnectEdge{false};
 std::atomic<uint16_t> g_peerMtu{23};
@@ -202,14 +232,21 @@ NimBLECharacteristic* g_txChar = nullptr;
 
 void pushRxBytesFromIsrOrTask(const uint8_t* data, const size_t len) {
   if (!data || len == 0) return;
+  size_t dropped = 0;
   portENTER_CRITICAL(&g_rxMux);
   for (size_t i = 0; i < len; ++i) {
-    if (g_rxCount >= kRxRingCapacity) break;
+    if (g_rxCount >= kRxRingCapacity) {
+      dropped = len - i;
+      break;
+    }
     g_rxRing[g_rxHead] = data[i];
     g_rxHead = (g_rxHead + 1) % kRxRingCapacity;
     ++g_rxCount;
   }
   portEXIT_CRITICAL(&g_rxMux);
+  if (dropped > 0) {
+    g_rxDroppedBytes.fetch_add(static_cast<uint32_t>(dropped), std::memory_order_relaxed);
+  }
 }
 
 size_t popRxBytes(uint8_t* out, const size_t maxLen) {
@@ -225,16 +262,23 @@ size_t popRxBytes(uint8_t* out, const size_t maxLen) {
 }
 
 class ShareServerCallbacks final : public NimBLEServerCallbacks {
-  void onConnect(NimBLEServer*, NimBLEConnInfo& connInfo) override {
-    g_peerConnHandle.store(connInfo.getConnHandle(), std::memory_order_release);
+  void onConnect(NimBLEServer* server, NimBLEConnInfo& connInfo) override {
+    const uint16_t handle = connInfo.getConnHandle();
+    g_peerConnHandle.store(handle, std::memory_order_release);
     g_peerMtu.store(connInfo.getMTU(), std::memory_order_release);
     g_peerConnected.store(true, std::memory_order_release);
+    // Request fast 7.5-15ms interval with a generous 6.0s supervision timeout
+    // so transient SD card flash-erase stalls or RF hiccups don't drop the link.
+    if (server) {
+      server->updateConnParams(handle, 6, 12, 0, 600);
+    }
   }
 
-  void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override {
+  void onDisconnect(NimBLEServer*, NimBLEConnInfo&, const int reason) override {
     g_peerConnected.store(false, std::memory_order_release);
     g_peerConnHandle.store(BLE_HS_CONN_HANDLE_NONE, std::memory_order_release);
     g_peerDisconnectEdge.store(true, std::memory_order_release);
+    LOG_INF("BLESHARE", "BLE peer disconnected (reason=0x%02x)", reason);
     if (g_radioRunning.load(std::memory_order_acquire) && NimBLEDevice::isInitialized()) {
       NimBLEDevice::startAdvertising();
     }
@@ -294,6 +338,7 @@ bool startTransport(const bool fastAdv) {
   portENTER_CRITICAL(&g_rxMux);
   g_rxHead = g_rxTail = g_rxCount = 0;
   portEXIT_CRITICAL(&g_rxMux);
+  g_rxDroppedBytes.store(0, std::memory_order_relaxed);
   g_peerConnected.store(false, std::memory_order_release);
   g_peerConnHandle.store(BLE_HS_CONN_HANDLE_NONE, std::memory_order_release);
   g_peerDisconnectEdge.store(false, std::memory_order_release);
@@ -491,18 +536,21 @@ class FirmwareSessionHost final : public xpbt::SessionHost {
       return false;
     }
     g_outFileOpen = true;
+    g_writeBufLen = 0;
     return true;
   }
 
-  bool writeFileChunk(const uint8_t* data, const size_t len) override {
-    if (!g_outFileOpen) return false;
-    return g_outFile.write(data, len) == len;
-  }
+  bool writeFileChunk(const uint8_t* data, const size_t len) override { return writeOutFileBuffered(data, len); }
 
   bool finalizeFileWrite(std::string& outSavedPath) override {
     if (!g_outFileOpen) return false;
+    const bool flushed = flushOutFileBuffer();
     g_outFile.close();
     g_outFileOpen = false;
+    if (!flushed) {
+      Storage.remove(g_tempFilePath.c_str());
+      return false;
+    }
     if (Storage.exists(g_finalFilePath.c_str())) {
       Storage.remove(g_finalFilePath.c_str());
     }
@@ -521,6 +569,7 @@ class FirmwareSessionHost final : public xpbt::SessionHost {
   }
 
   void abortFileWrite() override {
+    g_writeBufLen = 0;
     if (g_outFileOpen) {
       g_outFile.close();
       g_outFileOpen = false;
@@ -711,18 +760,22 @@ class FirmwareSessionHost final : public xpbt::SessionHost {
       return xpbt::FsStatus::IoError;
     }
     g_outFileOpen = true;
+    g_writeBufLen = 0;
     return xpbt::FsStatus::Ok;
   }
 
-  bool fsPutChunk(const uint8_t* data, const size_t len) override {
-    if (!g_outFileOpen) return false;
-    return g_outFile.write(data, len) == len;
-  }
+  bool fsPutChunk(const uint8_t* data, const size_t len) override { return writeOutFileBuffered(data, len); }
 
   xpbt::FsStatus fsPutFinish() override {
     if (!g_outFileOpen) return xpbt::FsStatus::IoError;
+    const bool flushed = flushOutFileBuffer();
     g_outFile.close();
     g_outFileOpen = false;
+    if (!flushed) {
+      Storage.remove(g_tempFilePath.c_str());
+      g_tempFilePath.clear();
+      return xpbt::FsStatus::IoError;
+    }
     if (Storage.exists(g_finalFilePath.c_str())) {
       Storage.remove(g_finalFilePath.c_str());
     }
@@ -934,8 +987,11 @@ bool tick(const Scene& scene) {
   if (g_peerDisconnectEdge.exchange(false, std::memory_order_acq_rel)) {
     g_session.onDisconnected();
   }
-  uint8_t buf[240];
-  for (int iter = 0; iter < 16; ++iter) {
+  if (const uint32_t dropped = g_rxDroppedBytes.exchange(0, std::memory_order_relaxed); dropped > 0) {
+    LOG_ERR("BLESHARE", "BLE RX ring overflow: dropped %u bytes", static_cast<unsigned>(dropped));
+  }
+  uint8_t buf[256];
+  for (int iter = 0; iter < 32; ++iter) {
     const size_t n = popRxBytes(buf, sizeof(buf));
     if (n == 0) break;
     hadActivity = true;

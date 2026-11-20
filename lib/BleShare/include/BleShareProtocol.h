@@ -16,7 +16,8 @@ inline constexpr uint8_t kProtocolVersion = 1;
 inline constexpr size_t kHeaderBytes = 12;
 inline constexpr size_t kMaxPayloadBytes = 512;
 inline constexpr size_t kMaxFrameBytes = kHeaderBytes + kMaxPayloadBytes;
-inline constexpr uint16_t kDefaultChunkDataBytes = 480;
+// 12-byte XPBT header + 4-byte chunk offset + 472-byte data = 488 bytes = 2 * 244-byte BLE DLE packets.
+inline constexpr uint16_t kDefaultChunkDataBytes = 472;
 inline constexpr size_t kIdBytes = 16;
 inline constexpr size_t kNonceBytes = 16;
 inline constexpr size_t kSha256Bytes = 32;

@@ -317,8 +317,10 @@ void BleShareActivity::syncSessionToUi() {
       }
       const auto& prog = bleshare::currentProgress();
       const unsigned long now = millis();
-      const bool needsPaint = view_ != View::Transferring || prog.fileIndex != lastRenderedFileIdx_ ||
-                              (now - lastProgressPaintMs_ >= 400 && prog.receivedBytes != lastRenderedBytes_);
+      const bool needsPaint =
+          view_ != View::Transferring || prog.fileIndex != lastRenderedFileIdx_ ||
+          (prog.fileSize > 0 && prog.receivedBytes >= prog.fileSize && prog.receivedBytes != lastRenderedBytes_) ||
+          (now - lastProgressPaintMs_ >= 1500 && prog.receivedBytes != lastRenderedBytes_);
       if (needsPaint) {
         RenderLock lock(RenderLock::Mode::Try);
         if (lock.ownsLock()) {
