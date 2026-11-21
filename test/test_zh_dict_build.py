@@ -56,5 +56,51 @@ class PinyinTest(unittest.TestCase):
         self.assertEqual(build.mark_pinyin("de5"), "de")
 
 
+class CrossRefInlineTest(unittest.TestCase):
+    def test_inlines_matching_reading_once_across_shared_simp_trad(self):
+        shared = {
+            "py": "yi1 ming4 gui1 tian1",
+            "trad": "一命歸天",
+            "simp": "一命归天",
+            "senses": ["see 一命嗚呼|一命呜呼[yī mìng wū hū]"],
+            "proper": False,
+        }
+        dic = {
+            "一命归天": [shared],
+            "一命歸天": [shared],
+            "一命呜呼": [
+                {
+                    "py": "yi1 ming4 wu1 hu1",
+                    "trad": "一命嗚呼",
+                    "simp": "一命呜呼",
+                    "senses": ["to die (idiom)", "to breathe one's last"],
+                    "proper": False,
+                }
+            ],
+            "行": [
+                {"py": "xing2", "trad": "行", "simp": "行", "senses": ["to walk"], "proper": False},
+                {"py": "hang2", "trad": "行", "simp": "行", "senses": ["row", "line"], "proper": False},
+            ],
+            "假": [
+                {
+                    "py": "jia3",
+                    "trad": "假",
+                    "simp": "假",
+                    "senses": ["variant of 行[háng]", "CL:個|个[gè]"],
+                    "proper": False,
+                }
+            ],
+        }
+        build.inline_cross_refs(dic)
+        self.assertEqual(
+            dic["一命归天"][0]["senses"],
+            ["see 一命嗚呼|一命呜呼[yī mìng wū hū] — to die (idiom); to breathe one's last"],
+        )
+        # Shared trad reading dict must not be inlined twice.
+        self.assertEqual(dic["一命歸天"][0]["senses"], dic["一命归天"][0]["senses"])
+        # Matches the referenced pinyin reading (háng, not xíng) and leaves CL: untouched.
+        self.assertEqual(dic["假"][0]["senses"], ["variant of 行[háng] — row; line", "CL:個|个[gè]"])
+
+
 if __name__ == "__main__":
     unittest.main()

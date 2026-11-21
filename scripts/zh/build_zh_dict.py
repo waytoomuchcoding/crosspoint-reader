@@ -152,6 +152,48 @@ def zhuyin_codes(py, nchars):
 
 
 LINE_RE = re.compile(r"^(\S+) (\S+) \[([^\]]*)\] /(.*)/$")
+XREF_RE = re.compile(
+    r"^(?:(?:old |erhua |archaic |ancient |Taiwan |popular |nonstandard |simplified |euphemistic )*"
+    r"(?:variant of|see also|see|same as|also written|abbr\. (?:for|to|of)))\s+",
+    re.IGNORECASE,
+)
+XREF_TARGET_RE = re.compile(r"(?:[\u4e00-\u9fff]+\|)?([\u4e00-\u9fff]+)\[([^\]]+)\]")
+
+
+def inline_cross_refs(dic):
+    """Append the target reading's real senses onto explicit cross-reference senses."""
+    real_senses = {
+        key: [(mark_pinyin(r["py"]).lower(), [s for s in r["senses"] if not XREF_RE.match(s)]) for r in rs]
+        for key, rs in dic.items()
+    }
+    seen_readings = set()
+    for rs in dic.values():
+        for r in rs:
+            rid = id(r)
+            if rid in seen_readings:
+                continue
+            seen_readings.add(rid)
+            self_forms = {r["simp"], r["trad"]}
+            new_senses = []
+            for s in r["senses"]:
+                if not XREF_RE.match(s):
+                    new_senses.append(s)
+                    continue
+                extras = []
+                seen_targets = set()
+                for word, py in XREF_TARGET_RE.findall(s)[:2]:
+                    if word in self_forms or word in seen_targets or word not in real_senses:
+                        continue
+                    seen_targets.add(word)
+                    entries = real_senses[word]
+                    py_low = py.lower()
+                    chosen = next((es for ep, es in entries if ep == py_low and es), None)
+                    if chosen is None:
+                        chosen = next((es for _, es in entries if es), None)
+                    if chosen:
+                        extras.append("; ".join(chosen[:3]))
+                new_senses.append(s + " — " + " / ".join(extras) if extras else s)
+            r["senses"] = new_senses
 
 
 def load_unihan(path):
@@ -190,6 +232,7 @@ def load_cedict(path, customary):
                                r["proper"],
                                all(s.startswith(stub) for s in r["senses"]),
                                -len(r["senses"])))
+    inline_cross_refs(dic)
     return dic
 
 
