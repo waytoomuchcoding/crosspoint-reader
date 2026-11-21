@@ -478,7 +478,7 @@ void setLCGState(const SleepRecentKind kind, uint32_t seed, uint32_t state, uint
   }
 }
 
-bool findNextValidSleepImage(HalFile& dir, const SleepRecentKind recentKind, char* name) {
+bool findNextSleepImage(HalFile& dir, const SleepRecentKind recentKind, char* name) {
   for (auto dirFile = dir.openNextFile(); dirFile; dirFile = dir.openNextFile()) {
     if (dirFile.isDirectory()) continue;
 
@@ -492,15 +492,6 @@ bool findNextValidSleepImage(HalFile& dir, const SleepRecentKind recentKind, cha
       continue;
     }
 
-    const bool isValid = isBmp ? [&dirFile]() {
-      Bitmap bitmap(dirFile);
-      return bitmap.parseHeaders() == BmpReaderError::Ok;
-    }()
-                               : isValidPngHeader(dirFile);
-    if (!isValid) {
-      LOG_DBG("SLP", "Skipping invalid sleep image: %s", name);
-      continue;
-    }
     return true;
   }
   return false;
@@ -523,7 +514,7 @@ bool selectRandomSleepFile(const char* firstDirPath, const char* secondDirPath, 
     if (!dir || !dir.isDirectory()) continue;
 
     const auto remainingCapacity = static_cast<uint16_t>(UINT16_MAX - fileCount);
-    while (directoryCounts[i] < remainingCapacity && findNextValidSleepImage(dir, recentKind, name.get())) {
+    while (directoryCounts[i] < remainingCapacity && findNextSleepImage(dir, recentKind, name.get())) {
       directoryCounts[i]++;
     }
     fileCount = static_cast<uint16_t>(fileCount + directoryCounts[i]);
@@ -633,7 +624,7 @@ bool selectRandomSleepFile(const char* firstDirPath, const char* secondDirPath, 
     return false;
   }
   for (uint16_t index = 0; index <= localIndex; ++index) {
-    if (!findNextValidSleepImage(dir, recentKind, name.get())) return false;
+    if (!findNextSleepImage(dir, recentKind, name.get())) return false;
   }
 
   const char* selectedDirPath = dirPaths[directoryIndex];
@@ -818,10 +809,12 @@ void SleepActivity::renderCustomSleepScreen() const {
   // /sleep.bmp on the SD root takes priority over both custom sleep directories.
   if (renderCustomSleepBmp("/sleep.bmp")) return;
 
-  std::string selectedPath;
-  selectRandomSleepFile("/.sleep", "/sleep", SleepRecentKind::Standard, selectedPath);
-  if (!selectedPath.empty()) {
-    delay(100);
+  std::string lastPath;
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    std::string selectedPath;
+    if (!selectRandomSleepFile("/.sleep", "/sleep", SleepRecentKind::Standard, selectedPath)) break;
+    if (selectedPath == lastPath) break;
+    lastPath = selectedPath;
     if (renderCustomSleepBmp(selectedPath)) return;
   }
 
@@ -1013,7 +1006,10 @@ bool SleepActivity::renderTransparentOverlayPng(const std::string& path) const {
 
 bool SleepActivity::renderSleepOverlayPath(const std::string& path) const {
   if (FsHelpers::hasPngExtension(path)) {
-    return Storage.exists(path.c_str()) && renderTransparentOverlayPng(path);
+    HalFile file;
+    if (!Storage.openFileForRead("SLP", path, file) || !isValidPngHeader(file)) return false;
+    file.close();
+    return renderTransparentOverlayPng(path);
   }
 
   HalFile file;
@@ -1024,10 +1020,17 @@ void SleepActivity::renderTransparentCustomSleepScreen() const {
   if (renderSleepOverlayPath(TRANSPARENT_SLEEP_ROOT_BMP)) return;
   if (renderSleepOverlayPath(TRANSPARENT_SLEEP_ROOT_PNG)) return;
 
-  std::string selectedPath;
-  selectRandomSleepFile(TRANSPARENT_SLEEP_DIR, TRANSPARENT_SLEEP_LEGACY_DIR, SleepRecentKind::Overlay, selectedPath);
-
-  if (!selectedPath.empty() && renderSleepOverlayPath(selectedPath)) return;
+  std::string lastPath;
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    std::string selectedPath;
+    if (!selectRandomSleepFile(TRANSPARENT_SLEEP_DIR, TRANSPARENT_SLEEP_LEGACY_DIR, SleepRecentKind::Overlay,
+                               selectedPath)) {
+      break;
+    }
+    if (selectedPath == lastPath) break;
+    lastPath = selectedPath;
+    if (renderSleepOverlayPath(selectedPath)) return;
+  }
 
   LOG_ERR("SLP", "No valid transparent sleep overlay found");
   if (overlayCover) {
